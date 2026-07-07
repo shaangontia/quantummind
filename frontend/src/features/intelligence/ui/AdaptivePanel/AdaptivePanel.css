@@ -1,0 +1,143 @@
+.adaptive-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.adaptive-loading {
+  display: flex;
+  justify-content: center;
+  padding: 32px;
+}
+
+.regime-section,
+.weights-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.regime-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.regime-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.regime-icon {
+  font-size: 18px;
+}
+
+.sub-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.regime-notes {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.regime-params {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.param {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+
+.param-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.param-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.weights-note {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.weights-no-data {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 4px;
+}
+
+.weights-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.weight-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.weight-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.weight-source {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.weight-val {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.weight-bar-track {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-primary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.weight-bar {
+  height: 100%;
+  background: var(--accent-blue);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.weight-bar.strong { background: var(--accent-green); }
+.weight-bar.weak   { background: var(--accent-red); }
+
+.weight-stats {
+  font-size: 11px;
+}
+
+.text-muted { color: var(--text-muted); }

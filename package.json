@@ -1,0 +1,24 @@
+{
+  "name": "quantum-mind",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "concurrently --names \"BACKEND,FRONTEND\" --prefix-colors \"blue,green\" \"npm run start:backend\" \"npm run start:frontend\"",
+    "dev": "concurrently --names \"BACKEND,FRONTEND\" --prefix-colors \"blue,green\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "start:backend": "cd backend && node dist/index.js",
+    "start:frontend": "cd frontend && npm run dev -- --port 3000",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "dotenv": "^17.4.2"
+  }
+}

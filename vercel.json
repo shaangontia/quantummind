@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/index.ts",
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": ["backend/dist/**"]
+      }
+    },
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "dist" }
+    }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/index.ts" },
+    { "src": "/health",   "dest": "/api/index.ts" },
+    { "src": "/(.*)",     "dest": "/frontend/$1"  }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/market-cycle",
+      "schedule": "0 4 * * 1-5"
+    }
+  ],
+  "env": {
+    "turso_region":  "@turso_region",
+    "turso_sb_key":  "@turso_sb_key",
+    "groq_key":      "@groq_key"
+  }
+}
