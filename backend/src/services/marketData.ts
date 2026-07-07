@@ -103,7 +103,7 @@ export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]
 async function getHistoricalCloses(symbol: string, days = 40): Promise<number[]> {
   const nseSymbol = toNseSymbol(symbol);
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(nseSymbol)}?interval=1d&range=3mo`;
-  const json = await yahooGet(url);
+  const json = await httpsGet(url);
   const closes: number[] = json.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
   return closes.filter((c: any) => c !== null).slice(-days);
 }
