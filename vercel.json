@@ -25,9 +25,5 @@
       "schedule": "0 4 * * 1-5"
     }
   ],
-  "env": {
-    "turso_region":  "@turso_region",
-    "turso_sb_key":  "@turso_sb_key",
-    "groq_key":      "@groq_key"
-  }
+  "framework": null
 }
