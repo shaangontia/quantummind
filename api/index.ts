@@ -16,6 +16,8 @@ async function ensureMigrations() {
   try {
     const { runMigrations } = require('../backend/dist/db/turso');
     await runMigrations();
+    const { ensureTradingConfigTable } = require('../backend/dist/services/tradingGuards');
+    await ensureTradingConfigTable();
   } catch (e) {
     console.warn('[Migration] skipped:', String(e));
   }

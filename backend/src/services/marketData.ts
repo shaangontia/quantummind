@@ -186,6 +186,15 @@ async function getQuoteGrowwUnofficial(nseSymbol: string): Promise<StockQuote | 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
+ * Fetch a quote suitable for DISPLAY only.
+ * May return cached/stale data. MUST NOT be used for trade execution.
+ * Call getExecutableQuote() instead for any trade decision.
+ */
+export async function getDisplayQuote(symbol: string): Promise<StockQuote> {
+  return getQuote(symbol);
+}
+
+/**
  * Fetch a live quote via fallback chain:
  *   1. Yahoo query2 (primary CDN)
  *   2. Yahoo query1 (alternate CDN)
@@ -209,6 +218,60 @@ export async function getQuote(symbol: string): Promise<StockQuote> {
   if (groww) return groww;
 
   throw new Error(`[MarketData] All price providers failed for ${nseSymbol}. No trade will be executed.`);
+}
+
+/**
+ * Fetch a quote for TRADE EXECUTION.
+ * Always makes a fresh network call. Never uses in-memory state from previous calls.
+ * Performs cross-source agreement check: if two sources differ by > 2%, throws.
+ * Callers must ALSO check isFresh on the returned quote.
+ */
+export async function getExecutableQuote(symbol: string): Promise<StockQuote> {
+  const nseSymbol = toNseSymbol(symbol);
+
+  // Fetch from both Yahoo CDNs independently
+  const [q2, q1] = await Promise.all([
+    getQuoteYahoo(nseSymbol, 'query2'),
+    getQuoteYahoo(nseSymbol, 'query1'),
+  ]);
+
+  // Both succeeded — cross-source agreement check
+  if (q2 && q1) {
+    const diff = Math.abs(q2.price - q1.price) / Math.max(q2.price, q1.price);
+    if (diff > 0.02) {
+      throw new Error(
+        `[ExecutableQuote] Provider disagreement for ${nseSymbol}: ` +
+        `query2=₹${q2.price} vs query1=₹${q1.price} (diff=${(diff * 100).toFixed(2)}%) — no trade`
+      );
+    }
+    // Agreement within 2% — use query2 (lower latency CDN)
+    if (!q2.isFresh) throw new Error(`[ExecutableQuote] Stale price from query2 for ${nseSymbol} — no trade`);
+    return q2;
+  }
+
+  // Only one Yahoo CDN succeeded
+  const yahooPrimary = q2 ?? q1;
+  if (yahooPrimary) {
+    if (!yahooPrimary.isFresh) throw new Error(`[ExecutableQuote] Stale Yahoo price for ${nseSymbol} — no trade`);
+    // Single source — no cross-check possible, log warning
+    console.warn(`[ExecutableQuote] Single Yahoo CDN succeeded for ${nseSymbol} — cannot cross-validate`);
+    return yahooPrimary;
+  }
+
+  // Both Yahoo CDNs failed — try Groww unofficial ONLY if market is open
+  // Groww is treated as last resort; cross-validation impossible
+  console.warn(`[ExecutableQuote] Both Yahoo CDNs failed for ${nseSymbol} — falling back to Groww unofficial`);
+  const groww = await getQuoteGrowwUnofficial(nseSymbol);
+  if (groww) {
+    if (!groww.isFresh) throw new Error(`[ExecutableQuote] Stale Groww price for ${nseSymbol} — no trade`);
+    // Log clearly that this trade is executing on unofficial data
+    console.warn(
+      `[ExecutableQuote] ⚠ Executing on Groww unofficial price for ${nseSymbol}: ₹${groww.price} — no cross-validation available`
+    );
+    return groww;
+  }
+
+  throw new Error(`[ExecutableQuote] All price providers failed for ${nseSymbol}. Trade blocked.`);
 }
 
 export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]> {

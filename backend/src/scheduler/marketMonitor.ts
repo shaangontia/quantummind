@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { query, queryOne, run } from '../db/turso.js';
 import { generateSignal, executeTrade, getPortfolioSummary } from '../services/tradingEngine.js';
 import { getMultipleQuotes, DEFAULT_WATCHLIST, isNseMarketOpen } from '../services/marketData.js';
+import { isNseHoliday, acquireCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
 
 async function updateAllPrices(): Promise<void> {
   const holdings = await query(`
@@ -86,6 +87,13 @@ async function snapshotAll(): Promise<void> {
 
 // Exported for Vercel cron endpoint + API trigger
 export async function runMarketCycle(): Promise<void> {
+  // Idempotency lock — reject duplicate calls within 4 minutes
+  if (!acquireCycleLock()) return;
+
+  if (isNseHoliday()) {
+    console.log('[Monitor] NSE holiday today — market cycle skipped');
+    return;
+  }
   if (!isNseMarketOpen()) {
     console.log('[Monitor] Market is closed — price update only, no trades will execute');
   }

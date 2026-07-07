@@ -197,7 +197,18 @@ router.post('/portfolios/:id/trade', async (req: Request, res: Response) => {
 
 // ─── Cron trigger (called by Vercel Cron / external scheduler) ────────────────
 
-router.post('/cron/market-cycle', async (_req: Request, res: Response) => {
+router.post('/cron/market-cycle', async (req: Request, res: Response) => {
+  // Auth: require CRON_SECRET env var to match Authorization header or ?secret= query param
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const provided =
+      req.headers.authorization?.replace('Bearer ', '') ??
+      (req.query.secret as string | undefined);
+    if (provided !== cronSecret) {
+      console.warn('[Cron] Unauthorized cycle trigger attempt from', req.ip);
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+  }
   try {
     const { runMarketCycle } = await import('../scheduler/marketMonitor.js');
     await runMarketCycle();

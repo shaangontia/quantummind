@@ -1,5 +1,11 @@
 import { query, queryOne, run } from '../db/turso.js';
-import { getQuote, getRsi, isNseMarketOpen } from './marketData.js';
+import { getQuote, getExecutableQuote, getRsi, isNseMarketOpen } from './marketData.js';
+import {
+  isTradingEnabled,
+  isUnderDailyTradeLimit,
+  isUnderDailyTurnoverLimit,
+  isUnderPositionCap,
+} from './tradingGuards.js';
 import { getStockSentiment } from './newsService.js';
 import { getMLBoost } from './mlEngine.js';
 import { getGroqStockSentiment } from './groqService.js';
@@ -54,8 +60,9 @@ const MIN_STOCK_PRICE = 50;
 export async function generateSignal(symbol: string, risk = 'Medium'): Promise<TradeSignal | null> {
   try {
     // Run all data fetches in parallel
+    // getExecutableQuote: always fresh, cross-validated, never cached
     const [quote, rsi, sentiment, mlBoost, groqResult] = await Promise.allSettled([
-      getQuote(symbol),
+      getExecutableQuote(symbol),
       getRsi(symbol),
       getStockSentiment(symbol).catch(() => null),
       getMLBoost(symbol, risk).catch(() => null),
@@ -149,6 +156,10 @@ export async function generateSignal(symbol: string, risk = 'Medium'): Promise<T
   }
 }
 
+/**
+ * Execute a simulated trade. All guards run before any DB write.
+ * Returns tradeId on success, null if any guard blocks execution.
+ */
 export async function executeTrade(
   portfolioId: number,
   symbol: string,
@@ -158,12 +169,41 @@ export async function executeTrade(
   price: number,
   reason: string
 ): Promise<number | null> {
+  // ── Pre-execution guards ───────────────────────────────────────────────────
+  const [tradingEnabled, underTradeLimit] = await Promise.all([
+    isTradingEnabled(),
+    isUnderDailyTradeLimit(portfolioId),
+  ]);
+  if (!tradingEnabled) {
+    console.warn(`[P${portfolioId}] Trade blocked: kill switch active`);
+    return null;
+  }
+  if (!underTradeLimit) {
+    console.warn(`[P${portfolioId}] Trade blocked: daily trade limit reached`);
+    return null;
+  }
+
   const portfolio = await queryOne('SELECT * FROM portfolios WHERE id = ?', [portfolioId]);
   if (!portfolio || !portfolio.is_active) return null;
 
   const amount = quantity * price;
   const brokerage = amount * 0.002;
   const netAmount = action === 'BUY' ? amount + brokerage : amount - brokerage;
+
+  // Compute portfolio NAV for concentration + turnover checks
+  const holdingsForNAV = await query('SELECT * FROM holdings WHERE portfolio_id = ?', [portfolioId]);
+  const portfolioNAV = holdingsForNAV.reduce(
+    (s: number, h: any) => s + Number(h.quantity) * Number(h.current_price || h.avg_buy_price), 0
+  ) + Number(portfolio.current_cash);
+
+  if (action === 'BUY') {
+    const [underCap, underTurnover] = await Promise.all([
+      isUnderPositionCap(portfolioId, symbol, portfolioNAV, amount),
+      isUnderDailyTurnoverLimit(portfolioId, portfolioNAV, amount),
+    ]);
+    if (!underCap) { console.warn(`[P${portfolioId}] BUY blocked: position cap for ${symbol}`); return null; }
+    if (!underTurnover) { console.warn(`[P${portfolioId}] BUY blocked: daily turnover limit`); return null; }
+  }
 
   if (action === 'BUY' && portfolio.current_cash < netAmount) {
     console.warn(`[P${portfolioId}] Insufficient cash for BUY ${symbol}`);
