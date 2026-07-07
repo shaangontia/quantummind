@@ -1,5 +1,5 @@
 import { query, queryOne, run } from '../db/turso.js';
-import { getQuote, getRsi } from './marketData.js';
+import { getQuote, getRsi, isNseMarketOpen } from './marketData.js';
 import { getStockSentiment } from './newsService.js';
 import { getMLBoost } from './mlEngine.js';
 import { getGroqStockSentiment } from './groqService.js';
@@ -64,7 +64,12 @@ export async function generateSignal(symbol: string, risk = 'Medium'): Promise<T
 
     const q = quote.status === 'fulfilled' ? quote.value : null;
     if (!q || q.price < MIN_STOCK_PRICE) {
-      return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Penny stock or data error`, price: q?.price ?? 0 };
+      return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Penny stock or data error (price=${q?.price ?? 0})`, price: q?.price ?? 0 };
+    }
+    // Fail-closed: do not act on stale prices during market hours
+    if (!q.isFresh) {
+      console.warn(`[Signal] Stale price for ${symbol} from ${q.provider} — forcing HOLD`);
+      return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Stale price from ${q.provider} — no trade`, price: q.price };
     }
 
     const rsiVal = rsi.status === 'fulfilled' ? rsi.value : null;

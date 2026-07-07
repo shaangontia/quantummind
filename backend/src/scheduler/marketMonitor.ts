@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { query, queryOne, run } from '../db/turso.js';
 import { generateSignal, executeTrade, getPortfolioSummary } from '../services/tradingEngine.js';
-import { getMultipleQuotes, DEFAULT_WATCHLIST } from '../services/marketData.js';
+import { getMultipleQuotes, DEFAULT_WATCHLIST, isNseMarketOpen } from '../services/marketData.js';
 
 async function updateAllPrices(): Promise<void> {
   const holdings = await query(`
@@ -24,6 +24,7 @@ async function updateAllPrices(): Promise<void> {
 }
 
 async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: string): Promise<void> {
+  const marketOpen = isNseMarketOpen();
   const summary = await getPortfolioSummary(portfolioId);
   const stopLoss = riskTolerance === 'High' ? 0.12 : riskTolerance === 'Low' ? 0.05 : 0.08;
   const takeProfit = riskTolerance === 'High' ? 0.30 : riskTolerance === 'Low' ? 0.15 : 0.25;
@@ -42,6 +43,7 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
     if (shouldSell) {
       await run('INSERT INTO market_signals (portfolio_id,symbol,signal_type,strength,reason,price_at_signal,acted_upon) VALUES (?,?,?,?,?,?,1)',
         [portfolioId, h.symbol, 'SELL', signal.strength, reason, signal.price]);
+      if (!marketOpen) { console.log(`[P${portfolioId}] Market closed — SELL signal for ${h.symbol} logged but not executed`); continue; }
       await executeTrade(portfolioId, h.symbol, h.companyName, 'SELL', h.quantity, signal.price, reason);
     }
   }
@@ -64,6 +66,7 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
 
     const sigRes = await run('INSERT INTO market_signals (portfolio_id,symbol,signal_type,strength,reason,price_at_signal) VALUES (?,?,?,?,?,?)',
       [portfolioId, symbol, 'BUY', signal.strength, signal.reason, signal.price]);
+    if (!marketOpen) { console.log(`[P${portfolioId}] Market closed — BUY signal for ${symbol} logged but not executed`); continue; }
     const tradeId = await executeTrade(portfolioId, symbol, symbol.replace('.NS', ''), 'BUY', qty, signal.price, signal.reason);
     if (tradeId && sigRes.lastInsertRowid) {
       await run('UPDATE market_signals SET acted_upon=1, trade_id=? WHERE id=?', [tradeId, sigRes.lastInsertRowid]);
@@ -83,6 +86,9 @@ async function snapshotAll(): Promise<void> {
 
 // Exported for Vercel cron endpoint + API trigger
 export async function runMarketCycle(): Promise<void> {
+  if (!isNseMarketOpen()) {
+    console.log('[Monitor] Market is closed — price update only, no trades will execute');
+  }
   await updateAllPrices();
   const portfolios = await query('SELECT * FROM portfolios WHERE is_active = 1');
   for (const p of portfolios) {
