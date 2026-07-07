@@ -1,29 +1,16 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "api/index.ts",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": ["backend/dist/**"]
-      }
-    },
-    {
-      "src": "frontend/package.json",
-      "use": "@vercel/static-build",
-      "config": { "distDir": "dist" }
-    }
-  ],
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api/index.ts" },
-    { "src": "/health",   "dest": "/api/index.ts" },
-    { "src": "/(.*)",     "dest": "/frontend/$1"  }
+  "buildCommand": "cd backend && npm install && npm run build && cd ../frontend && npm install && npm run build",
+  "outputDirectory": "frontend/dist",
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/index" },
+    { "source": "/health",     "destination": "/api/index" },
+    { "source": "/:path*",     "destination": "/index.html" }
   ],
   "crons": [
     {
       "path": "/api/cron/market-cycle",
       "schedule": "0 4 * * 1-5"
     }
-  ],
-  "framework": null
+  ]
 }
