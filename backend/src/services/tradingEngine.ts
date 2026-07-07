@@ -193,6 +193,9 @@ export async function executeTrade(
     await run('UPDATE portfolios SET current_cash=current_cash-?, updated_at=datetime("now") WHERE id=?', [netAmount, portfolioId]);
   } else {
     const h = await queryOne('SELECT * FROM holdings WHERE portfolio_id = ? AND symbol = ?', [portfolioId, symbol]);
+    // Compute realized PnL: (sell_price - avg_buy_price) × qty - brokerage
+    const realizedPnlOnTrade = (price - Number(h.avg_buy_price)) * quantity - brokerage;
+    await run('UPDATE trades SET realized_pnl=? WHERE id=?', [realizedPnlOnTrade, tradeRes.lastInsertRowid]);
     const newQty = h.quantity - quantity;
     if (newQty <= 0.001) {
       await run('DELETE FROM holdings WHERE portfolio_id=? AND symbol=?', [portfolioId, symbol]);
@@ -212,8 +215,11 @@ export async function getPortfolioSummary(portfolioId: number): Promise<Portfoli
     query('SELECT * FROM holdings WHERE portfolio_id = ?', [portfolioId]),
   ]);
 
+  // Realized PnL: only from closed positions (SELL trades minus their cost basis)
+  // Approximated as: sum(sell_proceeds) - sum(buy_cost for matching lots)
+  // For now: track via explicit pnl column when available, else 0 until sells occur
   const realizedRows = await query(
-    `SELECT SUM(CASE WHEN action='SELL' THEN net_amount ELSE -net_amount END) as pnl FROM trades WHERE portfolio_id = ?`,
+    `SELECT COALESCE(SUM(realized_pnl), 0) as pnl FROM trades WHERE portfolio_id = ? AND action = 'SELL' AND realized_pnl IS NOT NULL`,
     [portfolioId]
   );
   const realizedPnl = Number(realizedRows[0]?.pnl ?? 0);

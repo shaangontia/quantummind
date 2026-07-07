@@ -11,11 +11,16 @@ async function updateAllPrices(): Promise<void> {
   `);
   if (!holdings.length) return;
 
-  const quotes = await getMultipleQuotes(holdings.map((h: any) => h.symbol as string));
-  for (const q of quotes) {
-    await run('UPDATE holdings SET current_price=?, last_price_updated=datetime("now") WHERE symbol=?', [q.price, q.symbol]);
+  try {
+    const quotes = await getMultipleQuotes(holdings.map((h: any) => h.symbol as string));
+    for (const q of quotes) {
+      await run('UPDATE holdings SET current_price=?, last_price_updated=datetime("now") WHERE symbol=?', [q.price, q.symbol]);
+    }
+    console.log(`[Monitor] Updated ${quotes.length} prices`);
+  } catch (err) {
+    // Yahoo Finance may block cloud IPs — continue with stale DB prices
+    console.warn('[Monitor] Price fetch failed, using cached prices:', String(err));
   }
-  console.log(`[Monitor] Updated ${quotes.length} prices`);
 }
 
 async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: string): Promise<void> {

@@ -12,6 +12,16 @@ export function getClient(): Client {
   return _client;
 }
 
+/** Run once at startup — idempotent column additions */
+export async function runMigrations(): Promise<void> {
+  const db = getClient();
+  // Add realized_pnl to trades if missing (SQLite ALTER TABLE ADD COLUMN is safe)
+  try {
+    await db.execute('ALTER TABLE trades ADD COLUMN realized_pnl REAL');
+    console.log('[DB] Migration: trades.realized_pnl column added');
+  } catch (_) { /* already exists — ignore */ }
+}
+
 export async function query(sql: string, args: any[] = []): Promise<any[]> {
   const db = getClient();
   const result = await db.execute({ sql, args });
