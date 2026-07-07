@@ -219,7 +219,12 @@ export const PortfolioDashboard = () => {
                       <td></td>
                       <td className="text-right">{h.quantity}</td>
                       <td className="text-right">{formatINR(h.avgBuyPrice)}</td>
-                      <td className="text-right">{formatINR(h.currentPrice)}</td>
+                      <td className="text-right">
+                          {formatINR(h.currentPrice)}
+                          {h.priceStatus === 'STALE' && (
+                            <span title="Price data is stale — not used for trade execution" style={{ marginLeft: 4, color: '#f59e0b', fontSize: '0.75rem' }}>⚠</span>
+                          )}
+                        </td>
                       <td className="text-right">{formatINR(h.currentValue)}</td>
                       <td className={`text-right ${h.pnl >= 0 ? 'tag-positive' : 'tag-negative'}`}>
                         {formatINR(h.pnl)}

@@ -98,6 +98,8 @@ export interface SummaryHolding {
   currentValue: number;
   pnl: number;
   pnlPct: number;
+  priceStatus?: 'LIVE' | 'STALE';
+  priceUpdatedAt?: string;
 }
 
 export interface PortfolioSummary {

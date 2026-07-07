@@ -31,6 +31,8 @@ export interface HoldingSummary {
   currentValue: number;
   pnl: number;
   pnlPct: number;
+  priceStatus: 'LIVE' | 'STALE';  // LIVE = updated within last 15min, STALE = older
+  priceUpdatedAt?: string;
 }
 
 export interface PortfolioSummary {
@@ -276,10 +278,14 @@ export async function getPortfolioSummary(portfolioId: number): Promise<Portfoli
     const cv = Number(h.quantity) * cp;
     const cost = Number(h.quantity) * Number(h.avg_buy_price);
     invested += cost; current += cv;
+    const updatedAt = h.price_updated_at as string | undefined;
+    const ageMs = updatedAt ? Date.now() - new Date(updatedAt).getTime() : Infinity;
+    const priceStatus: 'LIVE' | 'STALE' = ageMs < 15 * 60 * 1000 ? 'LIVE' : 'STALE';
     hSummaries.push({
       symbol: h.symbol as string, companyName: h.company_name as string, sector: h.sector as string | undefined,
       quantity: Number(h.quantity), avgBuyPrice: Number(h.avg_buy_price), currentPrice: cp,
       currentValue: cv, pnl: cv - cost, pnlPct: ((cv - cost) / cost) * 100,
+      priceStatus, priceUpdatedAt: updatedAt,
     });
   }
 

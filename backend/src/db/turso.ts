@@ -43,3 +43,14 @@ export async function batch(statements: { sql: string; args?: any[] }[]): Promis
   const db = getClient();
   await db.batch(statements.map(s => ({ sql: s.sql, args: s.args ?? [] })));
 }
+
+/** Atomic batch that returns all ResultSets (useful when you need lastInsertRowid from a batch) */
+export async function batchWithResults(
+  statements: { sql: string; args?: any[] }[]
+): Promise<{ lastInsertRowid: number }[]> {
+  const db = getClient();
+  const results = await db.batch(
+    statements.map(s => ({ sql: s.sql, args: s.args ?? [] }))
+  );
+  return results.map(r => ({ lastInsertRowid: Number(r.lastInsertRowid ?? 0) }));
+}

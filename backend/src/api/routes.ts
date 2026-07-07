@@ -15,7 +15,7 @@ const router = Router();
 
 router.get('/portfolios', async (_req: Request, res: Response) => {
   try {
-    res.set('Cache-Control', 'private, max-age=30');
+    res.set('Cache-Control', 'no-store');
     res.json({ success: true, data: await query('SELECT * FROM portfolios ORDER BY created_at DESC') });
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
@@ -34,7 +34,7 @@ router.get('/portfolios/:id/summary', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id);
     const data = await cache.getOrSet(`portfolio_summary_${id}`, () => getPortfolioSummary(id), TTL.PORTFOLIO_SUMMARY);
-    res.set('Cache-Control', 'private, max-age=60');  // User-specific — private, 1 min
+    res.set('Cache-Control', 'no-store');  // Portfolio NAV must never be served stale
     res.json({ success: true, data });
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
