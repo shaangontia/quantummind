@@ -7,7 +7,8 @@
     "outDir": "./api-dist",
     "rootDir": "./api",
     "skipLibCheck": true,
-    "ignoreDeprecations": "6.0"
+    "ignoreDeprecations": "6.0",
+    "types": ["node"]
   },
   "include": ["api/**/*.ts"]
 }
