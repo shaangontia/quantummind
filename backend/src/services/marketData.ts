@@ -17,9 +17,10 @@ export function toNseSymbol(symbol: string): string {
   return symbol.endsWith('.NS') ? symbol : `${symbol}.NS`;
 }
 
-function yahooGet(url: string): Promise<any> {
+function httpsGet(url: string, headers: Record<string, string> = {}): Promise<any> {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+    const opts = { headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36', ...headers } };
+    https.get(url, opts, (res) => {
       let data = '';
       res.on('data', (d: Buffer) => { data += d; });
       res.on('end', () => {
@@ -29,26 +30,66 @@ function yahooGet(url: string): Promise<any> {
   });
 }
 
+/** Groww public API — no auth, live NSE prices */
+async function getQuoteGroww(nseSymbol: string): Promise<StockQuote | null> {
+  try {
+    const ticker = nseSymbol.replace('.NS', '').toUpperCase();
+    const url = `https://groww.in/v1/api/stocks_data/v1/tr_live_prices/exchange/NSE/segment/CASH/${ticker}/latest`;
+    const d = await httpsGet(url, { Accept: 'application/json', Referer: 'https://groww.in/' });
+    if (!d?.ltp) return null;
+    const prev = d.ltp - (d.dayChange ?? 0);
+    return {
+      symbol: nseSymbol,
+      price: d.ltp,
+      change: d.dayChange ?? 0,
+      changePct: d.dayChangePerc ?? 0,
+      volume: d.volume ?? 0,
+      fiftyTwoWeekHigh: d.yearHighPrice,
+      fiftyTwoWeekLow: d.yearLowPrice,
+      timestamp: new Date(),
+    };
+  } catch { return null; }
+}
+
+/** Yahoo Finance v8 — primary source */
+async function getQuoteYahoo(nseSymbol: string): Promise<StockQuote | null> {
+  try {
+    // Try query2 first (different CDN, less blocked)
+    const urls = [
+      `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(nseSymbol)}?interval=1d&range=1d`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(nseSymbol)}?interval=1d&range=1d`,
+    ];
+    for (const url of urls) {
+      try {
+        const json = await httpsGet(url);
+        const meta = json.chart?.result?.[0]?.meta ?? {};
+        if (!meta.regularMarketPrice) continue;
+        return {
+          symbol: nseSymbol,
+          price: meta.regularMarketPrice,
+          change: (meta.regularMarketPrice) - (meta.chartPreviousClose ?? meta.regularMarketPrice),
+          changePct: meta.chartPreviousClose
+            ? ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100 : 0,
+          volume: meta.regularMarketVolume ?? 0,
+          fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh,
+          fiftyTwoWeekLow: meta.fiftyTwoWeekLow,
+          shortName: meta.shortName,
+          timestamp: new Date(),
+        };
+      } catch { continue; }
+    }
+    return null;
+  } catch { return null; }
+}
+
+/** Primary: Yahoo Finance → Fallback: Groww */
 export async function getQuote(symbol: string): Promise<StockQuote> {
   const nseSymbol = toNseSymbol(symbol);
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(nseSymbol)}?interval=1d&range=1d`;
-  const json = await yahooGet(url);
-  const result = json.chart?.result?.[0];
-  const meta = result?.meta ?? {};
-
-  return {
-    symbol: nseSymbol,
-    price: meta.regularMarketPrice ?? 0,
-    change: (meta.regularMarketPrice ?? 0) - (meta.chartPreviousClose ?? meta.regularMarketPrice ?? 0),
-    changePct: meta.regularMarketPrice && meta.chartPreviousClose
-      ? ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100
-      : 0,
-    volume: meta.regularMarketVolume ?? 0,
-    fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh,
-    fiftyTwoWeekLow: meta.fiftyTwoWeekLow,
-    shortName: meta.shortName,
-    timestamp: new Date(),
-  };
+  const yahoo = await getQuoteYahoo(nseSymbol);
+  if (yahoo) return yahoo;
+  const groww = await getQuoteGroww(nseSymbol);
+  if (groww) { console.log(`[MarketData] Yahoo failed for ${nseSymbol}, used Groww`); return groww; }
+  throw new Error(`All price sources failed for ${nseSymbol}`);
 }
 
 export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]> {
