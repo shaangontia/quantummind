@@ -172,6 +172,45 @@ export function acquireCycleLock(): boolean {
 }
 
 // ── Ensure trading_config table exists (run once at startup) ─────────────────
+// ── DB-persisted cron lock (survives serverless cold starts) ─────────────────
+const CRON_LOCK_KEY = 'market-cycle';
+
+export async function acquireDbCycleLock(): Promise<boolean> {
+  try {
+    await run(`CREATE TABLE IF NOT EXISTS cron_lock (
+      key TEXT PRIMARY KEY,
+      locked_until TEXT NOT NULL,
+      owner TEXT NOT NULL
+    )`);
+    const now = new Date();
+    const until = new Date(now.getTime() + MIN_CYCLE_GAP_MS).toISOString();
+    const existing = await queryOne('SELECT locked_until FROM cron_lock WHERE key=?', [CRON_LOCK_KEY]);
+    if (existing) {
+      const lockedUntil = new Date(existing.locked_until as string);
+      if (lockedUntil > now) {
+        const secLeft = Math.ceil((lockedUntil.getTime() - now.getTime()) / 1000);
+        console.warn(`[Guard] DB cron lock held for ${secLeft}s more — skipping duplicate execution`);
+        return false;
+      }
+      // Lock expired — update
+      await run('UPDATE cron_lock SET locked_until=?, owner=? WHERE key=?', [until, process.pid?.toString() ?? 'serverless', CRON_LOCK_KEY]);
+    } else {
+      await run('INSERT INTO cron_lock (key, locked_until, owner) VALUES (?,?,?)', [CRON_LOCK_KEY, until, process.pid?.toString() ?? 'serverless']);
+    }
+    return true;
+  } catch (err) {
+    console.warn('[Guard] DB cron lock error — falling back to in-memory lock:', err);
+    return acquireCycleLock(); // fall back to in-memory
+  }
+}
+
+export async function releaseCycleLock(): Promise<void> {
+  try {
+    await run('DELETE FROM cron_lock WHERE key=?', [CRON_LOCK_KEY]);
+  } catch { /* ignore */ }
+  lastCycleRanAt = null; // also reset in-memory lock
+}
+
 export async function ensureTradingConfigTable(): Promise<void> {
   try {
     await run(`CREATE TABLE IF NOT EXISTS trading_config (

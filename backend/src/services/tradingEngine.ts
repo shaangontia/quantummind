@@ -6,6 +6,9 @@ import {
   isUnderDailyTurnoverLimit,
   isUnderPositionCap,
 } from './tradingGuards.js';
+import { evaluateRisk } from './riskEngine.js';
+import { batchWithResults } from '../db/turso.js';
+import { logger } from '../lib/logger.js';
 import { getStockSentiment } from './newsService.js';
 import { getMLBoost } from './mlEngine.js';
 import { getGroqStockSentiment } from './groqService.js';
@@ -159,8 +162,9 @@ export async function generateSignal(symbol: string, risk = 'Medium'): Promise<T
 }
 
 /**
- * Execute a simulated trade. All guards run before any DB write.
- * Returns tradeId on success, null if any guard blocks execution.
+ * Execute a simulated trade.
+ * Flow: pre-checks → RiskEngine → atomic DB batch (all-or-nothing).
+ * Returns tradeId on success, null if blocked.
  */
 export async function executeTrade(
   portfolioId: number,
@@ -169,22 +173,9 @@ export async function executeTrade(
   action: 'BUY' | 'SELL',
   quantity: number,
   price: number,
-  reason: string
+  reason: string,
+  quote?: import('./marketData.js').StockQuote  // pass executable quote for risk engine
 ): Promise<number | null> {
-  // ── Pre-execution guards ───────────────────────────────────────────────────
-  const [tradingEnabled, underTradeLimit] = await Promise.all([
-    isTradingEnabled(),
-    isUnderDailyTradeLimit(portfolioId),
-  ]);
-  if (!tradingEnabled) {
-    console.warn(`[P${portfolioId}] Trade blocked: kill switch active`);
-    return null;
-  }
-  if (!underTradeLimit) {
-    console.warn(`[P${portfolioId}] Trade blocked: daily trade limit reached`);
-    return null;
-  }
-
   const portfolio = await queryOne('SELECT * FROM portfolios WHERE id = ?', [portfolioId]);
   if (!portfolio || !portfolio.is_active) return null;
 
@@ -192,68 +183,88 @@ export async function executeTrade(
   const brokerage = amount * 0.002;
   const netAmount = action === 'BUY' ? amount + brokerage : amount - brokerage;
 
-  // Compute portfolio NAV for concentration + turnover checks
+  // Compute NAV
   const holdingsForNAV = await query('SELECT * FROM holdings WHERE portfolio_id = ?', [portfolioId]);
   const portfolioNAV = holdingsForNAV.reduce(
     (s: number, h: any) => s + Number(h.quantity) * Number(h.current_price || h.avg_buy_price), 0
   ) + Number(portfolio.current_cash);
 
-  if (action === 'BUY') {
-    const [underCap, underTurnover] = await Promise.all([
-      isUnderPositionCap(portfolioId, symbol, portfolioNAV, amount),
-      isUnderDailyTurnoverLimit(portfolioId, portfolioNAV, amount),
-    ]);
-    if (!underCap) { console.warn(`[P${portfolioId}] BUY blocked: position cap for ${symbol}`); return null; }
-    if (!underTurnover) { console.warn(`[P${portfolioId}] BUY blocked: daily turnover limit`); return null; }
+  // ── Risk Engine gate ──────────────────────────────────────────────────
+  if (quote) {
+    const riskDecision = await evaluateRisk({
+      portfolioId, symbol, action,
+      quantity, price, portfolioNAV, quote,
+    });
+    const effectiveQty = riskDecision.maxAllowedQty ?? quantity;
+    if (!riskDecision.approved) {
+      logger.riskBlock(portfolioId, symbol, riskDecision.reason);
+      return null;
+    }
+    if (effectiveQty !== quantity) {
+      // Risk engine reduced the quantity to fit under position cap
+      return executeTrade(portfolioId, symbol, companyName, action, effectiveQty, price, `${reason} [qty-capped]`, quote);
+    }
   }
 
+  // Cash / holding pre-check (fast fail before touching DB)
   if (action === 'BUY' && portfolio.current_cash < netAmount) {
-    console.warn(`[P${portfolioId}] Insufficient cash for BUY ${symbol}`);
+    logger.warn({ job: 'trade-execution', portfolioId, symbol, phase: 'execution', reason: 'Insufficient cash' });
     return null;
   }
-
   if (action === 'SELL') {
-    const h = await queryOne('SELECT * FROM holdings WHERE portfolio_id = ? AND symbol = ?', [portfolioId, symbol]);
-    if (!h || h.quantity < quantity) return null;
+    const h = await queryOne('SELECT * FROM holdings WHERE portfolio_id=? AND symbol=?', [portfolioId, symbol]);
+    if (!h || Number(h.quantity) < quantity) {
+      logger.warn({ job: 'trade-execution', portfolioId, symbol, phase: 'execution', reason: 'Insufficient holding for SELL' });
+      return null;
+    }
   }
 
-  const holdingsBefore = await query('SELECT * FROM holdings WHERE portfolio_id = ?', [portfolioId]);
-  const valueBefore = holdingsBefore.reduce(
-    (s: number, h: any) => s + h.quantity * (h.current_price || h.avg_buy_price),
-    portfolio.current_cash
-  );
+  const valueBefore = portfolioNAV;
 
-  const tradeRes = await run(
-    'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-    [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore]
-  );
+  // ── Atomic execution batch ───────────────────────────────────────────────
+  // All statements execute in one LibSQL transaction — partial failures roll back entirely.
+  const statements: { sql: string; args: any[] }[] = [];
+
+  // Step 1: Insert trade record
+  statements.push({
+    sql: 'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    args: [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore],
+  });
 
   if (action === 'BUY') {
-    const existing = await queryOne('SELECT * FROM holdings WHERE portfolio_id = ? AND symbol = ?', [portfolioId, symbol]);
+    const existing = holdingsForNAV.find((h: any) => h.symbol === symbol);
     if (existing) {
-      const newQty = existing.quantity + quantity;
-      const newAvg = (existing.quantity * existing.avg_buy_price + amount) / newQty;
-      await run('UPDATE holdings SET quantity=?, avg_buy_price=?, current_price=?, updated_at=datetime("now") WHERE portfolio_id=? AND symbol=?', [newQty, newAvg, price, portfolioId, symbol]);
+      const newQty = Number(existing.quantity) + quantity;
+      const newAvg = (Number(existing.quantity) * Number(existing.avg_buy_price) + amount) / newQty;
+      statements.push({ sql: 'UPDATE holdings SET quantity=?, avg_buy_price=?, current_price=?, updated_at=datetime("now") WHERE portfolio_id=? AND symbol=?', args: [newQty, newAvg, price, portfolioId, symbol] });
     } else {
-      await run('INSERT INTO holdings (portfolio_id, symbol, company_name, quantity, avg_buy_price, current_price) VALUES (?,?,?,?,?,?)', [portfolioId, symbol, companyName, quantity, price, price]);
+      statements.push({ sql: 'INSERT INTO holdings (portfolio_id, symbol, company_name, quantity, avg_buy_price, current_price) VALUES (?,?,?,?,?,?)', args: [portfolioId, symbol, companyName, quantity, price, price] });
     }
-    await run('UPDATE portfolios SET current_cash=current_cash-?, updated_at=datetime("now") WHERE id=?', [netAmount, portfolioId]);
+    statements.push({ sql: 'UPDATE portfolios SET current_cash=current_cash-?, updated_at=datetime("now") WHERE id=?', args: [netAmount, portfolioId] });
   } else {
-    const h = await queryOne('SELECT * FROM holdings WHERE portfolio_id = ? AND symbol = ?', [portfolioId, symbol]);
-    // Compute realized PnL: (sell_price - avg_buy_price) × qty - brokerage
+    const h = holdingsForNAV.find((h: any) => h.symbol === symbol)!;
     const realizedPnlOnTrade = (price - Number(h.avg_buy_price)) * quantity - brokerage;
-    await run('UPDATE trades SET realized_pnl=? WHERE id=?', [realizedPnlOnTrade, tradeRes.lastInsertRowid]);
-    const newQty = h.quantity - quantity;
+    const newQty = Number(h.quantity) - quantity;
     if (newQty <= 0.001) {
-      await run('DELETE FROM holdings WHERE portfolio_id=? AND symbol=?', [portfolioId, symbol]);
+      statements.push({ sql: 'DELETE FROM holdings WHERE portfolio_id=? AND symbol=?', args: [portfolioId, symbol] });
     } else {
-      await run('UPDATE holdings SET quantity=?, updated_at=datetime("now") WHERE portfolio_id=? AND symbol=?', [newQty, portfolioId, symbol]);
+      statements.push({ sql: 'UPDATE holdings SET quantity=?, updated_at=datetime("now") WHERE portfolio_id=? AND symbol=?', args: [newQty, portfolioId, symbol] });
     }
-    await run('UPDATE portfolios SET current_cash=current_cash+?, updated_at=datetime("now") WHERE id=?', [netAmount, portfolioId]);
+    statements.push({ sql: 'UPDATE portfolios SET current_cash=current_cash+?, updated_at=datetime("now") WHERE id=?', args: [netAmount, portfolioId] });
+    // Realized PnL is stored in a subsequent update — use a placeholder INSERT then UPDATE
+    // (LibSQL batch index 0 = INSERT trades; we'll patch realized_pnl via separate non-batched call)
+    // Note: we update after batch since we need lastInsertRowid
+    const results = await batchWithResults(statements);
+    const tradeId = results[0].lastInsertRowid;
+    await run('UPDATE trades SET realized_pnl=? WHERE id=?', [realizedPnlOnTrade, tradeId]);
+    logger.trade(portfolioId, symbol, 'SELL', price, quote?.provider ?? 'unknown', true, reason, { qty: quantity, netAmount, realizedPnl: realizedPnlOnTrade });
+    return tradeId;
   }
 
-  console.log(`[P${portfolioId}] ${action} ${quantity}×${symbol} @₹${price} | ₹${netAmount.toFixed(0)} | ${reason}`);
-  return tradeRes.lastInsertRowid;
+  const results = await batchWithResults(statements);
+  const tradeId = results[0].lastInsertRowid;
+  logger.trade(portfolioId, symbol, 'BUY', price, quote?.provider ?? 'unknown', true, reason, { qty: quantity, netAmount });
+  return tradeId;
 }
 
 export async function getPortfolioSummary(portfolioId: number): Promise<PortfolioSummary> {

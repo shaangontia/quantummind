@@ -197,6 +197,54 @@ router.post('/portfolios/:id/trade', async (req: Request, res: Response) => {
 
 // ─── Cron trigger (called by Vercel Cron / external scheduler) ────────────────
 
+// ─── Health checks ───────────────────────────────────────────────────────────
+router.get('/health', (_req: Request, res: Response) => {
+  res.json({ status: 'OK', service: 'QuantumMind', ts: new Date().toISOString() });
+});
+
+router.get('/health/db', async (_req: Request, res: Response) => {
+  try {
+    await query('SELECT 1');
+    res.json({ status: 'OK', db: 'turso' });
+  } catch (err) {
+    res.status(503).json({ status: 'DOWN', db: 'turso', error: String(err) });
+  }
+});
+
+router.get('/health/market-data', async (_req: Request, res: Response) => {
+  const start = Date.now();
+  try {
+    const { getExecutableQuote } = await import('../services/marketData.js');
+    const q = await getExecutableQuote('RELIANCE.NS'); // liquid benchmark symbol
+    const latencyMs = Date.now() - start;
+    const status = q.isFresh ? 'OK' : 'DEGRADED';
+    res.json({ status, provider: q.provider, price: q.price, isFresh: q.isFresh, latencyMs });
+  } catch (err) {
+    res.status(503).json({ status: 'DOWN', latencyMs: Date.now() - start, error: String(err) });
+  }
+});
+
+router.get('/health/cron', async (_req: Request, res: Response) => {
+  try {
+    const row = await queryOne(`SELECT * FROM cron_lock WHERE key='market-cycle'`);
+    const lastRun = row ? row.locked_until : null;
+    res.json({ status: 'OK', lastCycleLockedUntil: lastRun });
+  } catch {
+    res.json({ status: 'OK', lastCycleLockedUntil: null });
+  }
+});
+
+// ─── Kill switch admin endpoint ───────────────────────────────────────────────
+router.post('/admin/trading-enabled', async (req: Request, res: Response) => {
+  const adminSecret = process.env.CRON_SECRET; // reuse cron secret for admin
+  const provided = req.headers.authorization?.replace('Bearer ', '');
+  if (adminSecret && provided !== adminSecret) return res.status(401).json({ error: 'Unauthorized' });
+  const { enabled } = req.body as { enabled: boolean };
+  await run('UPDATE trading_config SET value=?, updated_at=datetime("now") WHERE key=?', [String(enabled), 'global_trading_enabled']);
+  res.json({ success: true, global_trading_enabled: enabled });
+});
+
+// ─── Cron trigger (called by Vercel Cron / external scheduler) ────────────────
 router.post('/cron/market-cycle', async (req: Request, res: Response) => {
   // Auth: require CRON_SECRET env var to match Authorization header or ?secret= query param
   const cronSecret = process.env.CRON_SECRET;
