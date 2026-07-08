@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { query, queryOne, run } from '../db/turso.js';
 import { generateSignal, executeTrade, getPortfolioSummary } from '../services/tradingEngine.js';
-import { getMultipleQuotes, getDynamicCycleWatchlist, isNseMarketOpen } from '../services/marketData.js';
+import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen } from '../services/marketData.js';
 import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
 
@@ -68,7 +68,23 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
   // Dynamic open-market universe: full NSE equity list (fetched from NSE, cached 24h)
   // Rotating 50-stock sample per cycle. Falls back to static ~150 list if NSE blocks.
   const cycleSlot = Math.floor(Date.now() / (5 * 60 * 1000)); // bucket changes every 5 min
-  const cycleUniverse = await getDynamicCycleWatchlist(cycleSlot, 50);
+  const fullUniverse = await getDynamicCycleWatchlist(cycleSlot, 200); // get 200 to allow biasing
+
+  // Apply cap preference if portfolio has one set
+  // preferred_caps: JSON array e.g. ["small"] | ["mid","large"] | null (null = open market, no bias)
+  // When multiple caps selected, the first one drives the 50% bias; others are included in the "rest" pool
+  const portfolio = await queryOne('SELECT preferred_caps FROM portfolios WHERE id = ?', [portfolioId]);
+  let preferredCap: 'small' | 'mid' | 'large' | null = null;
+  if (portfolio?.preferred_caps) {
+    try {
+      const caps = JSON.parse(String(portfolio.preferred_caps)) as string[];
+      if (caps.length > 0) preferredCap = caps[0] as 'small' | 'mid' | 'large';
+    } catch { /* malformed JSON — treat as open market */ }
+  }
+  const cycleUniverse = preferredCap
+    ? getBiasedCycleWatchlist(fullUniverse, preferredCap, cycleSlot, 50, 0.5)
+    : fullUniverse.slice(0, 50);
+
   const candidates = cycleUniverse.filter(s => !held.has(s)).slice(0, 8); // up to 8 new position candidates
 
   for (const symbol of candidates) {

@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_WATCHLIST = exports.NSE_UNIVERSE = exports.MIN_TRADE_PRICE = void 0;
+exports.KNOWN_CAP_TIERS = exports.DEFAULT_WATCHLIST = exports.NSE_UNIVERSE = exports.MIN_TRADE_PRICE = void 0;
 exports.toNseSymbol = toNseSymbol;
 exports.isNseMarketOpen = isNseMarketOpen;
 exports.getDynamicCycleWatchlist = getDynamicCycleWatchlist;
@@ -12,6 +12,7 @@ exports.getQuote = getQuote;
 exports.getExecutableQuote = getExecutableQuote;
 exports.getMultipleQuotes = getMultipleQuotes;
 exports.getRsi = getRsi;
+exports.getBiasedCycleWatchlist = getBiasedCycleWatchlist;
 exports.getCycleWatchlist = getCycleWatchlist;
 const https_1 = __importDefault(require("https"));
 const cache_js_1 = require("../lib/cache.js");
@@ -438,6 +439,87 @@ exports.NSE_UNIVERSE = [
 ];
 /** Backward-compat alias — same as NSE_UNIVERSE */
 exports.DEFAULT_WATCHLIST = exports.NSE_UNIVERSE;
+/**
+ * Best-effort market cap tier classification for known NSE symbols.
+ * Used for cap-preference biasing in portfolio stock selection.
+ * NOT used as a hard allocation restriction (that feature was removed).
+ * Symbols not in this map are treated as 'unknown' and included in all tiers.
+ */
+exports.KNOWN_CAP_TIERS = {
+    // Large-cap (Nifty 50 + Next 50 components)
+    'RELIANCE.NS': 'large', 'TCS.NS': 'large', 'HDFCBANK.NS': 'large', 'INFY.NS': 'large',
+    'ICICIBANK.NS': 'large', 'HINDUNILVR.NS': 'large', 'SBIN.NS': 'large', 'BHARTIARTL.NS': 'large',
+    'KOTAKBANK.NS': 'large', 'WIPRO.NS': 'large', 'AXISBANK.NS': 'large', 'LT.NS': 'large',
+    'ASIANPAINT.NS': 'large', 'MARUTI.NS': 'large', 'TITAN.NS': 'large', 'BAJFINANCE.NS': 'large',
+    'SUNPHARMA.NS': 'large', 'HCLTECH.NS': 'large', 'TATAMOTORS.NS': 'large', 'ONGC.NS': 'large',
+    'NTPC.NS': 'large', 'POWERGRID.NS': 'large', 'JSWSTEEL.NS': 'large', 'GRASIM.NS': 'large',
+    'ULTRACEMCO.NS': 'large', 'BPCL.NS': 'large', 'DRREDDY.NS': 'large', 'HEROMOTOCO.NS': 'large',
+    'DIVISLAB.NS': 'large', 'NESTLEIND.NS': 'large', 'APOLLOHOSP.NS': 'large', 'CIPLA.NS': 'large',
+    'TATACONSUM.NS': 'large', 'EICHERMOT.NS': 'large', 'SHRIRAMFIN.NS': 'large',
+    'BAJAJFINSV.NS': 'large', 'ADANIENT.NS': 'large', 'COALINDIA.NS': 'large',
+    'HINDALCO.NS': 'large', 'BRITANNIA.NS': 'large', 'TATAPOWER.NS': 'large',
+    'SBILIFE.NS': 'large', 'HDFCLIFE.NS': 'large', 'TECHM.NS': 'large',
+    'ADANIPORTS.NS': 'large', 'TATASTEEL.NS': 'large', 'DMART.NS': 'large',
+    'ZOMATO.NS': 'large', 'HAL.NS': 'large', 'BEL.NS': 'large', 'NAUKRI.NS': 'large',
+    // Mid-cap
+    'POLYCAB.NS': 'mid', 'DIXONTECH.NS': 'mid', 'PERSISTENT.NS': 'mid', 'COFORGE.NS': 'mid',
+    'KPITTECH.NS': 'mid', 'CROMPTON.NS': 'mid', 'PIIND.NS': 'mid', 'ASTRAL.NS': 'mid',
+    'VOLTAS.NS': 'mid', 'MAXHEALTH.NS': 'mid', 'GODREJPROP.NS': 'mid', 'MPHASIS.NS': 'mid',
+    'RVNL.NS': 'mid', 'IRFC.NS': 'mid', 'PFC.NS': 'mid', 'RECLTD.NS': 'mid',
+    'CHOLAFIN.NS': 'mid', 'MUTHOOTFIN.NS': 'mid', 'TRENT.NS': 'mid', 'AMBUJACEM.NS': 'mid',
+    'ACC.NS': 'mid', 'BERGEPAINT.NS': 'mid', 'CONCOR.NS': 'mid', 'CUMMINSIND.NS': 'mid',
+    'MOTHERSON.NS': 'mid', 'BALKRISIND.NS': 'mid', 'AUROPHARMA.NS': 'mid', 'SYNGENE.NS': 'mid',
+    'LALPATHLAB.NS': 'mid', 'METROPOLIS.NS': 'mid', 'SUNTV.NS': 'mid', 'KAYNES.NS': 'mid',
+    'SYRMA.NS': 'mid', 'GRINDWELL.NS': 'mid', 'KAJARIACER.NS': 'mid', 'ELGIEQUIP.NS': 'mid',
+    'BHEL.NS': 'mid', 'BEML.NS': 'mid', 'MAZAGON.NS': 'mid', 'COCHINSHIP.NS': 'mid',
+    'IREDA.NS': 'mid', 'NHPC.NS': 'mid', 'SJVN.NS': 'mid', 'TORNTPOWER.NS': 'mid',
+    'PAGEIND.NS': 'mid', 'VEDL.NS': 'mid', 'INDUSTOWER.NS': 'mid',
+    // Small-cap
+    'LATENTVIEW.NS': 'small', 'CLEAN.NS': 'small', 'NAZARA.NS': 'small',
+    'BIKAJI.NS': 'small', 'ROUTE.NS': 'small', 'CAMPUS.NS': 'small',
+    'MEDPLUS.NS': 'small', 'KIMS.NS': 'small', 'RAINBOW.NS': 'small',
+    'TARSONS.NS': 'small', 'SUDARSCHEM.NS': 'small', 'TIINDIA.NS': 'small',
+    'JKPAPER.NS': 'small', 'HFCL.NS': 'small', 'FINEORG.NS': 'small',
+    'INTELLECT.NS': 'small', 'MASTEK.NS': 'small', 'ZENSAR.NS': 'small',
+    'RATEGAIN.NS': 'small', 'INOX.NS': 'small', 'INOXWIND.NS': 'small',
+    'TRIVENI.NS': 'small', 'KPRMILL.NS': 'small', 'WELSPUNIND.NS': 'small',
+    'CRAFTSMAN.NS': 'small', 'DYNAMATECH.NS': 'small', 'TEJASNET.NS': 'small',
+    'GLAND.NS': 'small', 'AEROFLEX.NS': 'small', 'PAYTM.NS': 'small',
+    'NYKAA.NS': 'small', 'DELHIVERY.NS': 'small', 'CARTRADE.NS': 'small',
+    'ABFRL.NS': 'small', 'IDFCFIRSTB.NS': 'small', 'BANDHANBNK.NS': 'small',
+};
+/**
+ * Returns a cap-biased candidate list for a portfolio with preferred_cap set.
+ * preferred: 'small' | 'mid' | 'large' — the preferred cap type
+ * biasRatio: fraction of slots allocated to preferred cap (default 0.5 = 50%)
+ * The remaining slots come from the full rotated universe (any cap).
+ */
+function getBiasedCycleWatchlist(universe, preferred, seed, sampleSize = 50, biasRatio = 0.5) {
+    const preferred_symbols = universe.filter(s => exports.KNOWN_CAP_TIERS[s] === preferred);
+    const other_symbols = universe.filter(s => exports.KNOWN_CAP_TIERS[s] !== preferred);
+    const preferredSlots = Math.round(sampleSize * biasRatio);
+    const otherSlots = sampleSize - preferredSlots;
+    // Seeded shuffle for preferred
+    let seed1 = seed;
+    const shuffledPref = [...preferred_symbols];
+    for (let i = shuffledPref.length - 1; i > 0; i--) {
+        seed1 = (seed1 * 1664525 + 1013904223) >>> 0;
+        const j = seed1 % (i + 1);
+        [shuffledPref[i], shuffledPref[j]] = [shuffledPref[j], shuffledPref[i]];
+    }
+    // Seeded shuffle for others
+    let seed2 = seed + 1;
+    const shuffledOther = [...other_symbols];
+    for (let i = shuffledOther.length - 1; i > 0; i--) {
+        seed2 = (seed2 * 1664525 + 1013904223) >>> 0;
+        const j = seed2 % (i + 1);
+        [shuffledOther[i], shuffledOther[j]] = [shuffledOther[j], shuffledOther[i]];
+    }
+    return [
+        ...shuffledPref.slice(0, preferredSlots),
+        ...shuffledOther.slice(0, otherSlots),
+    ];
+}
 /**
  * Returns a deterministic rotating sample of stocks to evaluate each cycle.
  * rotationSeed: use cycle timestamp floored to 5-min bucket for determinism.

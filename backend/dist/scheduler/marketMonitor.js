@@ -77,7 +77,23 @@ async function runPortfolioTradingCycle(portfolioId, riskTolerance) {
     // Dynamic open-market universe: full NSE equity list (fetched from NSE, cached 24h)
     // Rotating 50-stock sample per cycle. Falls back to static ~150 list if NSE blocks.
     const cycleSlot = Math.floor(Date.now() / (5 * 60 * 1000)); // bucket changes every 5 min
-    const cycleUniverse = await (0, marketData_js_1.getDynamicCycleWatchlist)(cycleSlot, 50);
+    const fullUniverse = await (0, marketData_js_1.getDynamicCycleWatchlist)(cycleSlot, 200); // get 200 to allow biasing
+    // Apply cap preference if portfolio has one set
+    // preferred_caps: JSON array e.g. ["small"] | ["mid","large"] | null (null = open market, no bias)
+    // When multiple caps selected, the first one drives the 50% bias; others are included in the "rest" pool
+    const portfolio = await (0, turso_js_1.queryOne)('SELECT preferred_caps FROM portfolios WHERE id = ?', [portfolioId]);
+    let preferredCap = null;
+    if (portfolio?.preferred_caps) {
+        try {
+            const caps = JSON.parse(String(portfolio.preferred_caps));
+            if (caps.length > 0)
+                preferredCap = caps[0];
+        }
+        catch { /* malformed JSON — treat as open market */ }
+    }
+    const cycleUniverse = preferredCap
+        ? (0, marketData_js_1.getBiasedCycleWatchlist)(fullUniverse, preferredCap, cycleSlot, 50, 0.5)
+        : fullUniverse.slice(0, 50);
     const candidates = cycleUniverse.filter(s => !held.has(s)).slice(0, 8); // up to 8 new position candidates
     for (const symbol of candidates) {
         const signal = await (0, tradingEngine_js_1.generateSignal)(symbol, riskTolerance);
