@@ -125,11 +125,17 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
 }
 
 async function snapshotAll(): Promise<void> {
-  const portfolios = await query('SELECT id FROM portfolios WHERE is_active = 1');
-  for (const { id } of portfolios) {
-    const s = await getPortfolioSummary(Number(id));
+  const portfolios = await query('SELECT id, peak_nav FROM portfolios WHERE is_active = 1');
+  for (const p of portfolios) {
+    const id = Number(p.id);
+    const s = await getPortfolioSummary(id);
     await run('INSERT INTO performance_snapshots (portfolio_id,total_portfolio_value,invested_value,cash_balance,unrealized_pnl,realized_pnl,total_pnl,return_pct,target_return_pct,holdings_count) VALUES (?,?,?,?,?,?,?,?,?,?)',
       [id, s.totalValue, s.investedValue, s.cashBalance, s.unrealizedPnl, s.realizedPnl, s.totalPnl, s.returnPct, s.targetReturnPct, s.holdings.length]);
+    // Update peak_nav whenever current value exceeds recorded peak (for true drawdown calculation)
+    const currentPeak = p.peak_nav != null ? Number(p.peak_nav) : 0;
+    if (s.totalValue > currentPeak) {
+      await run('UPDATE portfolios SET peak_nav=? WHERE id=?', [s.totalValue, id]);
+    }
     console.log(`[P${id}] Snapshot ₹${s.totalValue.toFixed(0)} | ${s.returnPct.toFixed(2)}%`);
   }
 }

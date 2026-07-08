@@ -1,4 +1,5 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import Groq from 'groq-sdk';
 import { query, queryOne, run } from '../db/turso.js';
 import { getQuote } from '../services/marketData.js';
 import { getPortfolioSummary, executeTrade } from '../services/tradingEngine.js';
@@ -8,6 +9,26 @@ import { computeCorrelationMatrix, computeMomentumScore, computeKellySize } from
 import { getAdaptiveLearningReport, detectMarketRegime, resolveSignalOutcomes } from '../services/adaptiveEngine.js';
 import { DEFAULT_WATCHLIST } from '../services/marketData.js';
 import { cache, TTL } from '../lib/cache.js';
+
+// ─── Singletons ──────────────────────────────────────────────────────────────
+const groqClient = new Groq({ apiKey: process.env.groq_key });
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+/** Parse an integer route/query param; returns null if invalid */
+function parseIntParam(val: string | undefined, fallback?: number): number | null {
+  if (val === undefined && fallback !== undefined) return fallback;
+  const n = parseInt(val ?? '', 10);
+  return isNaN(n) ? null : n;
+}
+
+/** Fail-closed admin auth middleware. Rejects if CRON_SECRET is unset. */
+function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) { res.status(503).json({ error: 'Auth not configured - set CRON_SECRET env var' }); return; }
+  const provided = req.headers.authorization?.replace('Bearer ', '') ?? (req.query.secret as string | undefined);
+  if (provided !== secret) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  next();
+}
 
 const router = Router();
 
@@ -88,8 +109,8 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
       [id],
     );
     const currentNAV    = latestSnap ? Number(latestSnap.total_portfolio_value) : Number(existing.initial_capital);
-    const initCapital   = Number(existing.initial_capital ?? 0);
-    const drawdownPct   = initCapital > 0 ? ((initCapital - currentNAV) / initCapital) * 100 : 0;
+    const peakNAV       = existing.peak_nav != null ? Number(existing.peak_nav) : Number(existing.initial_capital);
+    const drawdownPct   = peakNAV > 0 ? ((peakNAV - currentNAV) / peakNAV) * 100 : 0;
     const drawdownLimit = Number(existing.max_drawdown_pct ?? 20);
     const isVirgin      = tradeCount === 0 && holdingsCount === 0;
     const isMature      = tradeCount >= 20;
@@ -101,7 +122,7 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
                              targetReturnPct, rebalanceFrequency];
     const strategyChangeRequested = STRATEGY_FIELDS.some(f => f != null);
 
-    // ── Guard 2: DRAWDOWN_HALT — all strategy fields hard-locked ─────────────
+    // ── Guard 2: DRAWDOWN_HALT - all strategy fields hard-locked ─────────────
     if (!isVirgin && inDrawdown && strategyChangeRequested) {
       return res.status(423).json({
         success: false,
@@ -111,7 +132,7 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
       });
     }
 
-    // ── Guard 3: MATURE — risk tolerance hard-locked ──────────────────────────
+    // ── Guard 3: MATURE - risk tolerance hard-locked ──────────────────────────
     // AI has 20+ cycles of position thesis built on current risk profile.
     // Changing it would silently shift stop-loss on all live positions.
     if (isMature && riskTolerance != null) {
@@ -208,9 +229,10 @@ router.get('/portfolios/:id/edit-state', async (req: Request, res: Response) => 
       [id],
     );
     const currentNAV    = latestSnap ? Number(latestSnap.total_portfolio_value) : Number(portfolio.initial_capital);
-    const initCapital   = Number(portfolio.initial_capital ?? 0);
-    const drawdownPct   = initCapital > 0 ? ((initCapital - currentNAV) / initCapital) * 100 : 0;
+    const peakNAV       = portfolio.peak_nav != null ? Number(portfolio.peak_nav) : Number(portfolio.initial_capital);
+    const drawdownPct   = peakNAV > 0 ? ((peakNAV - currentNAV) / peakNAV) * 100 : 0;
     const drawdownLimit = Number(portfolio.max_drawdown_pct ?? 20);
+    const initCapital   = Number(portfolio.initial_capital ?? 0);
     const investedValue = initCapital - Number(portfolio.current_cash ?? 0);
 
     const isVirgin  = tradeCount === 0 && holdingsCount === 0;
@@ -306,9 +328,7 @@ router.get('/portfolios/:id/trades/:tradeId/explanation', async (req: Request, r
 
     const prompt = `You are TARS, the AI for QuantumMind virtual trading. Explain this trade decision in 2-3 clear sentences.\nTrade: ${trade.action} ${trade.quantity} shares of ${trade.symbol} at ₹${trade.price} on ${trade.trade_time}.\n${contextBlock}\n\nMention the key indicators that drove the decision (RSI, news, momentum). Keep it concise.`;
 
-    const Groq = (await import('groq-sdk')).default;
-    const groq = new Groq({ apiKey: process.env.groq_key });
-    const response = await groq.chat.completions.create({
+    const response = await groqClient.chat.completions.create({
       model: 'llama-3.1-8b-instant',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.4,
@@ -327,14 +347,17 @@ router.get('/portfolios/:id/trades/:tradeId/explanation', async (req: Request, r
 
 router.get('/portfolios/:id/performance', async (req: Request, res: Response) => {
   try {
-    const pid = parseInt(req.params.id);
-    const days = parseInt(req.query.days as string || '30');
-    const cacheKey = `perf_${pid}_${days}`;
+    const pid = parseIntParam(req.params.id);
+    if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+    const days = parseIntParam(req.query.days as string, 30) ?? 30;
+    const safeDays = Math.min(Math.max(days, 1), 365); // clamp 1–365
+    const cacheKey = `perf_${pid}_${safeDays}`;
     const data = await cache.getOrSet(cacheKey, async () => {
       // If no snapshots yet, return synthetic baseline from portfolio creation
       const snapshots = await query(
-        `SELECT * FROM performance_snapshots WHERE portfolio_id = ? AND snapshot_time >= datetime('now','-${days} days') ORDER BY snapshot_time ASC`,
-        [pid]
+        // Use parameterized interval via DATE arithmetic — no string interpolation
+        'SELECT * FROM performance_snapshots WHERE portfolio_id = ? AND snapshot_time >= datetime(\'now\', \'-\' || ? || \' days\') ORDER BY snapshot_time ASC',
+        [pid, safeDays]
       );
       if (snapshots.length === 0) {
         // Return a single baseline data point so chart isn't empty
@@ -359,10 +382,11 @@ router.get('/portfolios/:id/signals', async (req: Request, res: Response) => {
 });
 
 // ─── Sector Allocation ─────────────────────────────────────────────────────────
-router.get('/portfolios/:id/sectors', async (req: Request, res: Response) => {
+async function sectorAllocationHandler(req: Request, res: Response): Promise<void> {
   try {
     res.set('Cache-Control', 'public, max-age=60');
-    const pid = parseInt(req.params.id);
+    const pid = parseIntParam(req.params.id);
+    if (pid === null) { res.status(400).json({ success: false, error: 'Invalid portfolio id' }); return; }
     const { getSymbolSector } = await import('../services/marketData.js');
     const holdings = await query(
       'SELECT symbol, quantity, current_price, avg_buy_price FROM holdings WHERE portfolio_id = ?', [pid]
@@ -388,14 +412,9 @@ router.get('/portfolios/:id/sectors', async (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
-});
-
-// Also expose as /sector-allocation for backward compat
-router.get('/portfolios/:id/sector-allocation', async (req: Request, res: Response) => {
-  return req.app._router.handle(
-    { ...req, url: req.url.replace('sector-allocation', 'sectors') } as any, res, () => {}
-  );
-});
+}
+router.get('/portfolios/:id/sectors', sectorAllocationHandler);
+router.get('/portfolios/:id/sector-allocation', sectorAllocationHandler); // backward compat alias
 
 
 // ─── News ─────────────────────────────────────────────────────────────────────
@@ -414,7 +433,7 @@ router.get('/news/high-signal', async (_req: Request, res: Response) => {
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
 
-// GET /api/news/intelligence — Groq LLM analysis (expensive — CDN cached)
+// GET /api/news/intelligence - Groq LLM analysis (expensive - CDN cached)
 router.get('/news/intelligence', async (_req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'public, max-age=300, s-maxage=300');
@@ -496,7 +515,7 @@ router.get('/portfolios/:id/benchmark', async (req: Request, res: Response) => {
 
 // ─── ML Insights ──────────────────────────────────────────────────────────────
 
-// GET /api/ml/momentum/:symbol — ML momentum score (public, CDN cached)
+// GET /api/ml/momentum/:symbol - ML momentum score (public, CDN cached)
 router.get('/ml/momentum/:symbol', async (req: Request, res: Response) => {
   try {
     const sym = req.params.symbol;
@@ -505,13 +524,13 @@ router.get('/ml/momentum/:symbol', async (req: Request, res: Response) => {
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
 
-// GET /api/ml/kelly/:symbol — Kelly Criterion position size
+// GET /api/ml/kelly/:symbol - Kelly Criterion position size
 router.get('/ml/kelly/:symbol', async (req: Request, res: Response) => {
   try { res.json({ success: true, data: await computeKellySize(req.params.symbol) }); }
   catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
 
-// GET /api/ml/correlation/:id — correlation matrix for portfolio holdings
+// GET /api/ml/correlation/:id - correlation matrix for portfolio holdings
 router.get('/ml/correlation/:id', async (req: Request, res: Response) => {
   try {
     const holdings = await query('SELECT symbol FROM holdings WHERE portfolio_id = ?', [parseInt(req.params.id)]);
@@ -542,7 +561,7 @@ router.get('/adaptive/report', async (_req: Request, res: Response) => {
 
 router.get('/adaptive/regime', async (_req: Request, res: Response) => {
   try {
-    res.set('Cache-Control', 'public, max-age=3600, s-maxage=3600');  // 1 hour — regime doesn't change intra-day
+    res.set('Cache-Control', 'public, max-age=3600, s-maxage=3600');  // 1 hour - regime doesn't change intra-day
     res.json({ success: true, data: await cache.getOrSet('market_regime', detectMarketRegime, TTL.MARKET_REGIME) });
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
@@ -562,7 +581,7 @@ router.post('/portfolios/:id/trade', async (req: Request, res: Response) => {
   if (tradeId) {
     cache.invalidate(`portfolio_summary_${pid}`);
     res.json({ success: true, tradeId });
-  } else res.status(400).json({ success: false, error: 'Trade failed — check cash or holdings' });
+  } else res.status(400).json({ success: false, error: 'Trade failed - check cash or holdings' });
 });
 
 // ─── Cron trigger (called by Vercel Cron / external scheduler) ────────────────
@@ -570,13 +589,13 @@ router.post('/portfolios/:id/trade', async (req: Request, res: Response) => {
 // ─── TARS Chatbot ───────────────────────────────────────────────────────────
 
 /**
- * TARS live price context — no hardcoded map.
+ * TARS live price context - no hardcoded map.
  *
  * Strategy:
  * 1. Look for explicit .NS symbols in the message (e.g. TCS.NS, RELIANCE.NS)
- * 2. Look for uppercase words (2–15 chars) that could be NSE tickers — try each against Yahoo Finance
+ * 2. Look for uppercase words (2-15 chars) that could be NSE tickers - try each against Yahoo Finance
  * 3. Use the NSE_UNIVERSE from marketData as the known-ticker reference for quick validation
- * No separate company map needed — same data the trading engine uses.
+ * No separate company map needed - same data the trading engine uses.
  */
 async function tarsLiveContext(message: string): Promise<string> {
   const { getDisplayQuote, NSE_UNIVERSE } = await import('../services/marketData.js');
@@ -588,7 +607,7 @@ async function tarsLiveContext(message: string): Promise<string> {
   const explicitMatch = message.match(/\b([A-Za-z0-9&-]+)\.NS\b/i);
   const explicitSym = explicitMatch ? explicitMatch[1].toUpperCase() + '.NS' : null;
 
-  // 2. Uppercase potential tickers (2–15 chars, no spaces) that exist in our universe
+  // 2. Uppercase potential tickers (2-15 chars, no spaces) that exist in our universe
   const upperTokens = [...message.matchAll(/\b([A-Z][A-Z0-9&-]{1,14})\b/g)]
     .map(m => m[1])
     .filter(t => universeSet.has(t));
@@ -605,17 +624,17 @@ async function tarsLiveContext(message: string): Promise<string> {
       if (q.price > 0) {
         const ist = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
         const sign = q.change >= 0 ? '+' : '';
-        return `\n\n[LIVE MARKET DATA — as of ${ist} IST]\nStock: ${sym} (${q.shortName ?? ''})\nLTP: ₹${q.price.toFixed(2)}\nChange: ${sign}${q.change.toFixed(2)} (${sign}${q.changePct.toFixed(2)}%)\nProvider: ${q.provider} | Fresh: ${q.isFresh}`;
+        return `\n\n[LIVE MARKET DATA - as of ${ist} IST]\nStock: ${sym} (${q.shortName ?? ''})\nLTP: ₹${q.price.toFixed(2)}\nChange: ${sign}${q.change.toFixed(2)} (${sign}${q.changePct.toFixed(2)}%)\nProvider: ${q.provider} | Fresh: ${q.isFresh}`;
       }
     } catch { /* try next candidate */ }
   }
   return ''; // no stock found in message
 }
 
-const TARS_SYSTEM_PROMPT = `You are TARS, the AI assistant for QuantumMind — an AI-driven virtual Indian stock trading portal.
+const TARS_SYSTEM_PROMPT = `You are TARS, the AI assistant for QuantumMind - an AI-driven virtual Indian stock trading portal.
 You are named after the robot from the movie Interstellar. Honesty setting: 90%. Humor setting: 75%.
 
-CRITICAL RULE: You have access to LIVE market data via Yahoo Finance. When the user asks for a stock price, LTP, or current value, the system automatically fetches a real-time quote and injects it into this conversation as [LIVE MARKET DATA]. Use those exact figures in your answer. NEVER say you cannot access real-time data. NEVER mention a "knowledge cutoff" for prices — you have live data.
+CRITICAL RULE: You have access to LIVE market data via Yahoo Finance. When the user asks for a stock price, LTP, or current value, the system automatically fetches a real-time quote and injects it into this conversation as [LIVE MARKET DATA]. Use those exact figures in your answer. NEVER say you cannot access real-time data. NEVER mention a "knowledge cutoff" for prices - you have live data.
 
 About QuantumMind:
 - Fully autonomous AI-managed virtual trading system for NSE-listed Indian stocks
@@ -625,9 +644,9 @@ About QuantumMind:
 - ML stack: RSI(14), 52-week range, linear regression momentum, Kelly Criterion
 - Adaptive feedback loop: signal weights auto-adjust based on win/loss history
 - Market regime detection: BULL / BEAR / SIDEWAYS gates trade thresholds
-- Brokerage: 0.2% flat per trade (STT + NSE charges + stamp duty + GST ≈ 0.2–0.25%)
+- Brokerage: 0.2% flat per trade (STT + NSE charges + stamp duty + GST ≈ 0.2-0.25%)
 - Safety guards: kill switch, 10% NAV per symbol cap, daily trade limits, NSE holiday calendar
-- No real money — simulation only. All trades are virtual.
+- No real money - simulation only. All trades are virtual.
 - Database: Turso cloud SQLite (Mumbai ap-south-1 region)
 - Universe: ~1800+ NSE EQ-series stocks above ₹30
 
@@ -640,9 +659,6 @@ router.post('/tars/chat', async (req: Request, res: Response) => {
   }
   try {
     res.set('Cache-Control', 'no-store');
-    const Groq = (await import('groq-sdk')).default;
-    const groq = new Groq({ apiKey: process.env.groq_key });
-
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       { role: 'system', content: TARS_SYSTEM_PROMPT },
     ];
@@ -658,7 +674,7 @@ router.post('/tars/chat', async (req: Request, res: Response) => {
     const userContent = message.slice(0, 500) + liveCtx;
     messages.push({ role: 'user', content: userContent });
 
-    const response = await groq.chat.completions.create({
+    const response = await groqClient.chat.completions.create({
       model: 'llama-3.1-8b-instant',
       messages,
       temperature: 0.6,
@@ -710,28 +726,24 @@ router.get('/health/cron', async (_req: Request, res: Response) => {
 });
 
 // ─── Kill switch admin endpoint ───────────────────────────────────────────────────────────
-router.post('/admin/trading-enabled', async (req: Request, res: Response) => {
-  const adminSecret = process.env.CRON_SECRET;
-  const provided = req.headers.authorization?.replace('Bearer ', '');
-  if (adminSecret && provided !== adminSecret) return res.status(401).json({ error: 'Unauthorized' });
+router.post('/admin/trading-enabled', requireAdminAuth, async (req: Request, res: Response) => {
   const { enabled } = req.body as { enabled: boolean };
   await run('UPDATE trading_config SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key=?', [String(enabled), 'global_trading_enabled']);
   res.json({ success: true, global_trading_enabled: enabled });
 });
 
 // ─── Backtest bootstrap admin endpoint ────────────────────────────────────────────────────────
-router.post('/admin/backtest/run', async (req: Request, res: Response) => {
-  const adminSecret = process.env.CRON_SECRET;
-  const provided = req.headers.authorization?.replace('Bearer ', '');
-  if (adminSecret && provided !== adminSecret) return res.status(401).json({ error: 'Unauthorized' });
+router.post('/admin/backtest/run', requireAdminAuth, async (req: Request, res: Response) => {
   try {
     res.json({ success: true, message: 'Backtest bootstrap started asynchronously. Check logs for progress.' });
-    // Run async — don’t block the HTTP response (may take 10+ min for full universe)
     const { symbols } = req.body as { symbols?: string[] };
-    setImmediate(async () => {
-      const { bootstrapSignalWeights } = await import('../services/backtestWeights.js');
-      const result = await bootstrapSignalWeights(symbols);
-      console.log('[Admin] Backtest bootstrap complete:', JSON.stringify(result, null, 2));
+    // Run async — don't block HTTP response. Wrapped in try-catch so rejection is logged.
+    setImmediate(() => {
+      (async () => {
+        const { bootstrapSignalWeights } = await import('../services/backtestWeights.js');
+        const result = await bootstrapSignalWeights(symbols);
+        console.log('[Admin] Backtest bootstrap complete:', JSON.stringify(result, null, 2));
+      })().catch(e => console.error('[Admin] Backtest bootstrap FAILED:', String(e)));
     });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
@@ -739,10 +751,7 @@ router.post('/admin/backtest/run', async (req: Request, res: Response) => {
 });
 
 // ─── Backtest status / results ────────────────────────────────────────────────────────────────
-router.get('/admin/backtest/weights', async (req: Request, res: Response) => {
-  const adminSecret = process.env.CRON_SECRET;
-  const provided = req.headers.authorization?.replace('Bearer ', '');
-  if (adminSecret && provided !== adminSecret) return res.status(401).json({ error: 'Unauthorized' });
+router.get('/admin/backtest/weights', requireAdminAuth, async (req: Request, res: Response) => {
   try {
     const weights = await query('SELECT * FROM signal_weights ORDER BY source');
     const priceRows = await query('SELECT COUNT(*) as cnt FROM backtesting_prices').catch(() => [{ cnt: 0 }]);
@@ -753,17 +762,7 @@ router.get('/admin/backtest/weights', async (req: Request, res: Response) => {
 });
 
 // ─── Cron trigger ────────────────────────────────────────────────────────────────────────
-router.post('/cron/market-cycle', async (req: Request, res: Response) => {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const provided =
-      req.headers.authorization?.replace('Bearer ', '') ??
-      (req.query.secret as string | undefined);
-    if (provided !== cronSecret) {
-      console.warn('[Cron] Unauthorized cycle trigger attempt from', req.ip);
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
-  }
+router.post('/cron/market-cycle', requireAdminAuth, async (req: Request, res: Response) => {
   try {
     const { runMarketCycle } = await import('../scheduler/marketMonitor.js');
     await runMarketCycle();
@@ -774,12 +773,7 @@ router.post('/cron/market-cycle', async (req: Request, res: Response) => {
 });
 
 // ─── Lightweight price-only refresh ───────────────────────────────────────────────────────
-router.post('/cron/price-update', async (req: Request, res: Response) => {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const provided = req.headers.authorization?.replace('Bearer ', '') ?? (req.query.secret as string | undefined);
-    if (provided !== cronSecret) return res.status(401).json({ error: 'Unauthorized' });
-  }
+router.post('/cron/price-update', requireAdminAuth, async (req: Request, res: Response) => {
   try {
     const { getMultipleQuotes } = await import('../services/marketData.js');
     const holdings = await query('SELECT DISTINCT symbol FROM holdings h JOIN portfolios p ON p.id = h.portfolio_id WHERE p.is_active = 1');
