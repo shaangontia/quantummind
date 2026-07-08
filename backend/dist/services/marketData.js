@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_WATCHLIST = void 0;
+exports.SYMBOL_TIER = exports.DEFAULT_WATCHLIST = void 0;
 exports.toNseSymbol = toNseSymbol;
 exports.isNseMarketOpen = isNseMarketOpen;
 exports.getDisplayQuote = getDisplayQuote;
@@ -290,6 +290,7 @@ async function getRsi(symbol, period = 14) {
 }
 // NSE blue-chip watchlist — no penny stocks, all established companies
 exports.DEFAULT_WATCHLIST = [
+    // ─── Large-Cap (Nifty 50) — target 50–60% NAV ───────────────────────────────
     'RELIANCE.NS', // Reliance Industries — Conglomerate
     'TCS.NS', // TCS — IT
     'HDFCBANK.NS', // HDFC Bank — Banking
@@ -310,4 +311,43 @@ exports.DEFAULT_WATCHLIST = [
     'HCLTECH.NS', // HCL Tech — IT
     'TATAMOTORS.NS', // Tata Motors — Auto
     'ONGC.NS', // ONGC — Energy
+    // ─── Mid-Cap (>₹5,000 Cr market cap) — target 25–35% NAV ───────────────────
+    'POLYCAB.NS', // Polycab India — Cables & Wires
+    'DIXONTECH.NS', // Dixon Technologies — Electronics manufacturing (EMS)
+    'PERSISTENT.NS', // Persistent Systems — IT services
+    'COFORGE.NS', // Coforge — Digital IT
+    'KPITTECH.NS', // KPIT Technologies — Automotive software
+    'CROMPTON.NS', // Crompton Greaves Consumer — Consumer electricals
+    'PIIND.NS', // PI Industries — Agrochemicals
+    'ASTRAL.NS', // Astral — Pipes & adhesives
+    'VOLTAS.NS', // Voltas — Cooling & HVAC
+    'MAXHEALTH.NS', // Max Healthcare — Hospitals
+    'GODREJPROP.NS', // Godrej Properties — Real estate
+    'MPHASIS.NS', // Mphasis — IT services
+    // ─── Small-Cap (>₹1,000 Cr market cap) — target 5–15% NAV ──────────────────
+    'LATENTVIEW.NS', // Latent View Analytics — Data analytics
+    'CLEAN.NS', // Clean Science and Technology — Specialty chemicals
+    'NAZARA.NS', // Nazara Technologies — Gaming & esports
+    'BIKAJI.NS', // Bikaji Foods — FMCG/snacks
+    'ROUTE.NS', // Route Mobile — CPaaS/cloud communications
 ];
+/**
+ * Market cap tier for each watchlist symbol.
+ * Used by the Risk Engine to enforce allocation caps:
+ *   large: 50–60% NAV  |  mid: 25–35% NAV  |  small: 5–15% NAV
+ */
+exports.SYMBOL_TIER = {
+    // Large-cap
+    'RELIANCE.NS': 'large', 'TCS.NS': 'large', 'HDFCBANK.NS': 'large', 'INFY.NS': 'large',
+    'ICICIBANK.NS': 'large', 'HINDUNILVR.NS': 'large', 'SBIN.NS': 'large', 'BHARTIARTL.NS': 'large',
+    'KOTAKBANK.NS': 'large', 'WIPRO.NS': 'large', 'AXISBANK.NS': 'large', 'LT.NS': 'large',
+    'ASIANPAINT.NS': 'large', 'MARUTI.NS': 'large', 'TITAN.NS': 'large', 'BAJFINANCE.NS': 'large',
+    'SUNPHARMA.NS': 'large', 'HCLTECH.NS': 'large', 'TATAMOTORS.NS': 'large', 'ONGC.NS': 'large',
+    // Mid-cap
+    'POLYCAB.NS': 'mid', 'DIXONTECH.NS': 'mid', 'PERSISTENT.NS': 'mid', 'COFORGE.NS': 'mid',
+    'KPITTECH.NS': 'mid', 'CROMPTON.NS': 'mid', 'PIIND.NS': 'mid', 'ASTRAL.NS': 'mid',
+    'VOLTAS.NS': 'mid', 'MAXHEALTH.NS': 'mid', 'GODREJPROP.NS': 'mid', 'MPHASIS.NS': 'mid',
+    // Small-cap
+    'LATENTVIEW.NS': 'small', 'CLEAN.NS': 'small', 'NAZARA.NS': 'small',
+    'BIKAJI.NS': 'small', 'ROUTE.NS': 'small',
+};
