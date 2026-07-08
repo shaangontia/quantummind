@@ -73,7 +73,7 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
   // Apply cap preference if portfolio has one set
   // preferred_caps: JSON array e.g. ["small"] | ["mid","large"] | null (null = open market, no bias)
   // When multiple caps selected, the first one drives the 50% bias; others are included in the "rest" pool
-  const portfolio = await queryOne('SELECT preferred_caps FROM portfolios WHERE id = ?', [portfolioId]);
+  const portfolio = await queryOne('SELECT preferred_caps, volatility_preference, investment_goal FROM portfolios WHERE id = ?', [portfolioId]);
   let preferredCap: 'small' | 'mid' | 'large' | null = null;
   if (portfolio?.preferred_caps) {
     try {

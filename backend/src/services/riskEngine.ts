@@ -124,15 +124,19 @@ export async function evaluateRisk(ctx: RiskContext): Promise<RiskDecision> {
     }
   }
 
-  // 8. Portfolio drawdown check (BUY only — don't add exposure in drawdown)
+  // 8. Portfolio drawdown check (BUY only — respects portfolio-level max_drawdown_pct)
   checks.push('drawdown_check');
   if (ctx.action === 'BUY') {
-    const portfolio = await queryOne('SELECT initial_capital, current_cash FROM portfolios WHERE id=?', [ctx.portfolioId]);
+    const portfolio = await queryOne('SELECT initial_capital, max_drawdown_pct FROM portfolios WHERE id=?', [ctx.portfolioId]);
     if (portfolio) {
+      // Use portfolio-specific drawdown cap if set; fallback to global default
+      const drawdownLimit = portfolio.max_drawdown_pct != null
+        ? Number(portfolio.max_drawdown_pct) / 100
+        : MAX_DRAWDOWN_HALT_PCT;
       const drawdown = 1 - ctx.portfolioNAV / Number(portfolio.initial_capital);
-      if (drawdown > MAX_DRAWDOWN_HALT_PCT) {
-        logger.riskBlock(ctx.portfolioId, ctx.symbol, `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% exceeds ${MAX_DRAWDOWN_HALT_PCT * 100}% halt threshold`);
-        return { approved: false, reason: `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% — BUY halted`, checksRun: checks };
+      if (drawdown > drawdownLimit) {
+        logger.riskBlock(ctx.portfolioId, ctx.symbol, `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% exceeds ${(drawdownLimit * 100).toFixed(0)}% limit`);
+        return { approved: false, reason: `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% — BUY halted (limit: ${(drawdownLimit * 100).toFixed(0)}%)`, checksRun: checks };
       }
     }
   }

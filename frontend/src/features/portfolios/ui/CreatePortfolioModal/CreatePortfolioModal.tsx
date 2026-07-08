@@ -24,6 +24,9 @@ const DEFAULT_FORM: CreatePortfolioPayload = {
   rebalanceFrequency: 'Monthly',
   preferredSectors: [],
   preferredCaps: [],
+  volatilityPreference: 'medium',
+  investmentGoal: 'growth',
+  maxDrawdownPct: 20,
 };
 
 export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModalProps) => {
@@ -201,6 +204,60 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
                   {sector}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Advanced Risk Profiling */}
+          <div className="form-group">
+            <label style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Advanced Risk Settings</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>AI uses these to tune signal thresholds</span>
+            </label>
+            <div className="two-col-form">
+              <div>
+                <label className="sublabel">Volatility Preference</label>
+                <select
+                  className="form-input"
+                  value={form.volatilityPreference}
+                  onChange={e => setForm(f => ({ ...f, volatilityPreference: e.target.value as 'low' | 'medium' | 'high' }))}
+                >
+                  <option value="low">Low — Capital preservation</option>
+                  <option value="medium">Medium — Balanced</option>
+                  <option value="high">High — Aggressive growth</option>
+                </select>
+              </div>
+              <div>
+                <label className="sublabel">Investment Goal</label>
+                <select
+                  className="form-input"
+                  value={form.investmentGoal}
+                  onChange={e => setForm(f => ({ ...f, investmentGoal: e.target.value as 'growth' | 'income' | 'retirement' }))}
+                >
+                  <option value="growth">Growth — Maximize returns</option>
+                  <option value="income">Income — Dividend focus</option>
+                  <option value="retirement">Retirement — Long-term stable</option>
+                </select>
+              </div>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <label className="sublabel">Max Drawdown Tolerance (%)</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <input
+                  type="range"
+                  min={5}
+                  max={50}
+                  step={5}
+                  value={form.maxDrawdownPct}
+                  onChange={e => setForm(f => ({ ...f, maxDrawdownPct: Number(e.target.value) }))}
+                  style={{ flex: 1 }}
+                />
+                <span style={{ fontWeight: 600, color: (form.maxDrawdownPct ?? 20) > 30 ? '#ef4444' : 'var(--text-primary)', minWidth: 40 }}>
+                  {form.maxDrawdownPct ?? 20}%
+                </span>
+              </div>
+              <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                AI pauses trading if portfolio drops more than {form.maxDrawdownPct ?? 20}% from its peak
+              </p>
             </div>
           </div>
 

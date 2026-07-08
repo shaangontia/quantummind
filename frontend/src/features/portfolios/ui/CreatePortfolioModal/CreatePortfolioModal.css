@@ -132,3 +132,20 @@
   border-top: 1px solid var(--border);
   margin-top: 4px;
 }
+
+.two-col-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.sublabel {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+
+@media (max-width: 540px) {
+  .two-col-form { grid-template-columns: 1fr; }
+}

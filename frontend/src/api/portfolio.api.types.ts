@@ -30,6 +30,9 @@ export interface CreatePortfolioPayload {
   rebalanceFrequency: RebalanceFrequency;
   preferredSectors?: string[];
   preferredCaps?: string[];
+  volatilityPreference?: 'low' | 'medium' | 'high';
+  investmentGoal?: 'growth' | 'income' | 'retirement';
+  maxDrawdownPct?: number;
 }
 
 export interface Holding {
