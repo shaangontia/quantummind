@@ -16,7 +16,7 @@ async function updateAllPrices(): Promise<void> {
   try {
     const quotes = await getMultipleQuotes(holdings.map((h: any) => h.symbol as string));
     for (const q of quotes) {
-      await run('UPDATE holdings SET current_price=?, last_price_updated=datetime("now") WHERE symbol=?', [q.price, q.symbol]);
+      await run('UPDATE holdings SET current_price=?, last_price_updated=CURRENT_TIMESTAMP WHERE symbol=?', [q.price, q.symbol]);
     }
     console.log(`[Monitor] Updated ${quotes.length} prices`);
   } catch (err) {

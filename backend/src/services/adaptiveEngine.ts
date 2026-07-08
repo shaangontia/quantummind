@@ -83,7 +83,7 @@ export async function resolveSignalOutcomes(): Promise<void> {
     const outcome = isWin ? 'WIN' : Math.abs(pnlPct) < 1 ? 'NEUTRAL' : 'LOSS';
 
     await run(
-      'UPDATE signal_outcomes SET exit_price=?, exit_time=datetime("now"), pnl_pct=?, outcome=?, resolved=1 WHERE id=?',
+      'UPDATE signal_outcomes SET exit_price=?, exit_time=CURRENT_TIMESTAMP, pnl_pct=?, outcome=?, resolved=1 WHERE id=?',
       [currentQuote.price, pnlPct, outcome, s.id]
     );
 
@@ -94,7 +94,7 @@ export async function resolveSignalOutcomes(): Promise<void> {
           total_signals = total_signals + 1,
           winning_signals = winning_signals + ?,
           win_rate = CAST(winning_signals + ? AS REAL) / (total_signals + 1),
-          last_updated = datetime('now')
+          last_updated = CURRENT_TIMESTAMP
         WHERE source = ?`,
         [isWin ? 1 : 0, isWin ? 1 : 0, s.signal_source]
       );

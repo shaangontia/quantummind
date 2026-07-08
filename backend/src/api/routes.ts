@@ -42,13 +42,13 @@ router.get('/portfolios/:id/summary', async (req: Request, res: Response) => {
 router.patch('/portfolios/:id', async (req: Request, res: Response) => {
   const { name, riskTolerance, investmentHorizonMonths, targetReturnPct } = req.body;
   const id = parseInt(req.params.id);
-  await run('UPDATE portfolios SET name=COALESCE(?,name), risk_tolerance=COALESCE(?,risk_tolerance), investment_horizon_months=COALESCE(?,investment_horizon_months), target_return_pct=COALESCE(?,target_return_pct), updated_at=datetime("now") WHERE id=?',
+  await run('UPDATE portfolios SET name=COALESCE(?,name), risk_tolerance=COALESCE(?,risk_tolerance), investment_horizon_months=COALESCE(?,investment_horizon_months), target_return_pct=COALESCE(?,target_return_pct), updated_at=CURRENT_TIMESTAMP WHERE id=?',
     [name, riskTolerance, investmentHorizonMonths, targetReturnPct, id]);
   res.json({ success: true, data: await queryOne('SELECT * FROM portfolios WHERE id = ?', [id]) });
 });
 
 router.delete('/portfolios/:id', async (req: Request, res: Response) => {
-  await run('UPDATE portfolios SET is_active=0, updated_at=datetime("now") WHERE id=?', [parseInt(req.params.id)]);
+  await run('UPDATE portfolios SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?', [parseInt(req.params.id)]);
   res.json({ success: true });
 });
 
@@ -240,7 +240,7 @@ router.post('/admin/trading-enabled', async (req: Request, res: Response) => {
   const provided = req.headers.authorization?.replace('Bearer ', '');
   if (adminSecret && provided !== adminSecret) return res.status(401).json({ error: 'Unauthorized' });
   const { enabled } = req.body as { enabled: boolean };
-  await run('UPDATE trading_config SET value=?, updated_at=datetime("now") WHERE key=?', [String(enabled), 'global_trading_enabled']);
+  await run('UPDATE trading_config SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key=?', [String(enabled), 'global_trading_enabled']);
   res.json({ success: true, global_trading_enabled: enabled });
 });
 

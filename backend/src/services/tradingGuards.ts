@@ -216,7 +216,7 @@ export async function ensureTradingConfigTable(): Promise<void> {
     await run(`CREATE TABLE IF NOT EXISTS trading_config (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL,
-      updated_at DATETIME DEFAULT (datetime('now'))
+      updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP)
     )`);
     // Seed default if not present
     await run(`INSERT OR IGNORE INTO trading_config (key, value) VALUES ('global_trading_enabled', 'true')`);

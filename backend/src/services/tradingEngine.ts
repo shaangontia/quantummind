@@ -236,11 +236,11 @@ export async function executeTrade(
     if (existing) {
       const newQty = Number(existing.quantity) + quantity;
       const newAvg = (Number(existing.quantity) * Number(existing.avg_buy_price) + amount) / newQty;
-      statements.push({ sql: 'UPDATE holdings SET quantity=?, avg_buy_price=?, current_price=?, updated_at=datetime("now") WHERE portfolio_id=? AND symbol=?', args: [newQty, newAvg, price, portfolioId, symbol] });
+      statements.push({ sql: 'UPDATE holdings SET quantity=?, avg_buy_price=?, current_price=?, updated_at=CURRENT_TIMESTAMP WHERE portfolio_id=? AND symbol=?', args: [newQty, newAvg, price, portfolioId, symbol] });
     } else {
       statements.push({ sql: 'INSERT INTO holdings (portfolio_id, symbol, company_name, quantity, avg_buy_price, current_price) VALUES (?,?,?,?,?,?)', args: [portfolioId, symbol, companyName, quantity, price, price] });
     }
-    statements.push({ sql: 'UPDATE portfolios SET current_cash=current_cash-?, updated_at=datetime("now") WHERE id=?', args: [netAmount, portfolioId] });
+    statements.push({ sql: 'UPDATE portfolios SET current_cash=current_cash-?, updated_at=CURRENT_TIMESTAMP WHERE id=?', args: [netAmount, portfolioId] });
   } else {
     const h = holdingsForNAV.find((h: any) => h.symbol === symbol)!;
     const realizedPnlOnTrade = (price - Number(h.avg_buy_price)) * quantity - brokerage;
@@ -248,9 +248,9 @@ export async function executeTrade(
     if (newQty <= 0.001) {
       statements.push({ sql: 'DELETE FROM holdings WHERE portfolio_id=? AND symbol=?', args: [portfolioId, symbol] });
     } else {
-      statements.push({ sql: 'UPDATE holdings SET quantity=?, updated_at=datetime("now") WHERE portfolio_id=? AND symbol=?', args: [newQty, portfolioId, symbol] });
+      statements.push({ sql: 'UPDATE holdings SET quantity=?, updated_at=CURRENT_TIMESTAMP WHERE portfolio_id=? AND symbol=?', args: [newQty, portfolioId, symbol] });
     }
-    statements.push({ sql: 'UPDATE portfolios SET current_cash=current_cash+?, updated_at=datetime("now") WHERE id=?', args: [netAmount, portfolioId] });
+    statements.push({ sql: 'UPDATE portfolios SET current_cash=current_cash+?, updated_at=CURRENT_TIMESTAMP WHERE id=?', args: [netAmount, portfolioId] });
     // Realized PnL is stored in a subsequent update — use a placeholder INSERT then UPDATE
     // (LibSQL batch index 0 = INSERT trades; we'll patch realized_pnl via separate non-batched call)
     // Note: we update after batch since we need lastInsertRowid
