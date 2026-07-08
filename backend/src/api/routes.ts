@@ -151,6 +151,46 @@ router.get('/portfolios/:id/signals', async (req: Request, res: Response) => {
   )});
 });
 
+// ─── Sector Allocation ─────────────────────────────────────────────────────────
+router.get('/portfolios/:id/sectors', async (req: Request, res: Response) => {
+  try {
+    res.set('Cache-Control', 'public, max-age=60');
+    const pid = parseInt(req.params.id);
+    const { getSymbolSector } = await import('../services/marketData.js');
+    const holdings = await query(
+      'SELECT symbol, quantity, current_price, avg_buy_price FROM holdings WHERE portfolio_id = ?', [pid]
+    );
+    const sectorMap: Record<string, { value: number; symbols: string[] }> = {};
+    let totalValue = 0;
+    for (const h of holdings) {
+      const price = Number(h.current_price || h.avg_buy_price);
+      const value = Number(h.quantity) * price;
+      const sector = getSymbolSector(h.symbol as string);
+      if (!sectorMap[sector]) sectorMap[sector] = { value: 0, symbols: [] };
+      sectorMap[sector].value += value;
+      sectorMap[sector].symbols.push(h.symbol as string);
+      totalValue += value;
+    }
+    const allocation = Object.entries(sectorMap)
+      .map(([sector, { value, symbols }]) => ({
+        sector, value, symbols,
+        pct: totalValue > 0 ? Math.round((value / totalValue) * 1000) / 10 : 0,
+      }))
+      .sort((a, b) => b.value - a.value);
+    res.json({ success: true, data: allocation, totalHoldingsValue: totalValue });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+// Also expose as /sector-allocation for backward compat
+router.get('/portfolios/:id/sector-allocation', async (req: Request, res: Response) => {
+  return req.app._router.handle(
+    { ...req, url: req.url.replace('sector-allocation', 'sectors') } as any, res, () => {}
+  );
+});
+
+
 // ─── News ─────────────────────────────────────────────────────────────────────
 
 router.get('/news', async (_req: Request, res: Response) => {

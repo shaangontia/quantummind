@@ -164,6 +164,41 @@ router.get('/portfolios/:id/performance', async (req, res) => {
 router.get('/portfolios/:id/signals', async (req, res) => {
     res.json({ success: true, data: await (0, turso_js_1.query)('SELECT * FROM market_signals WHERE portfolio_id = ? ORDER BY signal_time DESC LIMIT 100', [parseInt(req.params.id)]) });
 });
+// ─── Sector Allocation ─────────────────────────────────────────────────────────
+router.get('/portfolios/:id/sectors', async (req, res) => {
+    try {
+        res.set('Cache-Control', 'public, max-age=60');
+        const pid = parseInt(req.params.id);
+        const { getSymbolSector } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
+        const holdings = await (0, turso_js_1.query)('SELECT symbol, quantity, current_price, avg_buy_price FROM holdings WHERE portfolio_id = ?', [pid]);
+        const sectorMap = {};
+        let totalValue = 0;
+        for (const h of holdings) {
+            const price = Number(h.current_price || h.avg_buy_price);
+            const value = Number(h.quantity) * price;
+            const sector = getSymbolSector(h.symbol);
+            if (!sectorMap[sector])
+                sectorMap[sector] = { value: 0, symbols: [] };
+            sectorMap[sector].value += value;
+            sectorMap[sector].symbols.push(h.symbol);
+            totalValue += value;
+        }
+        const allocation = Object.entries(sectorMap)
+            .map(([sector, { value, symbols }]) => ({
+            sector, value, symbols,
+            pct: totalValue > 0 ? Math.round((value / totalValue) * 1000) / 10 : 0,
+        }))
+            .sort((a, b) => b.value - a.value);
+        res.json({ success: true, data: allocation, totalHoldingsValue: totalValue });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: String(err) });
+    }
+});
+// Also expose as /sector-allocation for backward compat
+router.get('/portfolios/:id/sector-allocation', async (req, res) => {
+    return req.app._router.handle({ ...req, url: req.url.replace('sector-allocation', 'sectors') }, res, () => { });
+});
 // ─── News ─────────────────────────────────────────────────────────────────────
 router.get('/news', async (_req, res) => {
     try {
