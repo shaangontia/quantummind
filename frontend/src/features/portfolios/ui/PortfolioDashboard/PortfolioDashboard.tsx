@@ -22,7 +22,7 @@ export const PortfolioDashboard = () => {
   const portfolioId = Number(id);
   const navigate = useNavigate();
 
-  const { summary, isLoading, error } = usePortfolioSummary(portfolioId);
+  const { summary, isLoading, error, refresh, lastFetchedAt } = usePortfolioSummary(portfolioId);
   const [performance, setPerformance] = useState<PerformanceSnapshot[]>([]);
   const [perfLoading, setPerfLoading] = useState(true);
   const [showSecondary, setShowSecondary] = useState(false);
@@ -65,9 +65,11 @@ export const PortfolioDashboard = () => {
     );
   }
 
-  const { holdings, returnPct, unrealizedPnl, totalValue, investedValue, cashBalance, targetReturnPct, riskTolerance, investmentHorizonMonths } = summary;
+  const { holdings, returnPct, unrealizedPnl, totalPnl, totalValue, investedValue, cashBalance, targetReturnPct, riskTolerance, investmentHorizonMonths } = summary;
   const isPositive = returnPct >= 0;
   const targetGapPct = targetReturnPct - returnPct;
+  const unrealizedPnlPct = investedValue > 0 ? (unrealizedPnl / investedValue) * 100 : 0;
+  const totalPnlPct = investedValue > 0 ? (totalPnl / investedValue) * 100 : 0;
 
   const chartData = performance.map(s => ({
     date: new Date(s.snapshot_time).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
@@ -95,6 +97,14 @@ export const PortfolioDashboard = () => {
           </div>
         </div>
         <div className="dashboard-actions">
+          {lastFetchedAt && (
+            <span style={{ fontSize: '0.75rem', color: '#64748b', alignSelf: 'center' }}>
+              Prices as of {lastFetchedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          <button className="btn btn-ghost" onClick={() => void refresh()} title="Refresh prices">
+            ↻ Refresh
+          </button>
           <Link to={`/portfolios/${portfolioId}/signals`} className="btn btn-ghost">
             Signals
           </Link>
@@ -124,10 +134,17 @@ export const PortfolioDashboard = () => {
         />
         <StatCard
           label="Unrealized P&L"
-          value={formatINR(unrealizedPnl)}
-          sub={formatPct(returnPct)}
-          trend={isPositive ? 'up' : 'down'}
-          accent={isPositive ? 'var(--accent-green)' : 'var(--accent-red)'}
+          value={(unrealizedPnl >= 0 ? '+' : '') + formatINR(unrealizedPnl)}
+          sub={(unrealizedPnlPct >= 0 ? '+' : '') + formatPct(unrealizedPnlPct)}
+          trend={unrealizedPnl >= 0 ? 'up' : 'down'}
+          accent={unrealizedPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}
+        />
+        <StatCard
+          label="Total P&L"
+          value={(totalPnl >= 0 ? '+' : '') + formatINR(totalPnl)}
+          sub={(totalPnlPct >= 0 ? '+' : '') + formatPct(totalPnlPct) + ' overall'}
+          trend={totalPnl >= 0 ? 'up' : 'down'}
+          accent={totalPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}
         />
         <StatCard
           label="Target Return"

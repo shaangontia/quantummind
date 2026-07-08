@@ -47,7 +47,7 @@ exports.cache = exports.TTL = void 0;
 require("dotenv/config");
 // ─── TTL constants (seconds) ──────────────────────────────────────────────────
 exports.TTL = {
-    PORTFOLIO_SUMMARY: 60, // 1 min  — prices don't tick every second
+    PORTFOLIO_SUMMARY: 30, // 30s — reduced so live prices appear quickly after cron cycle
     TRADES: 30, // 30 sec
     PERFORMANCE: 300, // 5 min  — snapshots are hourly
     SIGNALS: 60, // 1 min
