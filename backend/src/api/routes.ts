@@ -362,6 +362,39 @@ router.post('/admin/trading-enabled', async (req: Request, res: Response) => {
   res.json({ success: true, global_trading_enabled: enabled });
 });
 
+// ─── Backtest bootstrap admin endpoint ────────────────────────────────────────────────────────
+router.post('/admin/backtest/run', async (req: Request, res: Response) => {
+  const adminSecret = process.env.CRON_SECRET;
+  const provided = req.headers.authorization?.replace('Bearer ', '');
+  if (adminSecret && provided !== adminSecret) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    res.json({ success: true, message: 'Backtest bootstrap started asynchronously. Check logs for progress.' });
+    // Run async — don’t block the HTTP response (may take 10+ min for full universe)
+    const { symbols } = req.body as { symbols?: string[] };
+    setImmediate(async () => {
+      const { bootstrapSignalWeights } = await import('../services/backtestWeights.js');
+      const result = await bootstrapSignalWeights(symbols);
+      console.log('[Admin] Backtest bootstrap complete:', JSON.stringify(result, null, 2));
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+// ─── Backtest status / results ────────────────────────────────────────────────────────────────
+router.get('/admin/backtest/weights', async (req: Request, res: Response) => {
+  const adminSecret = process.env.CRON_SECRET;
+  const provided = req.headers.authorization?.replace('Bearer ', '');
+  if (adminSecret && provided !== adminSecret) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const weights = await query('SELECT * FROM signal_weights ORDER BY source');
+    const priceRows = await query('SELECT COUNT(*) as cnt FROM backtesting_prices').catch(() => [{ cnt: 0 }]);
+    res.json({ success: true, weights, backtestingPricesRows: priceRows[0]?.cnt ?? 0 });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 // ─── Cron trigger ────────────────────────────────────────────────────────────────────────
 router.post('/cron/market-cycle', async (req: Request, res: Response) => {
   const cronSecret = process.env.CRON_SECRET;
