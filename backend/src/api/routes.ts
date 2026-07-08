@@ -66,7 +66,8 @@ router.post('/portfolios', async (req: Request, res: Response) => {
 
 router.get('/portfolios/:id/summary', async (req: Request, res: Response) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseIntParam(req.params.id);
+    if (id === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
     const data = await cache.getOrSet(`portfolio_summary_${id}`, () => getPortfolioSummary(id), TTL.PORTFOLIO_SUMMARY);
     res.set('Cache-Control', 'no-store');  // Portfolio NAV must never be served stale
     res.json({ success: true, data });
@@ -81,7 +82,8 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
       rebalanceFrequency, preferredSectors, preferredCaps,
       volatilityPreference, investmentGoal, maxDrawdownPct,
     } = req.body;
-    const id = parseInt(req.params.id);
+    const id = parseIntParam(req.params.id);
+    if (id === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
 
     const existing = await queryOne('SELECT * FROM portfolios WHERE id = ?', [id]);
     if (!existing) return res.status(404).json({ success: false, error: 'Portfolio not found' });
@@ -205,7 +207,9 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
 });
 
 router.delete('/portfolios/:id', async (req: Request, res: Response) => {
-  await run('UPDATE portfolios SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?', [parseInt(req.params.id)]);
+  const id = parseIntParam(req.params.id);
+  if (id === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+  await run('UPDATE portfolios SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?', [id]);
   res.json({ success: true });
 });
 
@@ -214,7 +218,8 @@ router.delete('/portfolios/:id', async (req: Request, res: Response) => {
 // Frontend queries this before opening the modal to render the correct UX.
 router.get('/portfolios/:id/edit-state', async (req: Request, res: Response) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseIntParam(req.params.id);
+    if (id === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
     const portfolio = await queryOne('SELECT * FROM portfolios WHERE id = ?', [id]);
     if (!portfolio) return res.status(404).json({ success: false, error: 'Portfolio not found' });
     if (!portfolio.is_active) return res.json({ success: true, data: { state: 'ARCHIVED', editability: { free: [], warn: [], locked: ['all'] } } });
@@ -297,10 +302,11 @@ router.get('/portfolios/:id/edit-state', async (req: Request, res: Response) => 
 // ─── Trades ───────────────────────────────────────────────────────────────────
 
 router.get('/portfolios/:id/trades', async (req: Request, res: Response) => {
-  const pid = parseInt(req.params.id);
-  const page = parseInt(req.query.page as string || '1');
-  const limit = parseInt(req.query.limit as string || '50');
-  const offset = (page - 1) * limit;
+  const pid = parseIntParam(req.params.id);
+  if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+  const page  = parseIntParam(req.query.page  as string, 1)  ?? 1;
+  const limit = parseIntParam(req.query.limit as string, 50) ?? 50;
+  const offset = (Math.max(page, 1) - 1) * Math.min(limit, 200);
   const totalRow = await queryOne('SELECT COUNT(*) as cnt FROM trades WHERE portfolio_id = ?', [pid]);
   const total = Number(totalRow?.cnt ?? 0);
   const trades = await query('SELECT * FROM trades WHERE portfolio_id = ? ORDER BY trade_time DESC LIMIT ? OFFSET ?', [pid, limit, offset]);
@@ -313,7 +319,7 @@ router.get('/portfolios/:id/trades/:tradeId/explanation', async (req: Request, r
     res.set('Cache-Control', 'public, max-age=300');
     const trade = await queryOne(
       'SELECT * FROM trades WHERE id = ? AND portfolio_id = ?',
-      [parseInt(req.params.tradeId), parseInt(req.params.id)]
+      [parseIntParam(req.params.tradeId), parseIntParam(req.params.id)]
     );
     if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
 
@@ -377,7 +383,7 @@ router.get('/portfolios/:id/performance', async (req: Request, res: Response) =>
 router.get('/portfolios/:id/signals', async (req: Request, res: Response) => {
   res.json({ success: true, data: await query(
     'SELECT * FROM market_signals WHERE portfolio_id = ? ORDER BY signal_time DESC LIMIT 100',
-    [parseInt(req.params.id)]
+    [parseIntParam(req.params.id)]
   )});
 });
 
@@ -445,7 +451,8 @@ router.get('/news/intelligence', async (_req: Request, res: Response) => {
 router.get('/portfolios/:id/benchmark', async (req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'public, max-age=300');
-    const pid = parseInt(req.params.id);
+    const pid = parseIntParam(req.params.id);
+    if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
     const portfolio = await queryOne('SELECT * FROM portfolios WHERE id = ?', [pid]);
     if (!portfolio) return res.status(404).json({ success: false, error: 'Portfolio not found' });
 
@@ -533,7 +540,9 @@ router.get('/ml/kelly/:symbol', async (req: Request, res: Response) => {
 // GET /api/ml/correlation/:id - correlation matrix for portfolio holdings
 router.get('/ml/correlation/:id', async (req: Request, res: Response) => {
   try {
-    const holdings = await query('SELECT symbol FROM holdings WHERE portfolio_id = ?', [parseInt(req.params.id)]);
+    const corrId = parseIntParam(req.params.id);
+    if (corrId === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+    const holdings = await query('SELECT symbol FROM holdings WHERE portfolio_id = ?', [corrId]);
     const symbols = holdings.map((h: any) => h.symbol as string);
     res.json({ success: true, data: await computeCorrelationMatrix(symbols) });
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
@@ -576,7 +585,8 @@ router.post('/adaptive/resolve-outcomes', async (_req: Request, res: Response) =
 router.post('/portfolios/:id/trade', async (req: Request, res: Response) => {
   const { symbol, companyName, action, quantity, price, reason } = req.body;
   if (!symbol || !action || !quantity || !price) return res.status(400).json({ success: false, error: 'symbol, action, quantity, price required' });
-  const pid = parseInt(req.params.id);
+  const pid = parseIntParam(req.params.id);
+  if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
   const tradeId = await executeTrade(pid, symbol, companyName||symbol, action, quantity, price, reason||'Manual trade');
   if (tradeId) {
     cache.invalidate(`portfolio_summary_${pid}`);
