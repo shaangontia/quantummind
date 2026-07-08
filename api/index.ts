@@ -6,7 +6,8 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 
-const FRONTEND_ORIGIN = process.env.FRONTEND_URL || 'https://quantummind-shaangontia.vercel.app';
+const FRONTEND_ORIGIN = process.env.FRONTEND_URL || '';
+if (!FRONTEND_ORIGIN) console.warn('[CORS] FRONTEND_URL env var is not set — CORS will block all cross-origin requests');
 
 const app = express();
 app.use(cors({

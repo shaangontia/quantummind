@@ -68,7 +68,7 @@ function requireAdminAuth(req: Request, res: Response, next: NextFunction): void
 }
 
 const router = Router();
-router.use(cookieParser());  // required to read HttpOnly qm_token cookie
+// cookieParser is mounted at app level in api/index.ts — do not re-mount here
 
 // ─── Auth routes ───────────────────────────────────────────────────────────────
 
@@ -86,7 +86,9 @@ router.post('/auth/register', async (req: Request, res: Response) => {
   const passwordHash = await bcrypt.hash(password, 12);
   const result = await run('INSERT INTO users (email, password_hash) VALUES (?, ?)', [email, passwordHash]);
   const userId = result.lastInsertRowid;
-  // Claim all unclaimed portfolios for the first user (backward-compat migration)
+  // Claim all unclaimed portfolios for this registrant (first-user-takes-all migration).
+  // Acceptable for single-user deployment. If multi-user is added, this must be replaced
+  // with an explicit invite/transfer flow — running this as-is in multi-user context is destructive.
   await run('UPDATE portfolios SET owner_id = ? WHERE owner_id IS NULL', [userId]);
   const token = signToken({ id: userId, email });
   res.cookie('qm_token', token, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
