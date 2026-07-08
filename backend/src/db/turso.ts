@@ -32,6 +32,13 @@ export async function runMigrations(): Promise<void> {
     await db.execute('ALTER TABLE trades ADD COLUMN trade_reason TEXT');
     console.log('[DB] Migration: trades.trade_reason column added');
   } catch (_) { /* already exists — ignore */ }
+  // index_prices table (created lazily by indexData.ts, but also ensure here)
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS index_prices (
+      index_symbol TEXT NOT NULL, date TEXT NOT NULL, close REAL NOT NULL,
+      PRIMARY KEY (index_symbol, date)
+    )`);
+  } catch (_) { /* ignore */ }
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

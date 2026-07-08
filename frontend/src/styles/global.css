@@ -113,6 +113,16 @@ textarea {
   background: rgba(239, 68, 68, 0.1);
 }
 
+.two-col-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 768px) {
+  .two-col-cards { grid-template-columns: 1fr; }
+}
+
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);

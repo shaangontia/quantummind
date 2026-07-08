@@ -15,6 +15,7 @@ import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
 import { NewsFeed } from '../../../news/ui/NewsFeed/NewsFeed.tsx';
 import { AdaptivePanel } from '../../../intelligence/ui/AdaptivePanel/AdaptivePanel.tsx';
 import { SectorAllocationChart } from '../SectorAllocationChart/SectorAllocationChart.tsx';
+import { BenchmarkChart } from '../BenchmarkChart/BenchmarkChart.tsx';
 import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
 import './PortfolioDashboard.css';
 
@@ -259,11 +260,17 @@ export const PortfolioDashboard = () => {
         )}
       </div>
 
-      {/* Sector Allocation Donut — deferred */}
+      {/* Benchmark + Sector side-by-side — deferred */}
       {showSecondary && (
-        <div className="card">
-          <h2 className="section-title">Sector Allocation</h2>
-          <SectorAllocationChart portfolioId={portfolioId} />
+        <div className="two-col-cards">
+          <div className="card">
+            <h2 className="section-title">vs Market Benchmark</h2>
+            <BenchmarkChart portfolioId={portfolioId} />
+          </div>
+          <div className="card">
+            <h2 className="section-title">Sector Allocation</h2>
+            <SectorAllocationChart portfolioId={portfolioId} />
+          </div>
         </div>
       )}
 
