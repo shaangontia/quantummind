@@ -13,7 +13,7 @@ const TradeExplanation = ({ tradeId, portfolioId }: { tradeId: number; portfolio
       const res = await fetch(`${API_BASE}/portfolios/${portfolioId}/trades/${tradeId}/explanation`);
       const json = await res.json();
       if (!json.success) throw new Error(json.error ?? 'Failed to load explanation');
-      return json.data;
+      return { explanation: json.explanation, context: json.context };
     },
     staleTime: 10 * 60_000, // explanations don't change
   });
