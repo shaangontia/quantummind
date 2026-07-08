@@ -1,228 +1,218 @@
-# QuantumMind 🧠
+# QuantumMind 🤖📈
 
-> AI-driven virtual Indian stock trading portal — autonomous, adaptive, and transparent.
+> AI-driven autonomous virtual Indian stock trading portal with self-improving adaptive ML engine.
 
-**QuantumMind** is a fully autonomous virtual trading system for NSE-listed equities. It uses real-time market data, LLM-powered news analysis, ML momentum signals, and an adaptive feedback loop to manage multi-portfolio positions — targeting 15%+ annualized returns.
-
-**All trading is simulated. No real money is involved.**
+[![Deployed on Vercel](https://img.shields.io/badge/Deployed-Vercel-black)](https://quantummind-shaangontia.vercel.app)
 
 ---
 
-## Live Demo
+## Overview
 
-```
-https://quantummind-shaangontia.vercel.app
-```
+QuantumMind manages virtual equity portfolios on NSE-listed Indian stocks. An autonomous agent runs every 5 minutes during market hours, generates buy/sell signals using a multi-source ML engine, applies a risk-gated execution pipeline, and adapts its signal weights based on historical outcomes.
 
----
-
-## Features
-
-- **Multi-portfolio management** — Create portfolios with configurable risk tolerance, investment horizon, and target return
-- **Autonomous trading agent** — Signal generation → Risk Engine → Execution, no human approval needed
-- **Real-time NSE prices** — Yahoo Finance (primary) with Groww unofficial endpoint fallback
-- **LLM news analysis** — Groq (llama-3.1-8b-instant) analyses NSE corporate announcements for sentiment and trade impact
-- **ML signal stack** — RSI(14), 52-week range, linear regression momentum, Kelly Criterion position sizing, correlation matrix
-- **Adaptive feedback loop** — Signal weights auto-adjust based on win/loss outcomes with confidence dampening
-- **Market regime detection** — BULL / BEAR / SIDEWAYS regime gates trade thresholds
-- **Comprehensive audit log** — Every BUY / SELL / HOLD with reason, price, and provider logged
-- **Safety guards** — Fail-closed on stale prices, kill switch, position caps, daily trade limits, NSE holiday calendar, atomic transactions, cron idempotency
-
----
-
-## External Services
-
-| Service | Purpose | Free Tier |
-|---------|---------|-----------|
-| **[Vercel](https://vercel.com)** | Hosting — frontend (static) + backend (serverless functions) | Yes — Hobby plan |
-| **[Turso](https://turso.tech)** | Cloud SQLite database (Mumbai `ap-south-1` region) | Yes — 500MB, 1B row reads/month |
-| **[Groq](https://groq.com)** | LLM inference — `llama-3.1-8b-instant` for news sentiment analysis | Yes — free API key |
-| **[Yahoo Finance](https://finance.yahoo.com)** | Live NSE stock quotes + historical OHLCV data | Unofficial (no API key needed) |
-| **[Groww](https://groww.in)** | NSE live price fallback when Yahoo Finance is unavailable | Unofficial web endpoint — no SLA |
-| **[cron-job.org](https://cron-job.org)** | External cron trigger — fires `/api/cron/market-cycle` every 5 min during market hours | Yes — free |
-| **[NSE India](https://nseindia.com)** | Corporate announcements RSS feed for news signal generation | Public RSS |
-
-> ⚠️ Yahoo Finance and Groww are used via public/unofficial endpoints. They have no SLA and are suitable for simulation only.
+**Key characteristics:**
+- 100% virtual / paper trading — no real money, no broker API
+- NSE-only (Yahoo Finance `.NS` symbols)
+- Deterministic, auditable, fail-closed execution
+- Self-improving signal weights via confidence-dampened adaptive engine
 
 ---
 
 ## Architecture
 
 ```
-Frontend (React 18 + Vite)          Backend (Node.js + Express + TypeScript)
-  ┌──────────────────┐                ┌──────────────────────────────────────────┐
-  │  Portfolio List  │  /api/*        │  Express Router (Vercel serverless)      │
-  │  Dashboard       │◄──────────────►│                                          │
-  │  Signals         │                │  ┌─────────────┐  ┌──────────────────┐  │
-  │  Audit Log       │                │  │ RiskEngine  │  │ AdaptiveEngine   │  │
-  │  Adaptive Panel  │                │  └─────────────┘  └──────────────────┘  │
-  └──────────────────┘                │  ┌─────────────┐  ┌──────────────────┐  │
-                                      │  │MarketData   │  │ TradingEngine    │  │
-  Data Flow (every 5 min):            │  │ Yahoo/Groww │  │ Signal Pipeline  │  │
-                                      │  └─────────────┘  └──────────────────┘  │
-  cron-job.org                        │           │                              │
-      │ POST /api/cron/market-cycle   │           ▼                              │
-      ▼                               │  ┌───────────────────────────────────┐   │
-  [Price Update]                      │  │  Turso (LibSQL cloud SQLite)      │   │
-  [Signal Generation]                 │  │  portfolios / holdings / trades   │   │
-  [Risk Check]                        │  │  market_signals / signal_outcomes │   │
-  [Trade Execution]                   │  │  performance_snapshots / cron_lock│   │
-  [Adaptive Learning]                 │  └───────────────────────────────────┘   │
-  [Performance Snapshot]              └──────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  cron-job.org  →  POST /api/cron/market-cycle  (every 5 min, IST)  │
+└──────────────────────────────────┬──────────────────────────────────┘
+                                   │
+              ┌────────────────────▼────────────────────┐
+              │         Market Monitor (scheduler)       │
+              │   NSE holiday check · DB cron lock       │
+              └────────────────────┬────────────────────┘
+                                   │
+         ┌─────────────────────────▼─────────────────────────┐
+         │              Signal Engine (mlEngine.ts)           │
+         │  Technical Analysis · News Sentiment (Groq LLM)   │
+         │  ML Pattern Recognition · Adaptive Weight Engine   │
+         └─────────────────────────┬─────────────────────────┘
+                                   │
+         ┌─────────────────────────▼─────────────────────────┐
+         │              Risk Engine (riskEngine.ts)           │
+         │  8-gate check: kill switch · market hours ·        │
+         │  price freshness · provider confidence ·           │
+         │  daily limits · position cap · drawdown halt        │
+         └─────────────────────────┬─────────────────────────┘
+                                   │
+         ┌─────────────────────────▼─────────────────────────┐
+         │           Execution Simulator (tradingEngine.ts)   │
+         │      Atomic LibSQL batch · batchWithResults()      │
+         └────────────────────────────────────────────────────┘
+```
+
+---
+
+## External Services
+
+| Service | Role | Tier |
+|---------|------|------|
+| **[Turso](https://turso.tech)** | Primary database (LibSQL/SQLite, Mumbai region) | Free |
+| **[Groq](https://console.groq.com)** | LLM inference for news sentiment analysis (`llama-3.1-8b-instant`) | Free |
+| **[Yahoo Finance](https://finance.yahoo.com)** | Primary market data source (`query2` → `query1` fallback) | Public API |
+| **[Groww](https://groww.in)** ⚠️ | Unofficial fallback for NSE price data — **no SLA, web endpoint, schema may change** | Unofficial |
+| **[Vercel](https://vercel.com)** | Hosting, serverless functions, CI/CD from GitHub | Free Hobby |
+| **[cron-job.org](https://cron-job.org)** | External cron scheduler — triggers market cycle every 5 min on market days | Free |
+| **[GitHub](https://github.com/shaangontia/quantummind)** | Source control, triggers Vercel auto-deploys on push | Free |
+
+> ⚠️ The Groww endpoint is an unofficial web scraping fallback. It has no published API, no SLA, and its schema may change without notice. It is used as a last resort when both Yahoo Finance CDNs fail. Large BUY orders (>₹1L) are blocked when Groww is the sole price source.
+
+---
+
+## Market Data Flow
+
+```
+getExecutableQuote() [trade execution — always fresh]
+  → Yahoo Finance query2 (primary CDN)
+  → Yahoo Finance query1 (secondary CDN, parallel)
+  → Cross-validate: if price diff > 2% → THROW (no trade)
+  → Groww fallback if both Yahoo CDNs fail
+
+getDisplayQuote() [UI only — may use cache]
+  → Same fallback chain, allows 30-min stale cache
 ```
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 18, TypeScript, Vite, React Router v6, Recharts |
-| Backend | Node.js, Express, TypeScript |
-| Database | Turso (cloud SQLite via `@libsql/client`) |
-| LLM | Groq API (`llama-3.1-8b-instant`) |
-| Deployment | Vercel (serverless functions) |
-| Cron | cron-job.org (external trigger) |
+### Backend
+- **Runtime**: Node.js 18 + TypeScript
+- **Framework**: Express.js
+- **Database**: Turso (LibSQL) via `@libsql/client`
+- **LLM**: Groq SDK (`groq-sdk`)
+- **Deployment**: Vercel Serverless Functions (`api/index.ts`)
+
+### Frontend
+- **Framework**: Next.js 14 (App Router)
+- **UI**: Tailwind CSS
+- **Charts**: Recharts
 
 ---
 
-## Local Development
-
-```bash
-# Clone and install
-git clone https://github.com/shaangontia/quantummind.git
-cd quantummind
-npm install
-cd backend && npm install
-cd ../frontend && npm install
-
-# Environment variables
-cp .env.example .env
-# Edit .env with your Turso + Groq credentials
-
-# Start (backend :3001, frontend :3000)
-cd ..
-npm start
-```
-
-### Environment Variables
+## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `turso_region` | Turso database URL (`libsql://...`) |
 | `turso_sb_key` | Turso auth token (JWT) |
-| `groq_key` | Groq API key (`gsk_...`) |
-| `CRON_SECRET` | Shared secret for cron endpoint auth |
+| `groq_key` | Groq API key |
+| `CRON_SECRET` | Bearer token for cron endpoint auth |
+| `TRADING_ENABLED` | Optional kill switch (`false` disables all trades) |
 
 ---
 
 ## API Endpoints
 
+### Health
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/health` | Service liveness |
+| `GET` | `/api/health/db` | Database connectivity |
+| `GET` | `/api/health/market-data` | Yahoo Finance reachability + price freshness |
+| `GET` | `/api/health/cron` | Last cron cycle timestamp |
+
+### Portfolios
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/portfolios` | List all portfolios with live NAV + return |
 | `POST` | `/api/portfolios` | Create portfolio |
-| `GET` | `/api/portfolios/:id/summary` | Portfolio NAV, holdings, P&L |
-| `GET` | `/api/portfolios/:id/performance?days=` | Historical snapshots for chart |
-| `GET` | `/api/portfolios/:id/signals` | Recent trading signals |
-| `GET` | `/api/portfolios/:id/trades` | Paginated audit log |
-| `GET` | `/api/market/quote/:symbol` | Live NSE quote |
-| `GET` | `/api/news` | NSE corporate announcements |
-| `GET` | `/api/news/intelligence` | Groq-analysed news with scoring |
-| `GET` | `/api/ml/momentum/:symbol` | ML momentum score |
-| `GET` | `/api/ml/kelly/:symbol` | Kelly Criterion position size |
-| `GET` | `/api/adaptive/report` | Signal weights + win rates |
-| `GET` | `/api/adaptive/regime` | Current market regime |
-| `GET` | `/api/health` | System health |
-| `GET` | `/api/health/db` | Database health |
-| `GET` | `/api/health/market-data` | Market data provider health |
-| `POST` | `/api/cron/market-cycle` | Trigger full trading cycle (auth required) |
-| `POST` | `/api/cron/price-update` | Lightweight price refresh only (auth required) |
-| `POST` | `/api/admin/trading-enabled` | Kill switch (auth required) |
+| `GET` | `/api/portfolios/:id/summary` | Holdings, cash, live prices, PnL |
+| `GET` | `/api/portfolios/:id/trades` | Trade history |
+| `GET` | `/api/portfolios/:id/performance` | Performance snapshots |
+| `GET` | `/api/portfolios/:id/signals` | Signal history |
+
+### Cron (requires `Authorization: Bearer <CRON_SECRET>`)
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/cron/market-cycle` | Full AI trading cycle (signals + risk + execution) |
+| `POST` | `/api/cron/price-update` | Lightweight price-only refresh (no signal generation) |
+
+### Admin (requires auth)
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/admin/trading-enabled` | Toggle kill switch `{"enabled": true/false}` |
+
+---
+
+## Database Schema
+
+```
+portfolios          — portfolio config, cash balance
+holdings            — current positions (qty, avg_buy_price, current_price)
+trades              — immutable trade ledger
+market_signals      — generated signals with source weights
+signal_outcomes     — resolved win/loss for adaptive learning
+signal_weights      — per-signal-type weight (auto-adjusted)
+market_regime       — detected market regime (bull/bear/sideways)
+performance_snapshots — daily NAV snapshots
+trading_config      — kill switch persistent override
+cron_lock           — idempotency lock (survives cold starts)
+```
+
+---
+
+## Safety & Risk Controls
+
+1. **Kill switch** — env var `TRADING_ENABLED=false` OR DB row in `trading_config`
+2. **NSE holiday calendar** — 2025–2026 holidays hardcoded; no trades on holidays
+3. **Market hours gate** — trades only 9:15–15:30 IST, Mon–Fri
+4. **Price freshness** — `getExecutableQuote()` always fetches fresh; rejects if >30 min stale
+5. **Provider cross-validation** — two Yahoo CDNs queried in parallel; >2% diff = abort
+6. **Daily trade limit** — max 10 trades per portfolio per day
+7. **Daily turnover limit** — max 25% NAV per day
+8. **Position cap** — max 10% NAV per symbol
+9. **Portfolio drawdown halt** — trading suspended if portfolio drops >20% from peak
+10. **Atomic execution** — all-or-nothing LibSQL batch; `CURRENT_TIMESTAMP` (not `datetime("now")`)
 
 ---
 
 ## Cron Setup (cron-job.org)
 
-Two jobs required:
+| Job | URL | Method | Schedule |
+|-----|-----|--------|----------|
+| Market cycle | `https://quantummind-shaangontia.vercel.app/api/cron/market-cycle` | POST | `*/5 3-10 * * 1-5` UTC |
+| Price refresh | `https://quantummind-shaangontia.vercel.app/api/cron/price-update` | POST | `*/5 3-10 * * 1-5` UTC |
 
-**Job 1 — Market Cycle (every 5 min, trading hours):**
-```
-URL:    https://quantummind-shaangontia.vercel.app/api/cron/market-cycle
-Method: POST
-Header: Authorization: Bearer <CRON_SECRET>
-Cron:   */5 3-10 * * 1-5   (= 09:15–15:30 IST, Mon–Fri)
-```
-
-**Job 2 — Price Update (every 5 min, all hours):**
-```
-URL:    https://quantummind-shaangontia.vercel.app/api/cron/price-update
-Method: POST
-Header: Authorization: Bearer <CRON_SECRET>
-Cron:   */5 * * * 1-5
-```
+Header for both: `Authorization: Bearer <CRON_SECRET>`
 
 ---
 
-## Kill Switch
-
-To halt all autonomous trading immediately:
+## Development
 
 ```bash
-curl -X POST https://quantummind-shaangontia.vercel.app/api/admin/trading-enabled \
-  -H "Authorization: Bearer <CRON_SECRET>" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": false}'
+# Install dependencies
+cd backend && npm install
+
+# Build
+npm run build
+
+# Run locally
+npm run dev   # starts Express on :3001
+
+# Frontend
+cd .. && npm install && npm run dev  # Next.js on :3000
 ```
 
 ---
 
-## Known Limitations
+## Key Design Decisions
 
-- Yahoo Finance and Groww endpoints are unofficial — may break without notice
-- Groq LLM is used for news analysis only, not fine-tuned on Indian markets
-- NSE real-time data feed is a licensed product; unofficial access is for simulation only
-- Backtest engine not yet implemented — adaptive weights bootstrap from 1.0
-- No circuit-breaker on provider failure count yet
-
----
-
-## Project Structure
-
-```
-quantummind/
-  backend/
-    src/
-      api/routes.ts          # Express routes
-      db/turso.ts            # Turso client + migrations
-      lib/cache.ts           # In-memory TTL cache (Vercel KV ready)
-      lib/logger.ts          # Structured JSON logging
-      scheduler/
-        marketMonitor.ts     # Cron orchestrator, price update, snapshot
-      services/
-        marketData.ts        # Yahoo + Groww price providers
-        tradingEngine.ts     # Signal pipeline + portfolio summary
-        riskEngine.ts        # Pre-execution risk gate (8 checks)
-        adaptiveEngine.ts    # Signal weight learning
-        mlEngine.ts          # Linear regression, Kelly, correlation
-        newsService.ts       # NSE RSS + sentiment scoring
-        groqService.ts       # Groq LLM integration
-        tradingGuards.ts     # Kill switch, NSE holidays, cron lock
-  frontend/
-    src/
-      api/                   # Typed API clients
-      features/
-        portfolios/          # Portfolio list, dashboard, audit log, signals
-        intelligence/        # Adaptive AI panel
-        news/                # NSE news feed
-      shared/ui/             # SkeletonBlock, StatCard, Badge, Spinner
-  vercel.json                # Build + routing + function config
-  TECHNICAL_DECISIONS.md     # Full architecture + data flow writeup
-  DEPLOY.md                  # Step-by-step deployment guide
-```
+See [`TECHNICAL_DECISIONS.md`](./TECHNICAL_DECISIONS.md) for full architectural rationale including:
+- Why Turso over Vercel Postgres
+- Why Groq over OpenAI
+- Groww fallback documentation and risks
+- LibSQL batch `CURRENT_TIMESTAMP` constraint
+- Confidence dampening formula for adaptive weights
 
 ---
 
-## Licence
-
-MIT — simulation use only. Not financial advice.
+*QuantumMind is a paper trading simulator. All trades are virtual. No real capital is at risk.*
