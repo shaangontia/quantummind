@@ -248,66 +248,45 @@ router.post('/portfolios/:id/trade', async (req, res) => {
 });
 // ─── Cron trigger (called by Vercel Cron / external scheduler) ────────────────
 // ─── TARS Chatbot ───────────────────────────────────────────────────────────
-/** Company name / ticker → NSE .NS symbol for TARS live price lookups */
-const TARS_COMPANY_MAP = {
-    'tcs': 'TCS.NS', 'tata consultancy': 'TCS.NS',
-    'reliance': 'RELIANCE.NS', 'ril': 'RELIANCE.NS',
-    'infosys': 'INFY.NS', 'infy': 'INFY.NS',
-    'hdfc bank': 'HDFCBANK.NS', 'hdfcbank': 'HDFCBANK.NS',
-    'icici bank': 'ICICIBANK.NS', 'icici': 'ICICIBANK.NS',
-    'sbi': 'SBIN.NS', 'state bank': 'SBIN.NS',
-    'wipro': 'WIPRO.NS', 'hcl': 'HCLTECH.NS', 'hcltech': 'HCLTECH.NS',
-    'bajaj finance': 'BAJFINANCE.NS', 'bajfinance': 'BAJFINANCE.NS',
-    'kotak': 'KOTAKBANK.NS', 'kotak bank': 'KOTAKBANK.NS',
-    'axis bank': 'AXISBANK.NS', 'axis': 'AXISBANK.NS',
-    'larsen': 'LT.NS', 'l&t': 'LT.NS',
-    'titan': 'TITAN.NS', 'asian paints': 'ASIANPAINT.NS',
-    'maruti': 'MARUTI.NS', 'maruti suzuki': 'MARUTI.NS',
-    'sun pharma': 'SUNPHARMA.NS', 'sunpharma': 'SUNPHARMA.NS',
-    'tata motors': 'TATAMOTORS.NS', 'tatamotors': 'TATAMOTORS.NS',
-    'ongc': 'ONGC.NS', 'ntpc': 'NTPC.NS', 'powergrid': 'POWERGRID.NS', 'power grid': 'POWERGRID.NS',
-    'jsw steel': 'JSWSTEEL.NS', 'ultratech': 'ULTRACEMCO.NS',
-    'dr reddy': 'DRREDDY.NS', 'drreddy': 'DRREDDY.NS',
-    'nestle': 'NESTLEIND.NS', 'apollo hospital': 'APOLLOHOSP.NS',
-    'cipla': 'CIPLA.NS', 'airtel': 'BHARTIARTL.NS', 'bharti airtel': 'BHARTIARTL.NS',
-    'hindustan unilever': 'HINDUNILVR.NS', 'hul': 'HINDUNILVR.NS',
-    'britannia': 'BRITANNIA.NS', 'polycab': 'POLYCAB.NS',
-    'dixon': 'DIXONTECH.NS', 'persistent': 'PERSISTENT.NS', 'coforge': 'COFORGE.NS',
-    'kpit': 'KPITTECH.NS', 'hal': 'HAL.NS', 'hindustan aeronautics': 'HAL.NS',
-    'bel': 'BEL.NS', 'bharat electronics': 'BEL.NS',
-    'zomato': 'ZOMATO.NS', 'naukri': 'NAUKRI.NS',
-    'tata steel': 'TATASTEEL.NS', 'adani': 'ADANIENT.NS', 'coal india': 'COALINDIA.NS',
-    'hindalco': 'HINDALCO.NS', 'irfc': 'IRFC.NS', 'rvnl': 'RVNL.NS',
-};
-function tarsResolveSymbol(message) {
-    const msg = message.toLowerCase();
-    const nsMatch = msg.match(/\b([a-z0-9&-]+)\.ns\b/);
-    if (nsMatch)
-        return nsMatch[1].toUpperCase() + '.NS';
-    let best = null;
-    let bestLen = 0;
-    for (const [key, sym] of Object.entries(TARS_COMPANY_MAP)) {
-        if (msg.includes(key) && key.length > bestLen) {
-            best = sym;
-            bestLen = key.length;
-        }
-    }
-    return best;
-}
+/**
+ * TARS live price context — no hardcoded map.
+ *
+ * Strategy:
+ * 1. Look for explicit .NS symbols in the message (e.g. TCS.NS, RELIANCE.NS)
+ * 2. Look for uppercase words (2–15 chars) that could be NSE tickers — try each against Yahoo Finance
+ * 3. Use the NSE_UNIVERSE from marketData as the known-ticker reference for quick validation
+ * No separate company map needed — same data the trading engine uses.
+ */
 async function tarsLiveContext(message) {
-    const sym = tarsResolveSymbol(message);
-    if (!sym)
-        return '';
-    try {
-        const { getDisplayQuote } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
-        const q = await getDisplayQuote(sym);
-        const ist = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        const sign = q.change >= 0 ? '+' : '';
-        return `\n\n[LIVE MARKET DATA — as of ${ist} IST]\nStock: ${sym}\nLTP: ₹${q.price.toFixed(2)}\nChange: ${sign}${q.change.toFixed(2)} (${sign}${q.changePct.toFixed(2)}%)\nProvider: ${q.provider} | Fresh: ${q.isFresh}`;
+    const { getDisplayQuote, NSE_UNIVERSE } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
+    // Build a fast ticker set from the app's own NSE_UNIVERSE
+    const universeSet = new Set(NSE_UNIVERSE.map(s => s.replace('.NS', '')));
+    // 1. Explicit .NS match
+    const explicitMatch = message.match(/\b([A-Za-z0-9&-]+)\.NS\b/i);
+    const explicitSym = explicitMatch ? explicitMatch[1].toUpperCase() + '.NS' : null;
+    // 2. Uppercase potential tickers (2–15 chars, no spaces) that exist in our universe
+    const upperTokens = [...message.matchAll(/\b([A-Z][A-Z0-9&-]{1,14})\b/g)]
+        .map(m => m[1])
+        .filter(t => universeSet.has(t));
+    // Candidates to try (explicit first, then universe matches, then raw uppercase tokens as a fallback)
+    const candidates = [];
+    if (explicitSym)
+        candidates.push(explicitSym);
+    upperTokens.forEach(t => { if (!candidates.includes(t + '.NS'))
+        candidates.push(t + '.NS'); });
+    // Try each candidate until one succeeds
+    for (const sym of candidates.slice(0, 3)) { // cap at 3 lookups per message
+        try {
+            const q = await getDisplayQuote(sym);
+            if (q.price > 0) {
+                const ist = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+                const sign = q.change >= 0 ? '+' : '';
+                return `\n\n[LIVE MARKET DATA — as of ${ist} IST]\nStock: ${sym} (${q.shortName ?? ''})\nLTP: ₹${q.price.toFixed(2)}\nChange: ${sign}${q.change.toFixed(2)} (${sign}${q.changePct.toFixed(2)}%)\nProvider: ${q.provider} | Fresh: ${q.isFresh}`;
+            }
+        }
+        catch { /* try next candidate */ }
     }
-    catch {
-        return `\n\n[MARKET DATA] Unable to fetch live price for ${sym} right now. Please check the QuantumMind dashboard.`;
-    }
+    return ''; // no stock found in message
 }
 const TARS_SYSTEM_PROMPT = `You are TARS, the AI assistant for QuantumMind — an AI-driven virtual Indian stock trading portal.
 You are named after the robot from the movie Interstellar. Honesty setting: 90%. Humor setting: 75%.
