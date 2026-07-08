@@ -52,6 +52,11 @@ export async function runMigrations(): Promise<void> {
     await db.execute("ALTER TABLE portfolios ADD COLUMN investment_goal TEXT DEFAULT 'growth'");
     console.log('[DB] Migration: portfolios.investment_goal added');
   } catch (_) { /* already exists */ }
+
+  try {
+    await db.execute('ALTER TABLE portfolios ADD COLUMN strategy_updated_at DATETIME DEFAULT NULL');
+    console.log('[DB] Migration: portfolios.strategy_updated_at added');
+  } catch (_) { /* already exists */ }
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

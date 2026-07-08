@@ -59,7 +59,6 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
       riskTolerance, investmentHorizonMonths, targetReturnPct,
       rebalanceFrequency, preferredSectors, preferredCaps,
       volatilityPreference, investmentGoal, maxDrawdownPct,
-      force = false,  // override drawdown lock
     } = req.body;
     const id = parseInt(req.params.id);
 
@@ -79,38 +78,49 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
       }
     }
 
-    // ── Guard 2: Drawdown breach lock on strategy fields ─────────────────────
-    // During an active drawdown breach, strategy fields are frozen.
-    // Capital top-ups and max_drawdown_pct relaxation are still allowed.
+    // ── Derive portfolio state ─────────────────────────────────────────────────
+    const holdingsRow  = await queryOne('SELECT COUNT(*) as cnt FROM holdings WHERE portfolio_id = ?', [id]);
+    const tradesRow    = await queryOne('SELECT COUNT(*) as cnt FROM trades   WHERE portfolio_id = ?', [id]);
+    const holdingsCount = Number(holdingsRow?.cnt ?? 0);
+    const tradeCount    = Number(tradesRow?.cnt   ?? 0);
+    const latestSnap    = await queryOne(
+      'SELECT total_portfolio_value FROM performance_snapshots WHERE portfolio_id = ? ORDER BY snapshot_time DESC LIMIT 1',
+      [id],
+    );
+    const currentNAV    = latestSnap ? Number(latestSnap.total_portfolio_value) : Number(existing.initial_capital);
+    const initCapital   = Number(existing.initial_capital ?? 0);
+    const drawdownPct   = initCapital > 0 ? ((initCapital - currentNAV) / initCapital) * 100 : 0;
+    const drawdownLimit = Number(existing.max_drawdown_pct ?? 20);
+    const isVirgin      = tradeCount === 0 && holdingsCount === 0;
+    const isMature      = tradeCount >= 20;
+    const inDrawdown    = drawdownPct >= drawdownLimit;
+
+    // Fields that change the AI's trading thesis
     const STRATEGY_FIELDS = [riskTolerance, preferredSectors, preferredCaps,
                              volatilityPreference, investmentGoal, investmentHorizonMonths,
                              targetReturnPct, rebalanceFrequency];
     const strategyChangeRequested = STRATEGY_FIELDS.some(f => f != null);
 
-    if (strategyChangeRequested && !force) {
-      const holdingsRow = await queryOne('SELECT COUNT(*) as cnt FROM holdings WHERE portfolio_id = ?', [id]);
-      const holdingsCount = Number(holdingsRow?.cnt ?? 0);
+    // ── Guard 2: DRAWDOWN_HALT — all strategy fields hard-locked ─────────────
+    if (!isVirgin && inDrawdown && strategyChangeRequested) {
+      return res.status(423).json({
+        success: false,
+        error: `Portfolio is in active drawdown (${drawdownPct.toFixed(1)}% ≥ ${drawdownLimit}% limit). All strategy fields are locked until NAV recovers or you top up capital.`,
+        code: 'DRAWDOWN_LOCK',
+        meta: { drawdownPct: Math.round(drawdownPct * 10) / 10, drawdownLimit, holdingsCount, tradeCount },
+      });
+    }
 
-      if (holdingsCount > 0) {
-        // Check drawdown: compare latest portfolio snapshot NAV vs initial capital
-        const latestSnap = await queryOne(
-          'SELECT total_portfolio_value FROM performance_snapshots WHERE portfolio_id = ? ORDER BY snapshot_time DESC LIMIT 1',
-          [id],
-        );
-        const currentNAV  = latestSnap ? Number(latestSnap.total_portfolio_value) : Number(existing.initial_capital);
-        const initCapital = Number(existing.initial_capital ?? 0);
-        const drawdownPct = initCapital > 0 ? ((initCapital - currentNAV) / initCapital) * 100 : 0;
-        const drawdownLimit = Number(existing.max_drawdown_pct ?? 20);
-
-        if (drawdownPct >= drawdownLimit) {
-          return res.status(423).json({
-            success: false,
-            error: `Portfolio is in active drawdown (${drawdownPct.toFixed(1)}% ≥ ${drawdownLimit}% limit). Strategy fields are locked. Top up capital or wait for recovery. Pass force:true to override.`,
-            code: 'DRAWDOWN_LOCK',
-            meta: { drawdownPct: Math.round(drawdownPct * 10) / 10, drawdownLimit, holdingsCount },
-          });
-        }
-      }
+    // ── Guard 3: MATURE — risk tolerance hard-locked ──────────────────────────
+    // AI has 20+ cycles of position thesis built on current risk profile.
+    // Changing it would silently shift stop-loss on all live positions.
+    if (isMature && riskTolerance != null) {
+      return res.status(423).json({
+        success: false,
+        error: `Risk tolerance is locked after ${tradeCount} trading cycles. The AI has calibrated its position thesis around the current profile. To change strategy, archive this portfolio and create a new one.`,
+        code: 'MATURE_LOCK',
+        meta: { tradeCount, currentRiskTolerance: existing.risk_tolerance },
+      });
     }
 
     // ── Capital delta: credit increase to cash ────────────────────────────────
@@ -134,6 +144,7 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
         volatility_preference     = COALESCE(?, volatility_preference),
         investment_goal           = COALESCE(?, investment_goal),
         max_drawdown_pct          = COALESCE(?, max_drawdown_pct),
+        strategy_updated_at       = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE strategy_updated_at END,
         updated_at                = CURRENT_TIMESTAMP
       WHERE id = ?`,
       [
@@ -150,16 +161,23 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
         volatilityPreference ?? null,
         investmentGoal ?? null,
         maxDrawdownPct ?? null,
+        strategyChangeRequested ? 1 : 0,  // strategy_updated_at toggle
         id,
       ],
     );
 
-    // Return updated portfolio + state metadata for the frontend
     const updated = await queryOne('SELECT * FROM portfolios WHERE id = ?', [id]);
-    const holdingsRow = await queryOne('SELECT COUNT(*) as cnt FROM holdings WHERE portfolio_id = ?', [id]);
-    const hasActiveHoldings = Number(holdingsRow?.cnt ?? 0) > 0;
-
-    res.json({ success: true, data: updated, meta: { hasActiveHoldings, strategyQueued: strategyChangeRequested && hasActiveHoldings } });
+    res.json({
+      success: true,
+      data: updated,
+      meta: {
+        state: isVirgin ? 'VIRGIN' : isMature ? 'MATURE' : 'ACTIVE',
+        hasActiveHoldings: holdingsCount > 0,
+        strategyQueued: strategyChangeRequested && holdingsCount > 0,
+        tradeCount,
+        drawdownPct: Math.round(drawdownPct * 10) / 10,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
@@ -168,6 +186,90 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
 router.delete('/portfolios/:id', async (req: Request, res: Response) => {
   await run('UPDATE portfolios SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?', [parseInt(req.params.id)]);
   res.json({ success: true });
+});
+
+// ─── Portfolio edit-state ─────────────────────────────────────────────────────
+// Returns which fields are free/warn/locked for the Edit Portfolio modal.
+// Frontend queries this before opening the modal to render the correct UX.
+router.get('/portfolios/:id/edit-state', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id);
+    const portfolio = await queryOne('SELECT * FROM portfolios WHERE id = ?', [id]);
+    if (!portfolio) return res.status(404).json({ success: false, error: 'Portfolio not found' });
+    if (!portfolio.is_active) return res.json({ success: true, data: { state: 'ARCHIVED', editability: { free: [], warn: [], locked: ['all'] } } });
+
+    const holdingsRow = await queryOne('SELECT COUNT(*) as cnt FROM holdings WHERE portfolio_id = ?', [id]);
+    const tradesRow   = await queryOne('SELECT COUNT(*) as cnt FROM trades   WHERE portfolio_id = ?', [id]);
+    const holdingsCount = Number(holdingsRow?.cnt ?? 0);
+    const tradeCount    = Number(tradesRow?.cnt   ?? 0);
+
+    const latestSnap = await queryOne(
+      'SELECT total_portfolio_value FROM performance_snapshots WHERE portfolio_id = ? ORDER BY snapshot_time DESC LIMIT 1',
+      [id],
+    );
+    const currentNAV    = latestSnap ? Number(latestSnap.total_portfolio_value) : Number(portfolio.initial_capital);
+    const initCapital   = Number(portfolio.initial_capital ?? 0);
+    const drawdownPct   = initCapital > 0 ? ((initCapital - currentNAV) / initCapital) * 100 : 0;
+    const drawdownLimit = Number(portfolio.max_drawdown_pct ?? 20);
+    const investedValue = initCapital - Number(portfolio.current_cash ?? 0);
+
+    const isVirgin  = tradeCount === 0 && holdingsCount === 0;
+    const isMature  = tradeCount >= 20;
+    const inDrawdown = drawdownPct >= drawdownLimit;
+
+    type FieldList = string[];
+    let state: string;
+    let free:   FieldList;
+    let warn:   FieldList;
+    let locked: FieldList;
+
+    if (isVirgin) {
+      state  = 'VIRGIN';
+      free   = ['name','description','initialCapital','riskTolerance','investmentHorizonMonths',
+                 'targetReturnPct','rebalanceFrequency','preferredSectors','preferredCaps',
+                 'volatilityPreference','investmentGoal','maxDrawdownPct'];
+      warn   = [];
+      locked = [];
+    } else if (inDrawdown) {
+      state  = 'DRAWDOWN_HALT';
+      free   = ['name','description','maxDrawdownPct'];
+      warn   = [];
+      locked = ['riskTolerance','investmentHorizonMonths','targetReturnPct','rebalanceFrequency',
+                 'preferredSectors','preferredCaps','volatilityPreference','investmentGoal'];
+    } else if (isMature) {
+      state  = 'MATURE';
+      free   = ['name','description','rebalanceFrequency','maxDrawdownPct'];
+      warn   = ['targetReturnPct','investmentHorizonMonths','preferredSectors','preferredCaps',
+                 'volatilityPreference','investmentGoal'];
+      locked = ['riskTolerance'];
+    } else {
+      state  = 'ACTIVE';
+      free   = ['name','description','rebalanceFrequency','maxDrawdownPct'];
+      warn   = ['riskTolerance','targetReturnPct','investmentHorizonMonths','preferredSectors',
+                 'preferredCaps','volatilityPreference','investmentGoal'];
+      locked = [];
+    }
+
+    // Capital is always available for top-up; floor is invested value
+    free.push('capitalTopUp');
+
+    res.json({
+      success: true,
+      data: {
+        state,
+        editability: { free, warn, locked, capitalFloor: Math.ceil(investedValue) },
+        meta: {
+          holdingsCount,
+          tradeCount,
+          drawdownPct: Math.round(drawdownPct * 10) / 10,
+          drawdownLimit,
+          strategyUpdatedAt: portfolio.strategy_updated_at ?? null,
+        },
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
 });
 
 // ─── Trades ───────────────────────────────────────────────────────────────────
