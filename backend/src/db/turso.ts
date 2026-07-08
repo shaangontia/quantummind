@@ -64,6 +64,21 @@ export async function runMigrations(): Promise<void> {
     console.log('[DB] Migration: portfolios.peak_nav added');
   } catch (_) { /* already exists */ }
 
+  // CRITICAL-3: Auth — users table and portfolios.owner_id
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS users (
+      id           INTEGER  PRIMARY KEY AUTOINCREMENT,
+      email        TEXT     NOT NULL UNIQUE,
+      password_hash TEXT    NOT NULL,
+      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    console.log('[DB] Migration: users table ensured');
+  } catch (err) { console.warn('[DB] users table skipped:', err); }
+  try {
+    await db.execute('ALTER TABLE portfolios ADD COLUMN owner_id INTEGER REFERENCES users(id)');
+    console.log('[DB] Migration: portfolios.owner_id added');
+  } catch (_) { /* already exists */ }
+
   // Phase 6: RAG-based TARS memory — FTS5 full-text search (no API key required)
   try {
     await db.execute(`CREATE TABLE IF NOT EXISTS tars_memory (

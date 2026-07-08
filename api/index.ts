@@ -4,10 +4,17 @@
  */
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
+
+const FRONTEND_ORIGIN = process.env.FRONTEND_URL || 'https://quantummind-shaangontia.vercel.app';
 
 const app = express();
-app.use(cors({ origin: '*' }));
+app.use(cors({
+  origin: FRONTEND_ORIGIN,
+  credentials: true,  // required for HttpOnly cookie exchange
+}));
 app.use(express.json());
+app.use(cookieParser());
 
 // Run DB migrations on cold start (idempotent)
 let migrated = false;

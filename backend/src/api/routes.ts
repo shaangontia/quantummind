@@ -1,7 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import Groq from 'groq-sdk';
+import bcrypt from 'bcryptjs';
+import cookieParser from 'cookie-parser';
 import { retrieveMemories } from '../services/ragService.js';
+import { signToken, verifyAuth, verifyOwner } from '../middleware/auth.js';
 import { query, queryOne, run } from '../db/turso.js';
 import { getQuote } from '../services/marketData.js';
 import { getPortfolioSummary, executeTrade } from '../services/tradingEngine.js';
@@ -65,6 +68,52 @@ function requireAdminAuth(req: Request, res: Response, next: NextFunction): void
 }
 
 const router = Router();
+router.use(cookieParser());  // required to read HttpOnly qm_token cookie
+
+// ─── Auth routes ───────────────────────────────────────────────────────────────
+
+const authRegisterSchema = z.object({
+  email:    z.string().email().max(200),
+  password: z.string().min(8).max(128),
+});
+
+router.post('/auth/register', async (req: Request, res: Response) => {
+  const parsed = authRegisterSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
+  const { email, password } = parsed.data;
+  const existing = await queryOne('SELECT id FROM users WHERE email = ?', [email]);
+  if (existing) return res.status(409).json({ success: false, error: 'Email already registered' });
+  const passwordHash = await bcrypt.hash(password, 12);
+  const result = await run('INSERT INTO users (email, password_hash) VALUES (?, ?)', [email, passwordHash]);
+  const userId = result.lastInsertRowid;
+  // Claim all unclaimed portfolios for the first user (backward-compat migration)
+  await run('UPDATE portfolios SET owner_id = ? WHERE owner_id IS NULL', [userId]);
+  const token = signToken({ id: userId, email });
+  res.cookie('qm_token', token, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
+  res.status(201).json({ success: true, data: { id: userId, email } });
+});
+
+router.post('/auth/login', async (req: Request, res: Response) => {
+  const parsed = authRegisterSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
+  const { email, password } = parsed.data;
+  const user = await queryOne('SELECT id, email, password_hash FROM users WHERE email = ?', [email]);
+  if (!user || !(await bcrypt.compare(password, String(user.password_hash)))) {
+    return res.status(401).json({ success: false, error: 'Invalid email or password' });
+  }
+  const token = signToken({ id: Number(user.id), email: String(user.email) });
+  res.cookie('qm_token', token, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
+  res.json({ success: true, data: { id: user.id, email: user.email } });
+});
+
+router.post('/auth/logout', (_req: Request, res: Response) => {
+  res.clearCookie('qm_token', { httpOnly: true, secure: true, sameSite: 'strict' });
+  res.json({ success: true });
+});
+
+router.get('/auth/me', verifyAuth, (req: Request, res: Response) => {
+  res.json({ success: true, data: req.user });
+});
 
 // ─── Portfolios ──────────────────────────────────────────────────────────────
 
@@ -88,13 +137,13 @@ router.get('/portfolios', async (_req: Request, res: Response) => {
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
 
-router.post('/portfolios', async (req: Request, res: Response) => {
+router.post('/portfolios', verifyAuth, async (req: Request, res: Response) => {
   const parsed = portfolioCreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
   const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, preferredSectors, preferredCaps } = parsed.data;
   const result = await run(
-    'INSERT INTO portfolios (name,description,initial_capital,current_cash,risk_tolerance,investment_horizon_months,target_return_pct,preferred_sectors,preferred_caps) VALUES (?,?,?,?,?,?,?,?,?)',
-    [name, description||null, initialCapital, initialCapital, riskTolerance||'Medium', investmentHorizonMonths||12, targetReturnPct||15.0, preferredSectors ? JSON.stringify(preferredSectors) : null, preferredCaps ? JSON.stringify(preferredCaps) : null]
+    'INSERT INTO portfolios (name,description,initial_capital,current_cash,risk_tolerance,investment_horizon_months,target_return_pct,preferred_sectors,preferred_caps,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    [name, description||null, initialCapital, initialCapital, riskTolerance||'Medium', investmentHorizonMonths||12, targetReturnPct||15.0, preferredSectors ? JSON.stringify(preferredSectors) : null, preferredCaps ? JSON.stringify(preferredCaps) : null, req.user!.id]
   );
   res.status(201).json({ success: true, data: await queryOne('SELECT * FROM portfolios WHERE id = ?', [result.lastInsertRowid]) });
 });
@@ -109,7 +158,7 @@ router.get('/portfolios/:id/summary', async (req: Request, res: Response) => {
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
 
-router.patch('/portfolios/:id', async (req: Request, res: Response) => {
+router.patch('/portfolios/:id', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
   try {
     const parsed = portfolioPatchSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
@@ -243,7 +292,7 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
   }
 });
 
-router.delete('/portfolios/:id', async (req: Request, res: Response) => {
+router.delete('/portfolios/:id', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
   const id = parseIntParam(req.params.id);
   if (id === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
   await run('UPDATE portfolios SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?', [id]);
@@ -624,7 +673,7 @@ router.post('/adaptive/resolve-outcomes', async (_req: Request, res: Response) =
 
 // ─── Manual Trade ─────────────────────────────────────────────────────────────
 
-router.post('/portfolios/:id/trade', async (req: Request, res: Response) => {
+router.post('/portfolios/:id/trade', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
   const { symbol, companyName, action, quantity, price, reason } = req.body;
   if (!symbol || !action || !quantity || !price) return res.status(400).json({ success: false, error: 'symbol, action, quantity, price required' });
   const pid = parseIntParam(req.params.id);
