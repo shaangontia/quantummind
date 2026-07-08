@@ -237,7 +237,7 @@ router.get('/portfolios/:id/benchmark', async (req: Request, res: Response) => {
 
     // Performance snapshots for portfolio NAV over time
     const snapshots = await query(
-      'SELECT snapshot_date, total_value FROM performance_snapshots WHERE portfolio_id = ? AND snapshot_date >= ? ORDER BY snapshot_date ASC',
+      "SELECT date(snapshot_time) as snapshot_date, total_portfolio_value as total_value FROM performance_snapshots WHERE portfolio_id = ? AND date(snapshot_time) >= ? ORDER BY snapshot_time ASC",
       [pid, fromDate]
     );
 
