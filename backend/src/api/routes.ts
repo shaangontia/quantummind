@@ -210,6 +210,73 @@ router.post('/portfolios/:id/trade', async (req: Request, res: Response) => {
 
 // ─── Cron trigger (called by Vercel Cron / external scheduler) ────────────────
 
+// ─── TARS Chatbot ───────────────────────────────────────────────────────────
+const TARS_SYSTEM_PROMPT = `You are TARS, the AI assistant for QuantumMind — an AI-driven virtual Indian stock trading portal.
+You are named after the robot from the movie Interstellar. Honesty setting: 90%. Humor setting: 75%. You are intelligent, helpful, slightly witty, and direct.
+
+About QuantumMind:
+- Fully autonomous AI-managed virtual trading system for NSE-listed Indian stocks
+- Targets 15% annual return (30% over 2 years) with aggressive strategy
+- Uses real-time NSE prices via Yahoo Finance + Groww fallback
+- LLM (Groq llama-3.1-8b-instant) analyses corporate news for trade signals
+- ML stack: RSI(14), 52-week range, linear regression momentum, Kelly Criterion
+- Adaptive feedback loop: signal weights auto-adjust based on win/loss history
+- Market regime detection: BULL / BEAR / SIDEWAYS gates trade thresholds
+- Brokerage: 0.2% flat per trade (approximates STT + NSE charges + stamp duty + GST)
+- Safety guards: kill switch, 10% NAV per symbol cap, daily trade limits, NSE holiday calendar
+- No real money — simulation only
+- All prices are virtual, all trades are simulated
+- Database: Turso cloud SQLite (Mumbai ap-south-1 region)
+- Deployed on Vercel serverless
+- Universe: ~1800+ NSE EQ-series stocks above ₹30 (fetched daily from NSE EQUITY_L.csv)
+
+You help users understand:
+- How the system works
+- What signals mean
+- How trades are executed
+- Portfolio metrics (NAV, P&L, return %)
+- Brokerage and fees
+- Risk management
+- How to interpret the dashboard
+
+Keep answers concise and clear. If asked something outside QuantumMind scope, politely redirect.`;
+
+router.post('/tars/chat', async (req: Request, res: Response) => {
+  const { message, history } = req.body;
+  if (!message || typeof message !== 'string') {
+    return res.status(400).json({ success: false, error: 'message required' });
+  }
+  try {
+    res.set('Cache-Control', 'no-store');
+    const Groq = (await import('groq-sdk')).default;
+    const groq = new Groq({ apiKey: process.env.groq_key });
+
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: TARS_SYSTEM_PROMPT },
+    ];
+    if (Array.isArray(history)) {
+      for (const h of history.slice(-10)) {
+        if (h.role === 'user' || h.role === 'assistant') {
+          messages.push({ role: h.role, content: String(h.content) });
+        }
+      }
+    }
+    messages.push({ role: 'user', content: message.slice(0, 500) });
+
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.1-8b-instant',
+      messages,
+      temperature: 0.6,
+      max_tokens: 400,
+    });
+
+    const reply = response.choices[0]?.message?.content?.trim() ?? 'No response from TARS.';
+    res.json({ success: true, reply });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 // ─── Health checks ───────────────────────────────────────────────────────────
 router.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'OK', service: 'QuantumMind', ts: new Date().toISOString() });
@@ -302,5 +369,6 @@ router.post('/cron/price-update', async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: String(err) });
   }
 });
+
 
 export default router;

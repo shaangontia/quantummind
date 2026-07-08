@@ -1,0 +1,232 @@
+/* TARS Chatbot Widget */
+
+.tars-trigger {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent-purple);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.5);
+  transition: transform 0.2s, box-shadow 0.2s;
+  z-index: 1000;
+}
+
+.tars-trigger:hover {
+  transform: scale(1.08);
+  box-shadow: 0 6px 28px rgba(139, 92, 246, 0.65);
+}
+
+.tars-panel {
+  position: fixed;
+  bottom: 90px;
+  right: 24px;
+  width: 360px;
+  max-height: 520px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+  z-index: 999;
+  overflow: hidden;
+  animation: tarsSlideIn 0.2s ease;
+}
+
+@keyframes tarsSlideIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.tars-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-surface);
+}
+
+.tars-header-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tars-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--accent-purple);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.tars-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.tars-subtitle {
+  font-size: 0.72rem;
+  color: var(--accent-green);
+}
+
+.tars-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1.2rem;
+  padding: 4px;
+  line-height: 1;
+}
+
+.tars-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scrollbar-width: thin;
+}
+
+.tars-message {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.tars-message.user {
+  flex-direction: row-reverse;
+}
+
+.tars-bubble {
+  max-width: 78%;
+  padding: 10px 13px;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.tars-message.assistant .tars-bubble {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-bottom-left-radius: 4px;
+}
+
+.tars-message.user .tars-bubble {
+  background: var(--accent-purple);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.tars-typing {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 13px;
+  background: var(--bg-surface);
+  border-radius: 12px;
+  border-bottom-left-radius: 4px;
+  width: fit-content;
+}
+
+.tars-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-purple);
+  animation: tarsBounce 1.2s infinite ease-in-out;
+}
+
+.tars-dot:nth-child(2) { animation-delay: 0.2s; }
+.tars-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes tarsBounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-6px); }
+}
+
+.tars-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-surface);
+}
+
+.tars-input {
+  flex: 1;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  outline: none;
+  resize: none;
+  font-family: inherit;
+}
+
+.tars-input:focus {
+  border-color: var(--accent-purple);
+}
+
+.tars-send {
+  background: var(--accent-purple);
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  padding: 0 14px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: opacity 0.15s;
+}
+
+.tars-send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tars-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 10px;
+}
+
+.tars-suggestion {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  padding: 5px 11px;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.tars-suggestion:hover {
+  border-color: var(--accent-purple);
+  color: var(--accent-purple);
+}
+
+@media (max-width: 480px) {
+  .tars-panel { width: calc(100vw - 32px); right: 16px; bottom: 80px; }
+  .tars-trigger { right: 16px; bottom: 16px; }
+}

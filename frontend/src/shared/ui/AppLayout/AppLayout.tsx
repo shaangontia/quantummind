@@ -1,4 +1,5 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { TarsChat } from '../TarsChat/TarsChat.tsx';
 import './AppLayout.css';
 
 export const AppLayout = () => {
@@ -26,6 +27,8 @@ export const AppLayout = () => {
       <main className="app-main">
         <Outlet />
       </main>
+
+      <TarsChat />
     </div>
   );
 };
