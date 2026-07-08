@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { portfolioApi } from '../../../../api/portfolio.api.ts';
-import type { Portfolio, UpdatePortfolioPayload, RiskTolerance, RebalanceFrequency } from '../../../../api/portfolio.api.types.ts';
+import type { Portfolio, PortfolioSummary, UpdatePortfolioPayload, RiskTolerance, RebalanceFrequency } from '../../../../api/portfolio.api.types.ts';
+import { summaryKey } from '../../hooks/usePortfolioSummary.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import '../../ui/CreatePortfolioModal/CreatePortfolioModal.css';
 
@@ -10,7 +11,8 @@ interface EditPortfolioModalProps {
   /** True when the portfolio has active holdings — triggers a strategy-change warning */
   hasActiveHoldings?: boolean;
   onClose: () => void;
-  onSaved: () => void;
+  /** Called with the updated Portfolio so callers can patch local state without a full refresh */
+  onSaved: (updated: Portfolio) => void;
 }
 
 const SECTORS = [
@@ -41,6 +43,7 @@ const toFormState = (p: Portfolio): Required<UpdatePortfolioPayload> => ({
 
 export const EditPortfolioModal = ({ portfolio, hasActiveHoldings = false, onClose, onSaved }: EditPortfolioModalProps) => {
   const qc = useQueryClient();
+  const pid = portfolio.id;
   const [form, setForm] = useState<Required<UpdatePortfolioPayload>>(toFormState(portfolio));
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,11 +70,25 @@ export const EditPortfolioModal = ({ portfolio, hasActiveHoldings = false, onClo
     setIsLoading(true);
     setError(null);
     try {
-      await portfolioApi.update(portfolio.id, form);
-      await qc.invalidateQueries({ queryKey: ['portfolios'] });
-      await qc.invalidateQueries({ queryKey: ['portfolio', portfolio.id] });
-      await qc.invalidateQueries({ queryKey: ['portfolioSummary', portfolio.id] });
-      onSaved();
+      const updated = await portfolioApi.update(pid, form);
+
+      // Patch portfolios list cache in-place — no network request
+      qc.setQueryData<Portfolio[]>(['portfolios'], old =>
+        old ? old.map(p => p.id === pid ? updated : p) : [updated]
+      );
+
+      // Patch summary cache — merge only the strategy fields that PATCH can change
+      qc.setQueryData<PortfolioSummary>(summaryKey(pid), old =>
+        old ? {
+          ...old,
+          name: updated.name,
+          targetReturnPct: updated.target_return_pct,
+          riskTolerance: updated.risk_tolerance,
+          investmentHorizonMonths: updated.investment_horizon_months,
+        } : old
+      );
+
+      onSaved(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save changes');
       setIsLoading(false);

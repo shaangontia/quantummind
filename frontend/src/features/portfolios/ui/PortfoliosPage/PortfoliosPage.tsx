@@ -129,7 +129,7 @@ export const PortfoliosPage = () => {
         <EditPortfolioModal
           portfolio={editPortfolio}
           onClose={() => setEditPortfolio(null)}
-          onSaved={() => { setEditPortfolio(null); void refresh(); }}
+          onSaved={() => setEditPortfolio(null)}
         />
       )}
     </div>

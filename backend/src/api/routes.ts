@@ -59,41 +59,88 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
       riskTolerance, investmentHorizonMonths, targetReturnPct,
       rebalanceFrequency, preferredSectors, preferredCaps,
       volatilityPreference, investmentGoal, maxDrawdownPct,
+      force = false,  // override drawdown lock
     } = req.body;
     const id = parseInt(req.params.id);
 
     const existing = await queryOne('SELECT * FROM portfolios WHERE id = ?', [id]);
     if (!existing) return res.status(404).json({ success: false, error: 'Portfolio not found' });
 
-    // If capital is being increased, add the difference to current_cash
+    // ── Guard 1: Capital reduction floor ─────────────────────────────────────
+    // Cannot reduce capital below currently invested value (would make cash negative)
+    if (initialCapital != null) {
+      const investedValue = Number(existing.initial_capital ?? 0) - Number(existing.current_cash ?? 0);
+      if (Number(initialCapital) < investedValue) {
+        return res.status(422).json({
+          success: false,
+          error: `Cannot reduce capital below invested value (₹${investedValue.toLocaleString('en-IN')}). Sell positions first.`,
+          code: 'CAPITAL_FLOOR_BREACH',
+        });
+      }
+    }
+
+    // ── Guard 2: Drawdown breach lock on strategy fields ─────────────────────
+    // During an active drawdown breach, strategy fields are frozen.
+    // Capital top-ups and max_drawdown_pct relaxation are still allowed.
+    const STRATEGY_FIELDS = [riskTolerance, preferredSectors, preferredCaps,
+                             volatilityPreference, investmentGoal, investmentHorizonMonths,
+                             targetReturnPct, rebalanceFrequency];
+    const strategyChangeRequested = STRATEGY_FIELDS.some(f => f != null);
+
+    if (strategyChangeRequested && !force) {
+      const holdingsRow = await queryOne('SELECT COUNT(*) as cnt FROM holdings WHERE portfolio_id = ?', [id]);
+      const holdingsCount = Number(holdingsRow?.cnt ?? 0);
+
+      if (holdingsCount > 0) {
+        // Check drawdown: compare latest portfolio snapshot NAV vs initial capital
+        const latestSnap = await queryOne(
+          'SELECT total_portfolio_value FROM performance_snapshots WHERE portfolio_id = ? ORDER BY snapshot_time DESC LIMIT 1',
+          [id],
+        );
+        const currentNAV  = latestSnap ? Number(latestSnap.total_portfolio_value) : Number(existing.initial_capital);
+        const initCapital = Number(existing.initial_capital ?? 0);
+        const drawdownPct = initCapital > 0 ? ((initCapital - currentNAV) / initCapital) * 100 : 0;
+        const drawdownLimit = Number(existing.max_drawdown_pct ?? 20);
+
+        if (drawdownPct >= drawdownLimit) {
+          return res.status(423).json({
+            success: false,
+            error: `Portfolio is in active drawdown (${drawdownPct.toFixed(1)}% ≥ ${drawdownLimit}% limit). Strategy fields are locked. Top up capital or wait for recovery. Pass force:true to override.`,
+            code: 'DRAWDOWN_LOCK',
+            meta: { drawdownPct: Math.round(drawdownPct * 10) / 10, drawdownLimit, holdingsCount },
+          });
+        }
+      }
+    }
+
+    // ── Capital delta: credit increase to cash ────────────────────────────────
     let cashDelta = 0;
     if (initialCapital != null) {
-      const existingCapital = Number(existing.initial_capital ?? 0);
-      cashDelta = Number(initialCapital) - existingCapital;
+      cashDelta = Number(initialCapital) - Number(existing.initial_capital ?? 0);
     }
 
     await run(
       `UPDATE portfolios SET
-        name                   = COALESCE(?, name),
-        description            = COALESCE(?, description),
-        initial_capital        = COALESCE(?, initial_capital),
-        current_cash           = CASE WHEN ? IS NOT NULL THEN MAX(0, current_cash + ?) ELSE current_cash END,
-        risk_tolerance         = COALESCE(?, risk_tolerance),
+        name                      = COALESCE(?, name),
+        description               = COALESCE(?, description),
+        initial_capital           = COALESCE(?, initial_capital),
+        current_cash              = CASE WHEN ? IS NOT NULL THEN MAX(0, current_cash + ?) ELSE current_cash END,
+        risk_tolerance            = COALESCE(?, risk_tolerance),
         investment_horizon_months = COALESCE(?, investment_horizon_months),
-        target_return_pct      = COALESCE(?, target_return_pct),
-        rebalance_frequency    = COALESCE(?, rebalance_frequency),
-        preferred_sectors      = COALESCE(?, preferred_sectors),
-        preferred_caps         = COALESCE(?, preferred_caps),
-        volatility_preference  = COALESCE(?, volatility_preference),
-        investment_goal        = COALESCE(?, investment_goal),
-        max_drawdown_pct       = COALESCE(?, max_drawdown_pct),
-        updated_at             = CURRENT_TIMESTAMP
+        target_return_pct         = COALESCE(?, target_return_pct),
+        rebalance_frequency       = COALESCE(?, rebalance_frequency),
+        preferred_sectors         = COALESCE(?, preferred_sectors),
+        preferred_caps            = COALESCE(?, preferred_caps),
+        volatility_preference     = COALESCE(?, volatility_preference),
+        investment_goal           = COALESCE(?, investment_goal),
+        max_drawdown_pct          = COALESCE(?, max_drawdown_pct),
+        updated_at                = CURRENT_TIMESTAMP
       WHERE id = ?`,
       [
         name ?? null,
         description ?? null,
         initialCapital ?? null,
-        initialCapital ?? null, cashDelta,          // cash delta params
+        initialCapital ?? null, cashDelta,
         riskTolerance ?? null,
         investmentHorizonMonths ?? null,
         targetReturnPct ?? null,
@@ -107,7 +154,12 @@ router.patch('/portfolios/:id', async (req: Request, res: Response) => {
       ],
     );
 
-    res.json({ success: true, data: await queryOne('SELECT * FROM portfolios WHERE id = ?', [id]) });
+    // Return updated portfolio + state metadata for the frontend
+    const updated = await queryOne('SELECT * FROM portfolios WHERE id = ?', [id]);
+    const holdingsRow = await queryOne('SELECT COUNT(*) as cnt FROM holdings WHERE portfolio_id = ?', [id]);
+    const hasActiveHoldings = Number(holdingsRow?.cnt ?? 0) > 0;
+
+    res.json({ success: true, data: updated, meta: { hasActiveHoldings, strategyQueued: strategyChangeRequested && hasActiveHoldings } });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }

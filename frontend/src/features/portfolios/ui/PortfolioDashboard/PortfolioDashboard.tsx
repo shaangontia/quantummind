@@ -303,7 +303,7 @@ export const PortfolioDashboard = () => {
           portfolio={portfolio}
           hasActiveHoldings={(summary?.holdings?.length ?? 0) > 0}
           onClose={() => setIsEditOpen(false)}
-          onSaved={() => { setIsEditOpen(false); void refresh(); }}
+          onSaved={() => setIsEditOpen(false)}
         />
       )}
     </div>
