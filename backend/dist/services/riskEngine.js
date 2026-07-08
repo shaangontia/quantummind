@@ -21,6 +21,7 @@ exports.evaluateRisk = evaluateRisk;
 const turso_js_1 = require("../db/turso.js");
 const tradingGuards_js_1 = require("./tradingGuards.js");
 const marketData_js_1 = require("./marketData.js");
+const turso_js_2 = require("../db/turso.js");
 const logger_js_1 = require("../lib/logger.js");
 // Maximum portfolio drawdown from peak before halting buys (20%)
 const MAX_DRAWDOWN_HALT_PCT = 0.20;
@@ -96,6 +97,23 @@ async function evaluateRisk(ctx) {
             if (drawdown > MAX_DRAWDOWN_HALT_PCT) {
                 logger_js_1.logger.riskBlock(ctx.portfolioId, ctx.symbol, `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% exceeds ${MAX_DRAWDOWN_HALT_PCT * 100}% halt threshold`);
                 return { approved: false, reason: `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% — BUY halted`, checksRun: checks };
+            }
+        }
+    }
+    // 9. Sector concentration cap (BUY only) — no single sector may exceed 35% of portfolio NAV
+    checks.push('sector_cap');
+    if (ctx.action === 'BUY') {
+        const sector = (0, marketData_js_1.getSymbolSector)(ctx.symbol);
+        if (sector !== 'Other') {
+            const holdings = await (0, turso_js_2.query)('SELECT h.symbol, h.quantity, h.current_price FROM holdings h WHERE h.portfolio_id = ?', [ctx.portfolioId]);
+            const sectorValue = holdings
+                .filter((h) => (0, marketData_js_1.getSymbolSector)(h.symbol) === sector)
+                .reduce((s, h) => s + Number(h.quantity) * Number(h.current_price), 0);
+            const buyValue = ctx.quantity * ctx.price;
+            const newSectorPct = (sectorValue + buyValue) / ctx.portfolioNAV;
+            if (newSectorPct > 0.35) {
+                logger_js_1.logger.riskBlock(ctx.portfolioId, ctx.symbol, `Sector cap: ${sector} would reach ${(newSectorPct * 100).toFixed(1)}% NAV (limit 35%)`);
+                return { approved: false, reason: `Sector concentration cap: ${sector} sector at ${(newSectorPct * 100).toFixed(1)}% (max 35%)`, checksRun: checks };
             }
         }
     }

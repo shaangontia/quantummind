@@ -14,6 +14,7 @@ import { formatINR, formatPct, riskColor } from '../../model/portfolios.utils.ts
 import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
 import { NewsFeed } from '../../../news/ui/NewsFeed/NewsFeed.tsx';
 import { AdaptivePanel } from '../../../intelligence/ui/AdaptivePanel/AdaptivePanel.tsx';
+import { SectorAllocationChart } from '../SectorAllocationChart/SectorAllocationChart.tsx';
 import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
 import './PortfolioDashboard.css';
 
@@ -257,6 +258,14 @@ export const PortfolioDashboard = () => {
           </div>
         )}
       </div>
+
+      {/* Sector Allocation Donut — deferred */}
+      {showSecondary && (
+        <div className="card">
+          <h2 className="section-title">Sector Allocation</h2>
+          <SectorAllocationChart portfolioId={portfolioId} />
+        </div>
+      )}
 
       {/* Adaptive Intelligence Panel — deferred */}
       {showSecondary && (

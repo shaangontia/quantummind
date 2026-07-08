@@ -24,7 +24,8 @@ import {
   isUnderDailyTurnoverLimit,
   isUnderPositionCap,
 } from './tradingGuards.js';
-import { isNseMarketOpen, type StockQuote } from './marketData.js';
+import { isNseMarketOpen, type StockQuote, getSymbolSector } from './marketData.js';
+import { query as dbQuery } from '../db/turso.js';
 import { logger } from '../lib/logger.js';
 
 export interface RiskDecision {
@@ -132,6 +133,27 @@ export async function evaluateRisk(ctx: RiskContext): Promise<RiskDecision> {
       if (drawdown > MAX_DRAWDOWN_HALT_PCT) {
         logger.riskBlock(ctx.portfolioId, ctx.symbol, `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% exceeds ${MAX_DRAWDOWN_HALT_PCT * 100}% halt threshold`);
         return { approved: false, reason: `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% — BUY halted`, checksRun: checks };
+      }
+    }
+  }
+
+  // 9. Sector concentration cap (BUY only) — no single sector may exceed 35% of portfolio NAV
+  checks.push('sector_cap');
+  if (ctx.action === 'BUY') {
+    const sector = getSymbolSector(ctx.symbol);
+    if (sector !== 'Other') {
+      const holdings = await dbQuery(
+        'SELECT h.symbol, h.quantity, h.current_price FROM holdings h WHERE h.portfolio_id = ?',
+        [ctx.portfolioId]
+      );
+      const sectorValue = holdings
+        .filter((h: any) => getSymbolSector(h.symbol as string) === sector)
+        .reduce((s: number, h: any) => s + Number(h.quantity) * Number(h.current_price), 0);
+      const buyValue = ctx.quantity * ctx.price;
+      const newSectorPct = (sectorValue + buyValue) / ctx.portfolioNAV;
+      if (newSectorPct > 0.35) {
+        logger.riskBlock(ctx.portfolioId, ctx.symbol, `Sector cap: ${sector} would reach ${(newSectorPct * 100).toFixed(1)}% NAV (limit 35%)`);
+        return { approved: false, reason: `Sector concentration cap: ${sector} sector at ${(newSectorPct * 100).toFixed(1)}% (max 35%)`, checksRun: checks };
       }
     }
   }

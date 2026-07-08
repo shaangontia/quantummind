@@ -471,6 +471,99 @@ export const NSE_UNIVERSE: string[] = [
 export const DEFAULT_WATCHLIST = NSE_UNIVERSE;
 
 /**
+ * GICS-aligned sector taxonomy for NSE_UNIVERSE symbols.
+ * Used for sector concentration checks in the risk engine and
+ * sector allocation display in the dashboard.
+ * Symbols not listed here default to 'Other'.
+ */
+export const SECTOR_MAP: Record<string, string> = {
+  // Information Technology
+  'TCS.NS': 'IT', 'INFY.NS': 'IT', 'WIPRO.NS': 'IT', 'HCLTECH.NS': 'IT',
+  'TECHM.NS': 'IT', 'MPHASIS.NS': 'IT', 'COFORGE.NS': 'IT', 'PERSISTENT.NS': 'IT',
+  'KPITTECH.NS': 'IT', 'MASTEK.NS': 'IT', 'ZENSAR.NS': 'IT', 'INTELLECT.NS': 'IT',
+  'RATEGAIN.NS': 'IT', 'TEJASNET.NS': 'IT', 'LATENTVIEW.NS': 'IT',
+
+  // Financials (Banks)
+  'HDFCBANK.NS': 'Financials', 'ICICIBANK.NS': 'Financials', 'SBIN.NS': 'Financials',
+  'KOTAKBANK.NS': 'Financials', 'AXISBANK.NS': 'Financials', 'INDUSINDBK.NS': 'Financials',
+  'BANDHANBNK.NS': 'Financials', 'IDFCFIRSTB.NS': 'Financials',
+
+  // Financials (NBFC / Insurance)
+  'BAJFINANCE.NS': 'Financials', 'BAJAJFINSV.NS': 'Financials', 'SHRIRAMFIN.NS': 'Financials',
+  'CHOLAFIN.NS': 'Financials', 'MUTHOOTFIN.NS': 'Financials', 'LTF.NS': 'Financials',
+  'SBILIFE.NS': 'Financials', 'HDFCLIFE.NS': 'Financials', 'IRFC.NS': 'Financials',
+  'PFC.NS': 'Financials', 'RECLTD.NS': 'Financials',
+
+  // Energy & Oil
+  'RELIANCE.NS': 'Energy', 'ONGC.NS': 'Energy', 'BPCL.NS': 'Energy',
+  'TATAPOWER.NS': 'Energy', 'NHPC.NS': 'Energy', 'SJVN.NS': 'Energy',
+  'IREDA.NS': 'Energy', 'TORNTPOWER.NS': 'Energy', 'CESC.NS': 'Energy',
+  'RELINFRA.NS': 'Energy', 'INOXWIND.NS': 'Energy', 'NTPC.NS': 'Energy',
+  'POWERGRID.NS': 'Energy',
+
+  // FMCG & Consumer
+  'HINDUNILVR.NS': 'FMCG', 'NESTLEIND.NS': 'FMCG', 'BRITANNIA.NS': 'FMCG',
+  'TATACONSUM.NS': 'FMCG', 'MARICO.NS': 'FMCG', 'DABUR.NS': 'FMCG',
+  'JYOTHYLAB.NS': 'FMCG', 'BIKAJI.NS': 'FMCG', 'PAGEIND.NS': 'FMCG',
+
+  // Healthcare & Pharma
+  'SUNPHARMA.NS': 'Healthcare', 'DRREDDY.NS': 'Healthcare', 'CIPLA.NS': 'Healthcare',
+  'DIVISLAB.NS': 'Healthcare', 'AUROPHARMA.NS': 'Healthcare', 'APOLLOHOSP.NS': 'Healthcare',
+  'MAXHEALTH.NS': 'Healthcare', 'KIMS.NS': 'Healthcare', 'RAINBOW.NS': 'Healthcare',
+  'SYNGENE.NS': 'Healthcare', 'LALPATHLAB.NS': 'Healthcare', 'METROPOLIS.NS': 'Healthcare',
+  'GLAND.NS': 'Healthcare',
+
+  // Industrials & Capital Goods
+  'LT.NS': 'Industrials', 'BHEL.NS': 'Industrials', 'BEML.NS': 'Industrials',
+  'HAL.NS': 'Industrials', 'BEL.NS': 'Industrials', 'MAZAGON.NS': 'Industrials',
+  'COCHINSHIP.NS': 'Industrials', 'GRSE.NS': 'Industrials', 'CONCOR.NS': 'Industrials',
+  'CUMMINSIND.NS': 'Industrials', 'POLYCAB.NS': 'Industrials', 'CROMPTON.NS': 'Industrials',
+  'ELECON.NS': 'Industrials', 'CRAFTSMAN.NS': 'Industrials', 'KAYNES.NS': 'Industrials',
+  'SYRMA.NS': 'Industrials', 'AEROFLEX.NS': 'Industrials', 'DYNAMATECH.NS': 'Industrials',
+  'ELGIEQUIP.NS': 'Industrials', 'RAMKRISHNA.NS': 'Industrials', 'GRINDWELL.NS': 'Industrials',
+  'RVNL.NS': 'Industrials', 'GPPL.NS': 'Industrials', 'TIINDIA.NS': 'Industrials',
+
+  // Materials & Metals
+  'JSWSTEEL.NS': 'Materials', 'TATASTEEL.NS': 'Materials', 'HINDALCO.NS': 'Materials',
+  'VEDL.NS': 'Materials', 'COALINDIA.NS': 'Materials', 'GRASIM.NS': 'Materials',
+  'ULTRACEMCO.NS': 'Materials', 'AMBUJACEM.NS': 'Materials', 'ACC.NS': 'Materials',
+  'ASTRAL.NS': 'Materials', 'PIIND.NS': 'Materials', 'FINEORG.NS': 'Materials',
+  'NOCIL.NS': 'Materials', 'TATVA.NS': 'Materials', 'TATACHEM.NS': 'Materials',
+  'JINDALSAW.NS': 'Materials', 'GARFIBRES.NS': 'Materials', 'SUDARSCHEM.NS': 'Materials',
+  'CLEAN.NS': 'Materials', 'JKPAPER.NS': 'Materials', 'WELSPUNIND.NS': 'Materials',
+  'KPRMILL.NS': 'Materials', 'RHIM.NS': 'Materials', 'TARSONS.NS': 'Materials',
+
+  // Automobiles
+  'MARUTI.NS': 'Auto', 'TATAMOTORS.NS': 'Auto', 'M&M.NS': 'Auto',
+  'EICHERMOT.NS': 'Auto', 'HEROMOTOCO.NS': 'Auto', 'BAJAJ-AUTO.NS': 'Auto',
+  'BALKRISIND.NS': 'Auto', 'MOTHERSON.NS': 'Auto', 'TRIVENI.NS': 'Auto',
+
+  // Real Estate
+  'GODREJPROP.NS': 'Realty', 'DMART.NS': 'Realty', 'ANURAS.NS': 'Realty',
+
+  // Telecom & Media
+  'BHARTIARTL.NS': 'Telecom', 'IDEA.NS': 'Telecom', 'INDUSTOWER.NS': 'Telecom',
+  'SUNTV.NS': 'Telecom', 'HFCL.NS': 'Telecom',
+
+  // Consumer Discretionary / Retail / New-Age
+  'TITAN.NS': 'Consumer', 'ASIANPAINT.NS': 'Consumer', 'BERGEPAINT.NS': 'Consumer',
+  'KAJARIACER.NS': 'Consumer', 'VOLTAS.NS': 'Consumer', 'ABFRL.NS': 'Consumer',
+  'TRENT.NS': 'Consumer', 'NAUKRI.NS': 'Consumer', 'ZOMATO.NS': 'Consumer',
+  'PAYTM.NS': 'Consumer', 'NYKAA.NS': 'Consumer', 'DELHIVERY.NS': 'Consumer',
+  'CARTRADE.NS': 'Consumer', 'CAMPUS.NS': 'Consumer', 'MEDPLUS.NS': 'Consumer',
+  'NAZARA.NS': 'Consumer', 'ROUTE.NS': 'Consumer', 'INOX.NS': 'Consumer',
+  'DIXON.NS': 'Consumer', 'DIXONTECH.NS': 'Consumer',
+};
+
+/**
+ * Look up GICS sector for a symbol.
+ * Falls back to 'Other' for unknown symbols.
+ */
+export function getSymbolSector(symbol: string): string {
+  return SECTOR_MAP[symbol] ?? 'Other';
+}
+
+/**
  * Best-effort market cap tier classification for known NSE symbols.
  * Used for cap-preference biasing in portfolio stock selection.
  * NOT used as a hard allocation restriction (that feature was removed).
