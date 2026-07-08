@@ -20,6 +20,8 @@ export interface Portfolio {
   updated_at: string;
 }
 
+export type UpdatePortfolioPayload = Partial<CreatePortfolioPayload>;
+
 export interface CreatePortfolioPayload {
   name: string;
   description?: string;
