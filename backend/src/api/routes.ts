@@ -25,7 +25,8 @@ function parseIntParam(val: string | undefined, fallback?: number): number | nul
 // ─── Validation schemas ──────────────────────────────────────────────────────────────
 const RISK_TOLERANCE     = ['Low', 'Medium', 'High', 'Very High'] as const;
 const REBALANCE_FREQ     = ['Weekly', 'Monthly', 'Quarterly', 'Never'] as const;
-const VOLATILITY_PREF    = ['Low', 'Moderate', 'High'] as const;
+const VOLATILITY_PREF    = ['low', 'medium', 'high'] as const; // lowercase — matches DB default + frontend
+const INVESTMENT_GOAL    = ['growth', 'income', 'retirement'] as const;
 
 const portfolioCreateSchema = z.object({
   name:                    z.string().min(1).max(100),
@@ -49,7 +50,7 @@ const portfolioPatchSchema = z.object({
   preferredSectors:        z.array(z.string()).optional(),
   preferredCaps:           z.array(z.string()).optional(),
   volatilityPreference:    z.enum(VOLATILITY_PREF).optional(),
-  investmentGoal:          z.string().max(200).optional(),
+  investmentGoal:          z.enum(INVESTMENT_GOAL).optional(),
   maxDrawdownPct:          z.number().min(1).max(100).optional(),
 });
 
