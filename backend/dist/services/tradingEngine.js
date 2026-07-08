@@ -165,12 +165,8 @@ async function generateSignal(symbol, risk = 'Medium') {
         return null;
     }
 }
-/**
- * Execute a simulated trade.
- * Flow: pre-checks → RiskEngine → atomic DB batch (all-or-nothing).
- * Returns tradeId on success, null if blocked.
- */
-async function executeTrade(portfolioId, symbol, companyName, action, quantity, price, reason, quote // pass executable quote for risk engine
+async function executeTrade(portfolioId, symbol, companyName, action, quantity, price, reason, quote, // pass executable quote for risk engine
+ctx // structured context for explainability
 ) {
     const portfolio = await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [portfolioId]);
     if (!portfolio || !portfolio.is_active)
@@ -214,9 +210,23 @@ async function executeTrade(portfolioId, symbol, companyName, action, quantity, 
     // All statements execute in one LibSQL transaction — partial failures roll back entirely.
     const statements = [];
     // Step 1: Insert trade record
+    const tradeReasonJson = ctx ? JSON.stringify({
+        rsi: ctx.rsi,
+        momentumScore: ctx.momentumScore,
+        newsScore: ctx.newsScore,
+        groqSentiment: ctx.groqSentiment,
+        kellyFraction: ctx.kellyFraction,
+        regime: ctx.regime,
+        buyScore: ctx.buyScore,
+        sellScore: ctx.sellScore,
+        riskGates: ctx.riskGates,
+        price,
+        action,
+        timestamp: new Date().toISOString(),
+    }) : null;
     statements.push({
-        sql: 'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-        args: [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore],
+        sql: 'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before, trade_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        args: [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore, tradeReasonJson],
     });
     if (action === 'BUY') {
         const existing = holdingsForNAV.find((h) => h.symbol === symbol);

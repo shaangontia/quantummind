@@ -1,8 +1,32 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { portfolioApi } from '../../../../api/portfolio.api.ts';
 import type { Trade, ApiResponse } from '../../../../api/portfolio.api.types.ts';
+
+const API_BASE = '/api';
+
+const TradeExplanation = ({ tradeId, portfolioId }: { tradeId: number; portfolioId: number }) => {
+  const { data, isLoading, error } = useQuery<{ explanation: string }>({
+    queryKey: ['trade-explanation', portfolioId, tradeId],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/portfolios/${portfolioId}/trades/${tradeId}/explanation`);
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error ?? 'Failed to load explanation');
+      return json.data;
+    },
+    staleTime: 10 * 60_000, // explanations don't change
+  });
+
+  if (isLoading) return <div style={{ padding: '12px 16px', color: '#94a3b8', fontSize: '0.82rem' }}>⏳ Generating AI explanation…</div>;
+  if (error) return <div style={{ padding: '12px 16px', color: '#ef4444', fontSize: '0.82rem' }}>⚠ {error.message}</div>;
+  return (
+    <div style={{ padding: '14px 20px', background: 'var(--bg-surface)', borderTop: '1px solid var(--border-color)', fontSize: '0.84rem', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+      <span style={{ color: 'var(--accent-purple)', fontWeight: 600, marginRight: 8 }}>🤖 TARS:</span>
+      {data?.explanation ?? '—'}
+    </div>
+  );
+};
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
@@ -14,6 +38,10 @@ export const AuditLogPage = () => {
   const portfolioId = Number(id);
 
   const [page, setPage] = useState(1);
+  const [expandedTradeId, setExpandedTradeId] = useState<number | null>(null);
+
+  const toggleExpand = (id: number) =>
+    setExpandedTradeId(prev => (prev === id ? null : id));
 
   const { data, isLoading } = useQuery<ApiResponse<Trade[]>>({
     queryKey: ['trades', portfolioId, page],
@@ -71,11 +99,19 @@ export const AuditLogPage = () => {
                     <th className="text-right">Realized P&L</th>
                     <th>Reason</th>
                     <th>Status</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {trades.map(t => (
-                    <tr key={t.id}>
+                  {trades.map(t => {
+                    const isExpanded = expandedTradeId === t.id;
+                    return (
+                    <React.Fragment key={t.id}>
+                    <tr
+                      onClick={() => toggleExpand(t.id)}
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                      title="Click to see AI explanation"
+                    >
                       <td className="text-muted">{t.id}</td>
                       <td className="text-muted">{formatDate(t.trade_time)}</td>
                       <td>
@@ -107,8 +143,20 @@ export const AuditLogPage = () => {
                           {t.status}
                         </Badge>
                       </td>
+                      <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center' }}>
+                        {isExpanded ? '▲' : '▼'}
+                      </td>
                     </tr>
-                  ))}
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={14} style={{ padding: 0, border: 0 }}>
+                          <TradeExplanation tradeId={t.id} portfolioId={portfolioId} />
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

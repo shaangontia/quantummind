@@ -166,6 +166,18 @@ export async function generateSignal(symbol: string, risk = 'Medium'): Promise<T
  * Flow: pre-checks → RiskEngine → atomic DB batch (all-or-nothing).
  * Returns tradeId on success, null if blocked.
  */
+export interface TradeContext {
+  rsi?: number;
+  momentumScore?: number;
+  newsScore?: number;
+  groqSentiment?: string;
+  kellyFraction?: number;
+  regime?: string;
+  buyScore?: number;
+  sellScore?: number;
+  riskGates?: string[];
+}
+
 export async function executeTrade(
   portfolioId: number,
   symbol: string,
@@ -174,7 +186,8 @@ export async function executeTrade(
   quantity: number,
   price: number,
   reason: string,
-  quote?: import('./marketData.js').StockQuote  // pass executable quote for risk engine
+  quote?: import('./marketData.js').StockQuote,  // pass executable quote for risk engine
+  ctx?: TradeContext                              // structured context for explainability
 ): Promise<number | null> {
   const portfolio = await queryOne('SELECT * FROM portfolios WHERE id = ?', [portfolioId]);
   if (!portfolio || !portfolio.is_active) return null;
@@ -226,9 +239,23 @@ export async function executeTrade(
   const statements: { sql: string; args: any[] }[] = [];
 
   // Step 1: Insert trade record
+  const tradeReasonJson = ctx ? JSON.stringify({
+    rsi: ctx.rsi,
+    momentumScore: ctx.momentumScore,
+    newsScore: ctx.newsScore,
+    groqSentiment: ctx.groqSentiment,
+    kellyFraction: ctx.kellyFraction,
+    regime: ctx.regime,
+    buyScore: ctx.buyScore,
+    sellScore: ctx.sellScore,
+    riskGates: ctx.riskGates,
+    price,
+    action,
+    timestamp: new Date().toISOString(),
+  }) : null;
   statements.push({
-    sql: 'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-    args: [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore],
+    sql: 'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before, trade_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    args: [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore, tradeReasonJson],
   });
 
   if (action === 'BUY') {

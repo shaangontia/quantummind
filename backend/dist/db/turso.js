@@ -39,6 +39,11 @@ async function runMigrations() {
         console.log('[DB] Migration: portfolios.preferred_cap column added');
     }
     catch (_) { /* already exists — ignore */ }
+    try {
+        await db.execute('ALTER TABLE trades ADD COLUMN trade_reason TEXT');
+        console.log('[DB] Migration: trades.trade_reason column added');
+    }
+    catch (_) { /* already exists — ignore */ }
 }
 async function query(sql, args = []) {
     const db = getClient();

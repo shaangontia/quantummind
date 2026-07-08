@@ -103,6 +103,39 @@ router.get('/portfolios/:id/trades', async (req, res) => {
     const trades = await (0, turso_js_1.query)('SELECT * FROM trades WHERE portfolio_id = ? ORDER BY trade_time DESC LIMIT ? OFFSET ?', [pid, limit, offset]);
     res.json({ success: true, data: trades, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
 });
+// ─── Trade Explainability ──────────────────────────────────────────────────────
+router.get('/portfolios/:id/trades/:tradeId/explanation', async (req, res) => {
+    try {
+        res.set('Cache-Control', 'public, max-age=300');
+        const trade = await (0, turso_js_1.queryOne)('SELECT * FROM trades WHERE id = ? AND portfolio_id = ?', [parseInt(req.params.tradeId), parseInt(req.params.id)]);
+        if (!trade)
+            return res.status(404).json({ success: false, error: 'Trade not found' });
+        let ctx = {};
+        if (trade.trade_reason) {
+            try {
+                ctx = JSON.parse(String(trade.trade_reason));
+            }
+            catch { /* use reason string */ }
+        }
+        const contextBlock = Object.keys(ctx).length > 0
+            ? `Structured data: ${JSON.stringify(ctx)}`
+            : `Signal reason text: ${trade.signal_reason}`;
+        const prompt = `You are TARS, the AI for QuantumMind virtual trading. Explain this trade decision in 2-3 clear sentences.\nTrade: ${trade.action} ${trade.quantity} shares of ${trade.symbol} at ₹${trade.price} on ${trade.trade_time}.\n${contextBlock}\n\nMention the key indicators that drove the decision (RSI, news, momentum). Keep it concise.`;
+        const Groq = (await Promise.resolve().then(() => __importStar(require('groq-sdk')))).default;
+        const groq = new Groq({ apiKey: process.env.groq_key });
+        const response = await groq.chat.completions.create({
+            model: 'llama-3.1-8b-instant',
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.4,
+            max_tokens: 200,
+        });
+        const explanation = response.choices[0]?.message?.content?.trim() ?? 'Explanation unavailable.';
+        res.json({ success: true, tradeId: trade.id, symbol: trade.symbol, action: trade.action, explanation, context: ctx, signalReason: trade.signal_reason });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: String(err) });
+    }
+});
 // ─── Performance ──────────────────────────────────────────────────────────────
 router.get('/portfolios/:id/performance', async (req, res) => {
     try {

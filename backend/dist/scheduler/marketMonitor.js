@@ -110,7 +110,7 @@ async function runPortfolioTradingCycle(portfolioId, riskTolerance) {
             logger_js_1.logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP', reason: 'Market closed' });
             continue;
         }
-        const tradeId = await (0, tradingEngine_js_1.executeTrade)(portfolioId, symbol, symbol.replace('.NS', ''), 'BUY', qty, signal.price, signal.reason);
+        const tradeId = await (0, tradingEngine_js_1.executeTrade)(portfolioId, symbol, symbol.replace('.NS', ''), 'BUY', qty, signal.price, signal.reason, undefined, { groqSentiment: signal.groqSentiment, momentumScore: signal.mlBoost, regime: refreshed.riskTolerance });
         if (tradeId && sigRes.lastInsertRowid) {
             await (0, turso_js_1.run)('UPDATE market_signals SET acted_upon=1, trade_id=? WHERE id=?', [tradeId, sigRes.lastInsertRowid]);
             tradeCount++;
