@@ -289,7 +289,7 @@ export async function getPortfolioSummary(portfolioId: number): Promise<Portfoli
     const cv = Number(h.quantity) * cp;
     const cost = Number(h.quantity) * Number(h.avg_buy_price);
     invested += cost; current += cv;
-    const updatedAt = h.price_updated_at as string | undefined;
+    const updatedAt = (h.last_price_updated ?? h.updated_at) as string | undefined;
     const ageMs = updatedAt ? Date.now() - new Date(updatedAt).getTime() : Infinity;
     const priceStatus: 'LIVE' | 'STALE' = ageMs < 15 * 60 * 1000 ? 'LIVE' : 'STALE';
     hSummaries.push({
