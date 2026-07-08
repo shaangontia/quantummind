@@ -41,33 +41,55 @@ export async function rememberFact(
 
 /**
  * Retrieve top-K memories most relevant to the query using FTS5 BM25 ranking.
- * Tokenises the query into FTS5-safe terms (strips punctuation, deduplicates).
- * Returns empty array if no matching memories or table not yet populated.
+ *
+ * @param userQuery   - The user's chat message
+ * @param portfolioId - Optional: restrict results to memories for this portfolio
+ *                      (source_id = portfolioId or cycle-level memories with no source_id)
+ *
+ * Search strategy: AND first (high precision), falls back to OR if AND yields nothing.
  */
-export async function retrieveMemories(userQuery: string): Promise<string[]> {
+export async function retrieveMemories(
+  userQuery: string,
+  portfolioId?: number,
+): Promise<string[]> {
   const db = getClient();
 
-  // Build FTS5 query: keep only alphanumeric tokens >= 3 chars, join with OR
-  const ftsQuery = userQuery
+  // Tokenise: keep alphanumeric tokens >= 3 chars, cap at 8
+  const tokens = userQuery
     .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
     .filter(t => t.length > 2)
-    .slice(0, 8)   // cap terms to avoid FTS5 parse errors on very long queries
-    .join(' OR ');
+    .slice(0, 8);
 
-  if (!ftsQuery) return [];
+  if (tokens.length === 0) return [];
 
-  try {
+  const andQuery = tokens.join(' AND ');
+  const orQuery  = tokens.join(' OR ');
+
+  const portfolioFilter = portfolioId != null
+    ? `AND (m.source_id = '${portfolioId}' OR m.source_id IS NULL)`
+    : '';
+
+  const runQuery = async (ftsMatch: string): Promise<string[]> => {
     const result = await db.execute({
       sql: `SELECT m.content
             FROM tars_memory_fts fts
             JOIN tars_memory m ON m.id = fts.rowid
             WHERE tars_memory_fts MATCH ?
+            ${portfolioFilter}
             ORDER BY rank
             LIMIT ?`,
-      args: [ftsQuery, TOP_K],
+      args: [ftsMatch, TOP_K],
     });
     return result.rows.map(r => String(r.content));
+  };
+
+  try {
+    // AND first — precise match
+    const andResults = await runQuery(andQuery);
+    if (andResults.length > 0) return andResults;
+    // OR fallback — broader recall when AND finds nothing
+    return await runQuery(orQuery);
   } catch (err) {
     // FTS table not yet populated or query malformed — degrade gracefully
     console.warn('[RAG] retrieveMemories failed:', err);

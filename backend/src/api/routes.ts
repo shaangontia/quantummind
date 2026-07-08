@@ -707,10 +707,14 @@ When [RELEVANT MEMORY CONTEXT] is present, use it to answer questions about rece
 Keep answers concise and accurate.`;
 
 router.post('/tars/chat', async (req: Request, res: Response) => {
-  const { message, history } = req.body;
+  const { message, history, portfolioId } = req.body;
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ success: false, error: 'message required' });
   }
+  const chatPortfolioId: number | undefined =
+    typeof portfolioId === 'number' ? portfolioId
+    : typeof portfolioId === 'string' ? (parseInt(portfolioId, 10) || undefined)
+    : undefined;
   try {
     res.set('Cache-Control', 'no-store');
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -723,8 +727,8 @@ router.post('/tars/chat', async (req: Request, res: Response) => {
         }
       }
     }
-    // RAG: retrieve relevant memories before calling Groq
-    const memories = await retrieveMemories(message);
+    // RAG: retrieve relevant memories before calling Groq (scoped to portfolio when provided)
+    const memories = await retrieveMemories(message, chatPortfolioId);
     const ragCtx = memories.length > 0
       ? `\n\n[RELEVANT MEMORY CONTEXT]\n${memories.map((m, i) => `${i + 1}. ${m}`).join('\n')}`
       : '';

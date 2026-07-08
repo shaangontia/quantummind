@@ -22,14 +22,15 @@ async function writeMarketCycleMemory(
   await rememberFact(content, 'cycle_summary');
 
   // Write last 5 trade narratives from the DB into memory
+  // source_id = portfolio_id so retrieval can be scoped per-portfolio (no cross-portfolio leakage)
   const recentTrades = await query(
-    `SELECT t.symbol, t.action, t.quantity, t.price, t.trade_time, t.trade_reason
+    `SELECT t.portfolio_id, t.symbol, t.action, t.quantity, t.price, t.trade_time, t.trade_reason
      FROM trades t ORDER BY t.trade_time DESC LIMIT 5`
   );
   for (const t of recentTrades) {
     const narrative = `Trade: ${t.action} ${t.quantity} shares of ${t.symbol} at ₹${t.price} on ${t.trade_time}.`
       + (t.trade_reason ? ` Reason: ${typeof t.trade_reason === 'string' ? t.trade_reason.slice(0, 300) : ''}` : '');
-    await rememberFact(narrative, 'trade_narrative', String(t.symbol));
+    await rememberFact(narrative, 'trade_narrative', String(t.portfolio_id));
   }
 
   await pruneMemory(5000);
