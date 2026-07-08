@@ -87,6 +87,9 @@ function getMode(): CacheMode {
 const MODE = getMode();
 console.log(`[Cache] Mode: ${MODE}`);
 
+/** Exported in-memory cache for internal use (process-scoped, always available) */
+export { mem as memCache };
+
 // ─── Unified cache API ────────────────────────────────────────────────────────
 export const cache = {
   async get<T>(key: string): Promise<T | null> {

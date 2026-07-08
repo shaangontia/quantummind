@@ -60,7 +60,7 @@ function getThresholds(risk: string) {
   return                       { rsiBuy: 35, rsiSell: 70, stopLoss: 0.08, takeProfit: 0.25, maxPosPct: 0.05 };
 }
 
-const MIN_STOCK_PRICE = 50;
+const MIN_STOCK_PRICE = 30; // ₹30 min — any NSE equity above this is eligible
 
 export async function generateSignal(symbol: string, risk = 'Medium'): Promise<TradeSignal | null> {
   try {

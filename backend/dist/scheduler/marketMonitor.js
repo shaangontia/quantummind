@@ -74,9 +74,10 @@ async function runPortfolioTradingCycle(portfolioId, riskTolerance) {
     if (refreshed.cashBalance < 10000)
         return { trades: tradeCount, signals: signalCount };
     const maxPosPct = riskTolerance === 'High' ? 0.08 : riskTolerance === 'Low' ? 0.03 : 0.05;
-    // Rotating open-market universe: evaluate 50 stocks per cycle (~3 cycles = full coverage)
-    const cycleSlot = Math.floor(Date.now() / (5 * 60 * 1000)); // changes every 5 min
-    const cycleUniverse = (0, marketData_js_1.getCycleWatchlist)(cycleSlot, 50);
+    // Dynamic open-market universe: full NSE equity list (fetched from NSE, cached 24h)
+    // Rotating 50-stock sample per cycle. Falls back to static ~150 list if NSE blocks.
+    const cycleSlot = Math.floor(Date.now() / (5 * 60 * 1000)); // bucket changes every 5 min
+    const cycleUniverse = await (0, marketData_js_1.getDynamicCycleWatchlist)(cycleSlot, 50);
     const candidates = cycleUniverse.filter(s => !held.has(s)).slice(0, 8); // up to 8 new position candidates
     for (const symbol of candidates) {
         const signal = await (0, tradingEngine_js_1.generateSignal)(symbol, riskTolerance);

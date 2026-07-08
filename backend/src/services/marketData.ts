@@ -1,4 +1,5 @@
 import https from 'https';
+import { memCache } from '../lib/cache.js';
 
 export interface StockQuote {
   symbol: string;
@@ -60,6 +61,105 @@ export function isNseMarketOpen(): boolean {
   const istMin = (now.getUTCMinutes() + 30) % 60;
   const istTimeMin = istHour * 60 + istMin;
   return istTimeMin >= (9 * 60 + 15) && istTimeMin <= (15 * 60 + 30);
+}
+
+// ── Min price threshold ─────────────────────────────────────────────────────
+export const MIN_TRADE_PRICE = 30; // ₹30 — applies to all signals and universe filtering
+
+// ── Dynamic NSE Universe ──────────────────────────────────────────────────────
+/**
+ * Fetches ALL NSE-listed equity symbols from NSE India's public equity list CSV.
+ * URL: https://archives.nseindia.com/content/equities/EQUITY_L.csv
+ * Format: SYMBOL,NAME OF COMPANY,SERIES,DATE OF LISTING,...
+ * Cached for 24 hours. Falls back to NSE_UNIVERSE static list if fetch fails
+ * (NSE India may block cloud IPs — Vercel serverless is an outbound cloud IP).
+ *
+ * Each symbol is appended with .NS for Yahoo Finance compatibility.
+ * Series 'EQ' only — excludes ETFs, SME boards, SGBs, preference shares.
+ */
+async function fetchNseEquityList(): Promise<string[]> {
+  const CACHE_KEY = 'nse_equity_universe_v1';
+  const cached = memCache.get<string[]>(CACHE_KEY);
+  if (cached && cached.length > 0) return cached;
+
+  return new Promise<string[]>((resolve) => {
+    const url = 'https://archives.nseindia.com/content/equities/EQUITY_L.csv';
+    const req = https.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/csv,text/plain,*/*',
+        'Referer': 'https://www.nseindia.com/',
+      }
+    }, (res) => {
+      // Follow redirect if any
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        // For simplicity, fall back on redirect (rare)
+        console.warn('[NSE Universe] Redirect — falling back to static list');
+        resolve(NSE_UNIVERSE);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        console.warn(`[NSE Universe] HTTP ${res.statusCode} — falling back to static list`);
+        resolve(NSE_UNIVERSE);
+        return;
+      }
+      let csv = '';
+      res.on('data', (chunk: Buffer) => { csv += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          const lines = csv.split('\n').slice(1); // skip header
+          const symbols: string[] = [];
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const cols = line.split(',');
+            const symbol = cols[0]?.trim();
+            const series = cols[2]?.trim();
+            // Only EQ series (main board equities)
+            if (symbol && series === 'EQ' && /^[A-Z0-9&-]+$/.test(symbol)) {
+              symbols.push(`${symbol}.NS`);
+            }
+          }
+          if (symbols.length < 100) {
+            console.warn(`[NSE Universe] Too few symbols (${symbols.length}) — falling back to static list`);
+            resolve(NSE_UNIVERSE);
+            return;
+          }
+          console.log(`[NSE Universe] Loaded ${symbols.length} NSE equity symbols dynamically`);
+          memCache.set(CACHE_KEY, symbols, 24 * 3600); // cache 24h
+          resolve(symbols);
+        } catch (err) {
+          console.warn('[NSE Universe] Parse error — falling back to static list:', err);
+          resolve(NSE_UNIVERSE);
+        }
+      });
+    });
+    req.on('error', (err) => {
+      console.warn('[NSE Universe] Fetch error — falling back to static list:', err.message);
+      resolve(NSE_UNIVERSE);
+    });
+    req.setTimeout(10000, () => {
+      req.destroy();
+      console.warn('[NSE Universe] Timeout — falling back to static list');
+      resolve(NSE_UNIVERSE);
+    });
+  });
+}
+
+/**
+ * Returns a rotating sample from the FULL NSE equity universe (dynamic or static fallback).
+ * sampleSize: number of stocks to evaluate per cycle (default 50).
+ * Price filter (₹30+) is applied at signal generation time via Yahoo Finance quote.
+ */
+export async function getDynamicCycleWatchlist(rotationSeed: number, sampleSize = 50): Promise<string[]> {
+  const universe = await fetchNseEquityList();
+  const shuffled = [...universe];
+  let seed = rotationSeed;
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    const j = seed % (i + 1);
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled.slice(0, Math.min(sampleSize, shuffled.length));
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────

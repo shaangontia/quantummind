@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.cache = exports.TTL = void 0;
+exports.cache = exports.memCache = exports.TTL = void 0;
 /**
  * QuantumMind Cache Layer — multi-backend with auto-detection
  *
@@ -113,6 +113,7 @@ class MemCache {
     }
 }
 const mem = new MemCache();
+exports.memCache = mem;
 function getMode() {
     if (process.env.KV_REST_API_URL)
         return 'vercel-kv';
