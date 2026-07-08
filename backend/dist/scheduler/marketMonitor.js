@@ -190,7 +190,7 @@ async function runMarketCycle() {
         const lastIdx = await (0, turso_js_1.queryOne)("SELECT date FROM index_prices ORDER BY date DESC LIMIT 1").catch(() => null);
         if (!lastIdx || String(lastIdx.date) < today) {
             const { fetchAndStoreIndexHistory } = await Promise.resolve().then(() => __importStar(require('../services/indexData.js')));
-            fetchAndStoreIndexHistory().catch(e => logger_js_1.logger.warn({ reason: `[IndexData] refresh failed: ${e}` }));
+            await fetchAndStoreIndexHistory().catch(e => logger_js_1.logger.warn({ reason: `[IndexData] refresh failed: ${e}` }));
         }
         const portfolios = await (0, turso_js_1.query)('SELECT * FROM portfolios WHERE is_active = 1');
         for (const p of portfolios) {

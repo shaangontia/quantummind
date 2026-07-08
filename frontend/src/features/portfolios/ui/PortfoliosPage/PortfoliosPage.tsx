@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePortfolios } from '../../hooks/usePortfolios.ts';
 import { CreatePortfolioModal } from '../CreatePortfolioModal/CreatePortfolioModal.tsx';
+import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx';
+import type { Portfolio } from '../../../../api/portfolio.api.types.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -12,6 +14,7 @@ import './PortfoliosPage.css';
 export const PortfoliosPage = () => {
   const { portfolios, isLoading, error, refresh } = usePortfolios();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [editPortfolio, setEditPortfolio] = useState<Portfolio | null>(null);
   const navigate = useNavigate();
 
   return (
@@ -61,7 +64,15 @@ export const PortfoliosPage = () => {
                 tabIndex={0}
                 onKeyDown={e => e.key === 'Enter' && navigate(`/portfolios/${p.id}`)}
               >
-                <div className="portfolio-card-header">
+                <div className="portfolio-card-header" style={{ position: 'relative' }}>
+                  <button
+                    className="btn btn-ghost"
+                    style={{ position: 'absolute', top: 0, right: 0, fontSize: '0.8rem', padding: '2px 8px', zIndex: 1 }}
+                    onClick={e => { e.stopPropagation(); setEditPortfolio(p); }}
+                    title="Edit portfolio"
+                  >
+                    ✏
+                  </button>
                   <span className="portfolio-name">{p.name}</span>
                   <Badge variant={riskColor(p.risk_tolerance) as BadgeVariant}>
                     {p.risk_tolerance} Risk
@@ -111,6 +122,14 @@ export const PortfoliosPage = () => {
         <CreatePortfolioModal
           onClose={() => setIsCreateOpen(false)}
           onCreated={() => { setIsCreateOpen(false); void refresh(); }}
+        />
+      )}
+
+      {editPortfolio && (
+        <EditPortfolioModal
+          portfolio={editPortfolio}
+          onClose={() => setEditPortfolio(null)}
+          onSaved={() => { setEditPortfolio(null); void refresh(); }}
         />
       )}
     </div>

@@ -15,6 +15,10 @@ export interface Portfolio {
   target_return_pct: number;
   rebalance_frequency: RebalanceFrequency;
   preferred_sectors?: string; // JSON array
+  preferred_caps?: string;    // JSON array
+  volatility_preference?: 'low' | 'medium' | 'high';
+  investment_goal?: 'growth' | 'income' | 'retirement';
+  max_drawdown_pct?: number;
   is_active: number;
   created_at: string;
   updated_at: string;

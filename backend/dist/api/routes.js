@@ -83,10 +83,54 @@ router.get('/portfolios/:id/summary', async (req, res) => {
     }
 });
 router.patch('/portfolios/:id', async (req, res) => {
-    const { name, riskTolerance, investmentHorizonMonths, targetReturnPct } = req.body;
-    const id = parseInt(req.params.id);
-    await (0, turso_js_1.run)('UPDATE portfolios SET name=COALESCE(?,name), risk_tolerance=COALESCE(?,risk_tolerance), investment_horizon_months=COALESCE(?,investment_horizon_months), target_return_pct=COALESCE(?,target_return_pct), updated_at=CURRENT_TIMESTAMP WHERE id=?', [name, riskTolerance, investmentHorizonMonths, targetReturnPct, id]);
-    res.json({ success: true, data: await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [id]) });
+    try {
+        const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, rebalanceFrequency, preferredSectors, preferredCaps, volatilityPreference, investmentGoal, maxDrawdownPct, } = req.body;
+        const id = parseInt(req.params.id);
+        const existing = await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [id]);
+        if (!existing)
+            return res.status(404).json({ success: false, error: 'Portfolio not found' });
+        // If capital is being increased, add the difference to current_cash
+        let cashDelta = 0;
+        if (initialCapital != null) {
+            const existingCapital = Number(existing.initial_capital ?? 0);
+            cashDelta = Number(initialCapital) - existingCapital;
+        }
+        await (0, turso_js_1.run)(`UPDATE portfolios SET
+        name                   = COALESCE(?, name),
+        description            = COALESCE(?, description),
+        initial_capital        = COALESCE(?, initial_capital),
+        current_cash           = CASE WHEN ? IS NOT NULL THEN MAX(0, current_cash + ?) ELSE current_cash END,
+        risk_tolerance         = COALESCE(?, risk_tolerance),
+        investment_horizon_months = COALESCE(?, investment_horizon_months),
+        target_return_pct      = COALESCE(?, target_return_pct),
+        rebalance_frequency    = COALESCE(?, rebalance_frequency),
+        preferred_sectors      = COALESCE(?, preferred_sectors),
+        preferred_caps         = COALESCE(?, preferred_caps),
+        volatility_preference  = COALESCE(?, volatility_preference),
+        investment_goal        = COALESCE(?, investment_goal),
+        max_drawdown_pct       = COALESCE(?, max_drawdown_pct),
+        updated_at             = CURRENT_TIMESTAMP
+      WHERE id = ?`, [
+            name ?? null,
+            description ?? null,
+            initialCapital ?? null,
+            initialCapital ?? null, cashDelta, // cash delta params
+            riskTolerance ?? null,
+            investmentHorizonMonths ?? null,
+            targetReturnPct ?? null,
+            rebalanceFrequency ?? null,
+            preferredSectors != null ? JSON.stringify(preferredSectors) : null,
+            preferredCaps != null ? JSON.stringify(preferredCaps) : null,
+            volatilityPreference ?? null,
+            investmentGoal ?? null,
+            maxDrawdownPct ?? null,
+            id,
+        ]);
+        res.json({ success: true, data: await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [id]) });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: String(err) });
+    }
 });
 router.delete('/portfolios/:id', async (req, res) => {
     await (0, turso_js_1.run)('UPDATE portfolios SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?', [parseInt(req.params.id)]);
@@ -246,7 +290,7 @@ router.get('/portfolios/:id/benchmark', async (req, res) => {
         const fromDate = String(portfolio.created_at ?? '').slice(0, 10) || new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
         const toDate = new Date().toISOString().slice(0, 10);
         // Performance snapshots for portfolio NAV over time
-        const snapshots = await (0, turso_js_1.query)('SELECT snapshot_date, total_value FROM performance_snapshots WHERE portfolio_id = ? AND snapshot_date >= ? ORDER BY snapshot_date ASC', [pid, fromDate]);
+        const snapshots = await (0, turso_js_1.query)("SELECT date(snapshot_time) as snapshot_date, total_portfolio_value as total_value FROM performance_snapshots WHERE portfolio_id = ? AND date(snapshot_time) >= ? ORDER BY snapshot_time ASC", [pid, fromDate]);
         // Index histories
         const [nifty50History, nifty500History] = await Promise.all([
             getIndexHistory(INDEX_SYMBOLS.NIFTY50, fromDate, toDate),
