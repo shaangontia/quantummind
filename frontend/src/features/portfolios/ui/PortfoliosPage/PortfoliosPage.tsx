@@ -4,7 +4,6 @@ import { useAppDispatch, useAppSelector } from '../../../../store/hooks.ts';
 import {
   openEditModal, closeEditModal, openCreateModal, closeCreateModal,
   selectIsCreateOpen, selectEditingPortfolio,
-  upsertPortfolio,
 } from '../../../../store/portfolios/index.ts';
 import { CreatePortfolioModal } from '../CreatePortfolioModal/CreatePortfolioModal.tsx';
 import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx';
@@ -13,7 +12,6 @@ import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
 import { formatINR, formatPct, riskColor } from '../../model/portfolios.utils.ts';
 import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
-import type { Portfolio } from '../../../../api/portfolio.api.types.ts';
 import './PortfoliosPage.css';
 
 export const PortfoliosPage = () => {
@@ -58,7 +56,7 @@ export const PortfoliosPage = () => {
       {!isLoading && portfolios.length > 0 && (
         <div className="portfolios-grid">
           {portfolios.map(p => {
-            const returnPct = (p as Portfolio & { return_pct?: number }).return_pct ?? 0;
+            const returnPct = (p as { return_pct?: number }).return_pct ?? 0;
             const isPositive = returnPct >= 0;
             return (
               <div
@@ -136,10 +134,7 @@ export const PortfoliosPage = () => {
         <EditPortfolioModal
           portfolio={editingPortfolio}
           onClose={() => dispatch(closeEditModal())}
-          onSaved={updated => {
-            dispatch(upsertPortfolio(updated));
-            dispatch(closeEditModal());
-          }}
+          onSaved={() => dispatch(closeEditModal())}
         />
       )}
     </div>

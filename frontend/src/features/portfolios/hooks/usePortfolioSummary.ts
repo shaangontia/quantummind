@@ -1,26 +1,20 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { portfolioApi } from '../../../api/portfolio.api.ts';
-import type { PortfolioSummary } from '../../../api/portfolio.api.types.ts';
+import { useGetPortfolioSummaryQuery } from '../../../store/portfolios/index.ts';
 
+/** Kept for backward compat — summaryKey no longer needed externally (use RTK tag invalidation) */
 export const summaryKey = (id: number) => ['portfolio-summary', id] as const;
 
 export const usePortfolioSummary = (id: number) => {
-  const qc = useQueryClient();
-  const { data, isLoading, error, dataUpdatedAt } = useQuery<PortfolioSummary, Error>({
-    queryKey: summaryKey(id),
-    queryFn: () => portfolioApi.summary(id),
-    staleTime: 30_000,           // fresh for 30s — matches backend cache TTL
-    refetchInterval: 30_000,     // auto-poll every 30s
+  const { data, isLoading, error, refetch, fulfilledTimeStamp } = useGetPortfolioSummaryQuery(id, {
+    pollingInterval: 30_000,
   });
 
-  const refresh = () => qc.invalidateQueries({ queryKey: summaryKey(id) });
-  const lastFetchedAt = dataUpdatedAt ? new Date(dataUpdatedAt) : null;
+  const lastFetchedAt = fulfilledTimeStamp ? new Date(fulfilledTimeStamp) : null;
 
   return {
     summary: data ?? null,
     isLoading,
-    error: error?.message ?? null,
-    refresh,
+    error: error ? ('error' in error ? String(error.error) : 'Failed to load summary') : null,
+    refresh: refetch,
     lastFetchedAt,
   };
 };

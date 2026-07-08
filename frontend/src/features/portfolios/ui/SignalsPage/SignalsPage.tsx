@@ -1,7 +1,5 @@
 import { useParams, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { portfolioApi } from '../../../../api/portfolio.api.ts';
-import type { MarketSignal } from '../../../../api/portfolio.api.types.ts';
+import { useGetPortfolioSignalsQuery } from '../../../../store/portfolios/index.ts';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
@@ -20,11 +18,8 @@ export const SignalsPage = () => {
   const { id } = useParams<{ id: string }>();
   const portfolioId = Number(id);
 
-  const { data: signals = [], isLoading } = useQuery<MarketSignal[]>({
-    queryKey: ['signals', portfolioId],
-    queryFn: () => portfolioApi.signals(portfolioId),
-    staleTime: 30_000,
-    refetchInterval: 30_000,
+  const { data: signals = [], isLoading } = useGetPortfolioSignalsQuery(portfolioId, {
+    pollingInterval: 30_000,
   });
 
   return (

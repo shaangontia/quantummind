@@ -1,15 +1,8 @@
-import { useQuery } from '@tanstack/react-query';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useGetPortfolioSectorsQuery } from '../../../../store/portfolios/index.ts';
 import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import './SectorAllocationChart.css';
-
-interface SectorAllocation {
-  sector: string;
-  value: number;      // ₹ NAV in this sector
-  pct: number;        // % of total holdings value
-  holdings: number;   // number of stocks
-}
 
 const SECTOR_COLORS: Record<string, string> = {
   IT:          '#6366f1', // indigo
@@ -30,20 +23,12 @@ interface Props {
 }
 
 export const SectorAllocationChart = ({ portfolioId }: Props) => {
-  const { data, isLoading, error } = useQuery<SectorAllocation[]>({
-    queryKey: ['sector-allocation', portfolioId],
-    queryFn: async () => {
-      const res = await fetch(`/api/portfolios/${portfolioId}/sectors`);
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error ?? 'Failed to load sectors');
-      return json.data as SectorAllocation[];
-    },
-    staleTime: 2 * 60_000,
-    refetchInterval: 5 * 60_000,
+  const { data, isLoading, isError } = useGetPortfolioSectorsQuery(portfolioId, {
+    pollingInterval: 5 * 60_000,
   });
 
   if (isLoading) return <SkeletonBlock height={280} borderRadius={8} />;
-  if (error || !data) return (
+  if (isError || !data) return (
     <EmptyState icon="🗂" title="Sector data unavailable" description="Will populate after first cron cycle with sector taxonomy." />
   );
   if (data.length === 0) return (

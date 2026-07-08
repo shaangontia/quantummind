@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { portfolioApi } from '../../../../api/portfolio.api.ts';
+import { useCreatePortfolioMutation } from '../../../../store/portfolios/index.ts';
 import type { CreatePortfolioPayload, RiskTolerance, RebalanceFrequency } from '../../../../api/portfolio.api.types.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import './CreatePortfolioModal.css';
@@ -31,7 +31,7 @@ const DEFAULT_FORM: CreatePortfolioPayload = {
 
 export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModalProps) => {
   const [form, setForm] = useState<CreatePortfolioPayload>(DEFAULT_FORM);
-  const [isLoading, setIsLoading] = useState(false);
+  const [createPortfolio, { isLoading }] = useCreatePortfolioMutation();
   const [error, setError] = useState<string | null>(null);
 
   const toggleCap = (cap: string) => {
@@ -55,14 +55,12 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name.trim()) { setError('Portfolio name is required'); return; }
-    setIsLoading(true);
     setError(null);
     try {
-      await portfolioApi.create(form);
+      await createPortfolio(form).unwrap();
       onCreated();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create portfolio');
-      setIsLoading(false);
+    } catch (err: unknown) {
+      setError((err as { error?: string })?.error ?? (err instanceof Error ? err.message : 'Failed to create portfolio'));
     }
   };
 

@@ -1,17 +1,14 @@
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { portfolioApi } from '../../../../api/portfolio.api.ts';
+import { useGetPortfolioEditStateQuery, useUpdatePortfolioMutation } from '../../../../store/portfolios/index.ts';
 import type {
   EditableField,
   Portfolio,
   PortfolioEditState,
   PortfolioLifecycleState,
-  PortfolioSummary,
   RiskTolerance,
   RebalanceFrequency,
   UpdatePortfolioPayload,
 } from '../../../../api/portfolio.api.types.ts';
-import { summaryKey } from '../../hooks/usePortfolioSummary.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
 import '../../ui/CreatePortfolioModal/CreatePortfolioModal.css';
@@ -107,20 +104,17 @@ const WarnBadge = () => (
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfolioModalProps) => {
-  const qc  = useQueryClient();
   const pid = portfolio.id;
 
-  const [form, setForm]       = useState<Required<UpdatePortfolioPayload>>(toFormState(portfolio));
-  const [isLoading, setLoading] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
+  const [form, setForm]             = useState<Required<UpdatePortfolioPayload>>(toFormState(portfolio));
+  const [error, setError]           = useState<string | null>(null);
   const [fieldError, setFieldError] = useState<Partial<Record<EditableField, string>>>({});
 
-  // Fetch edit-state from backend — drives field locking/warning
-  const { data: editState, isLoading: stateLoading } = useQuery<PortfolioEditState>({
-    queryKey: ['portfolio-edit-state', pid],
-    queryFn: () => portfolioApi.editState(pid),
-    staleTime: 30_000,
-  });
+  // RTK Query — edit-state (drives field locking/warning)
+  const { data: editState, isLoading: stateLoading } = useGetPortfolioEditStateQuery(pid);
+
+  // RTK Query — update mutation
+  const [updatePortfolio, { isLoading }] = useUpdatePortfolioMutation();
 
   const { isLocked, isWarn, fieldStyle } = useFieldState(editState);
   const lockReason = LOCK_REASON[editState?.state ?? 'ACTIVE'];
@@ -157,31 +151,15 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
       return;
     }
 
-    setLoading(true);
     setError(null);
     setFieldError({});
 
     try {
-      const updated = await portfolioApi.update(pid, form);
-
-      // Surgical cache patches — no refetch, no flash
-      qc.setQueryData<Portfolio[]>(['portfolios'], old =>
-        old ? old.map(p => p.id === pid ? updated : p) : [updated]
-      );
-      qc.setQueryData<PortfolioSummary>(summaryKey(pid), old =>
-        old ? {
-          ...old,
-          name: updated.name,
-          targetReturnPct: updated.target_return_pct,
-          riskTolerance: updated.risk_tolerance,
-          investmentHorizonMonths: updated.investment_horizon_months,
-        } : old
-      );
-
+      // RTK Query mutation — handles cache invalidation + optimistic updates via onQueryStarted
+      const updated = await updatePortfolio({ id: pid, payload: form }).unwrap();
       onSaved(updated);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to save changes';
-      // Map backend error codes to field-level errors
+    } catch (err: unknown) {
+      const msg = (err as { error?: string })?.error ?? (err instanceof Error ? err.message : 'Failed to save changes');
       if (msg.includes('CAPITAL_FLOOR_BREACH')) {
         setFieldError(prev => ({ ...prev, capitalReduction: `Capital cannot go below ₹${capitalFloor.toLocaleString('en-IN')}` }));
       } else if (msg.includes('DRAWDOWN_LOCK')) {
@@ -191,7 +169,6 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
       } else {
         setError(msg);
       }
-      setLoading(false);
     }
   };
 

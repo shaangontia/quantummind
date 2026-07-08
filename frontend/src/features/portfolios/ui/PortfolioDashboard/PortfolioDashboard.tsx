@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../../../../store/hooks.ts';
-import { openEditModal, closeEditModal, selectPortfolioById, upsertPortfolio } from '../../../../store/portfolios/index.ts';
+import { openEditModal, closeEditModal, selectPortfolioById, useGetPortfolioPerformanceQuery } from '../../../../store/portfolios/index.ts';
 import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ReferenceLine, ResponsiveContainer, Legend,
 } from 'recharts';
 import { usePortfolioSummary } from '../../hooks/usePortfolioSummary.ts';
-import type { PerformanceSnapshot, SummaryHolding } from '../../../../api/portfolio.api.types.ts';
+import type { SummaryHolding } from '../../../../api/portfolio.api.types.ts';
 import { StatCard } from '../../../../shared/ui/StatCard/StatCard.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
@@ -32,26 +32,14 @@ export const PortfolioDashboard = () => {
   const portfolio = useAppSelector(selectPortfolioById(portfolioId));
   const editingId = useAppSelector(state => state.portfolios.editingId);
   const isEditOpen = editingId === portfolioId;
-  const [performance, setPerformance] = useState<PerformanceSnapshot[]>([]);
-  const [perfLoading, setPerfLoading] = useState(true);
+  // RTK Query — performance (lazy after first paint)
+  const { data: performanceData, isLoading: perfLoading } = useGetPortfolioPerformanceQuery(
+    { id: portfolioId, days: 90 },
+  );
+  const performance = performanceData ?? [];
+
   const [showSecondary, setShowSecondary] = useState(false);
   const deferRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Load performance in background — don't block initial render
-  useEffect(() => {
-    const ctrl = new AbortController();
-    const load = async () => {
-      try {
-        const res = await fetch(`/api/portfolios/${portfolioId}/performance?days=90`, { signal: ctrl.signal });
-        const json = await res.json();
-        if (json.success) setPerformance(json.data as PerformanceSnapshot[]);
-      } catch { /* timeout or abort — silently skip */ } finally {
-        setPerfLoading(false);
-      }
-    };
-    void load();
-    return () => ctrl.abort();
-  }, [portfolioId]);
 
   // Defer news + adaptive panel by 300ms after first paint
   useEffect(() => {
@@ -305,7 +293,7 @@ export const PortfolioDashboard = () => {
         <EditPortfolioModal
           portfolio={portfolio}
           onClose={() => dispatch(closeEditModal())}
-          onSaved={updated => { dispatch(upsertPortfolio(updated)); dispatch(closeEditModal()); }}
+          onSaved={() => dispatch(closeEditModal())}
         />
       )}
     </div>
