@@ -1,49 +1,20 @@
 /**
  * ragService.ts — Phase 6: RAG-Based TARS Memory
  *
- * Embedding model : OpenAI text-embedding-3-small (512-dim truncated)
- * Vector store    : Turso tars_memory table via LibSQL vector() functions
+ * Retrieval  : SQLite FTS5 full-text search (BM25 ranking) — zero API keys needed.
+ *              Works on all Turso plans with no extensions required.
+ * Storage    : tars_memory table + tars_memory_fts FTS5 virtual table (content mirror)
  *
- * Fails gracefully: if OPENAI_API_KEY is unset, all functions are no-ops and
- * TARS continues without RAG context.
+ * Why FTS5 over vector search:
+ * - Groq has no embedding API; no OpenAI key available
+ * - FTS5 is built into SQLite/LibSQL — zero external dependencies
+ * - BM25 ranking suits short factual memories (trade narratives, cycle summaries)
+ * - Can be upgraded to vector search later if an embedding API becomes available
  */
-import 'dotenv/config';
 import { getClient } from '../db/turso.js';
 
-const EMBED_DIM     = 512;   // reduced dimension — good quality, half the storage of 1536
-const TOP_K         = 3;     // memories retrieved per TARS query
-const MAX_CONTENT   = 1200;  // truncate content before embedding to stay within token limits
-
-// ─── OpenAI embedding (raw fetch — no openai SDK needed) ──────────────────────
-async function embed(text: string): Promise<number[] | null> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;  // RAG disabled — silently degrade
-
-  const payload = {
-    model: 'text-embedding-3-small',
-    input: text.slice(0, MAX_CONTENT).replace(/\n+/g, ' '),
-    dimensions: EMBED_DIM,
-  };
-
-  const res = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    console.warn(`[RAG] Embedding API error ${res.status}: ${await res.text()}`);
-    return null;
-  }
-  const data = await res.json() as { data: Array<{ embedding: number[] }> };
-  return data.data[0]?.embedding ?? null;
-}
-
-// ─── Vector to LibSQL wire format ─────────────────────────────────────────────
-// LibSQL vector() accepts a JSON array string: vector('[0.1,0.2,...]')
-function toVectorLiteral(vec: number[]): string {
-  return `[${vec.join(',')}]`;
-}
+const TOP_K       = 3;     // memories retrieved per TARS query
+const MAX_CONTENT = 1200;  // truncate stored content to keep rows lean
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -56,38 +27,50 @@ export async function rememberFact(
   sourceType: 'cycle_summary' | 'news_analysis' | 'trade_narrative',
   sourceId?: string,
 ): Promise<void> {
-  const vec = await embed(content);
-  if (!vec) return;  // embedding failed or RAG disabled
-
   const db = getClient();
-  await db.execute({
-    sql: `INSERT INTO tars_memory (content, embedding, source_type, source_id)
-          VALUES (?, vector(?), ?, ?)`,
-    args: [content.slice(0, MAX_CONTENT), toVectorLiteral(vec), sourceType, sourceId ?? null],
-  });
+  const trimmed = content.slice(0, MAX_CONTENT);
+  try {
+    await db.execute({
+      sql: `INSERT INTO tars_memory (content, source_type, source_id) VALUES (?, ?, ?)`,
+      args: [trimmed, sourceType, sourceId ?? null],
+    });
+  } catch (err) {
+    console.warn('[RAG] rememberFact failed:', err);
+  }
 }
 
 /**
- * Retrieve top-K memories most relevant to the query string.
- * Returns empty array if OPENAI_API_KEY is unset or embedding fails.
+ * Retrieve top-K memories most relevant to the query using FTS5 BM25 ranking.
+ * Tokenises the query into FTS5-safe terms (strips punctuation, deduplicates).
+ * Returns empty array if no matching memories or table not yet populated.
  */
-export async function retrieveMemories(query: string): Promise<string[]> {
-  const vec = await embed(query);
-  if (!vec) return [];
-
+export async function retrieveMemories(userQuery: string): Promise<string[]> {
   const db = getClient();
+
+  // Build FTS5 query: keep only alphanumeric tokens >= 3 chars, join with OR
+  const ftsQuery = userQuery
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length > 2)
+    .slice(0, 8)   // cap terms to avoid FTS5 parse errors on very long queries
+    .join(' OR ');
+
+  if (!ftsQuery) return [];
+
   try {
     const result = await db.execute({
-      sql: `SELECT content, vector_distance_cos(embedding, vector(?)) AS dist
-            FROM tars_memory
-            ORDER BY dist
+      sql: `SELECT m.content
+            FROM tars_memory_fts fts
+            JOIN tars_memory m ON m.id = fts.rowid
+            WHERE tars_memory_fts MATCH ?
+            ORDER BY rank
             LIMIT ?`,
-      args: [toVectorLiteral(vec), TOP_K],
+      args: [ftsQuery, TOP_K],
     });
     return result.rows.map(r => String(r.content));
   } catch (err) {
-    // Vector index may not exist yet on first boot — degrade gracefully
-    console.warn('[RAG] Memory retrieval failed:', err);
+    // FTS table not yet populated or query malformed — degrade gracefully
+    console.warn('[RAG] retrieveMemories failed:', err);
     return [];
   }
 }

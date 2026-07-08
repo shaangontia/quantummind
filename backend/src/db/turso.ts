@@ -64,12 +64,11 @@ export async function runMigrations(): Promise<void> {
     console.log('[DB] Migration: portfolios.peak_nav added');
   } catch (_) { /* already exists */ }
 
-  // Phase 6: RAG-based TARS memory — vector store in Turso
+  // Phase 6: RAG-based TARS memory — FTS5 full-text search (no API key required)
   try {
     await db.execute(`CREATE TABLE IF NOT EXISTS tars_memory (
       id          INTEGER  PRIMARY KEY AUTOINCREMENT,
       content     TEXT     NOT NULL,
-      embedding   F32_BLOB(512),
       source_type TEXT     NOT NULL,
       source_id   TEXT,
       created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -78,12 +77,27 @@ export async function runMigrations(): Promise<void> {
   } catch (err) { console.warn('[DB] tars_memory table creation skipped:', err); }
 
   try {
-    // Vector index for approximate nearest-neighbour search on embeddings
+    // FTS5 virtual table mirrors tars_memory.content for BM25 full-text search
     await db.execute(
-      `CREATE INDEX IF NOT EXISTS tars_memory_vec_idx ON tars_memory (libsql_vector_idx(embedding))`
+      `CREATE VIRTUAL TABLE IF NOT EXISTS tars_memory_fts
+       USING fts5(content, content='tars_memory', content_rowid='id')`
     );
-    console.log('[DB] Migration: tars_memory_vec_idx ensured');
-  } catch (err) { console.warn('[DB] Vector index skipped (may need Turso vector extension):', err); }
+    console.log('[DB] Migration: tars_memory_fts FTS5 index ensured');
+  } catch (err) { console.warn('[DB] FTS5 index skipped:', err); }
+
+  // Keep FTS5 shadow table in sync via triggers
+  try {
+    await db.execute(`CREATE TRIGGER IF NOT EXISTS tars_memory_fts_insert
+      AFTER INSERT ON tars_memory BEGIN
+        INSERT INTO tars_memory_fts(rowid, content) VALUES (new.id, new.content);
+      END`);
+    await db.execute(`CREATE TRIGGER IF NOT EXISTS tars_memory_fts_delete
+      AFTER DELETE ON tars_memory BEGIN
+        INSERT INTO tars_memory_fts(tars_memory_fts, rowid, content)
+          VALUES('delete', old.id, old.content);
+      END`);
+    console.log('[DB] Migration: tars_memory FTS5 triggers ensured');
+  } catch (err) { console.warn('[DB] FTS5 triggers skipped:', err); }
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {
