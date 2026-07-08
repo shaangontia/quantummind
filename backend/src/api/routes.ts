@@ -266,4 +266,28 @@ router.post('/cron/market-cycle', async (req: Request, res: Response) => {
   }
 });
 
+// ─── Lightweight price-only refresh (fast, no signal generation) ──────────────
+router.post('/cron/price-update', async (req: Request, res: Response) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const provided = req.headers.authorization?.replace('Bearer ', '') ?? (req.query.secret as string | undefined);
+    if (provided !== cronSecret) return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const { getMultipleQuotes, DEFAULT_WATCHLIST } = await import('../services/marketData.js');
+    const holdings = await query('SELECT DISTINCT symbol FROM holdings h JOIN portfolios p ON p.id = h.portfolio_id WHERE p.is_active = 1');
+    if (!holdings.length) return res.json({ success: true, updated: 0 });
+    const symbols = holdings.map((h: any) => h.symbol as string);
+    const quotes = await getMultipleQuotes(symbols);
+    let updated = 0;
+    for (const q of quotes) {
+      await run('UPDATE holdings SET current_price = ?, last_price_updated = CURRENT_TIMESTAMP WHERE symbol = ?', [q.price, q.symbol]);
+      updated++;
+    }
+    res.json({ success: true, updated, ts: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 export default router;
