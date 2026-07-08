@@ -127,3 +127,16 @@
 .portfolio-card:hover .portfolio-arrow {
   transform: translateX(4px);
 }
+
+.portfolio-edit-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.portfolio-card:hover .portfolio-edit-btn {
+  opacity: 1;
+}

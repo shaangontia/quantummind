@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { usePortfolio } from '../../hooks/usePortfolio.ts';
+import { useAppDispatch, useAppSelector } from '../../../../store/hooks.ts';
+import { openEditModal, closeEditModal, selectPortfolioById, upsertPortfolio } from '../../../../store/portfolios/index.ts';
 import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -26,12 +27,14 @@ export const PortfolioDashboard = () => {
   const portfolioId = Number(id);
   const navigate = useNavigate();
 
+  const dispatch = useAppDispatch();
   const { summary, isLoading, error, refresh, lastFetchedAt } = usePortfolioSummary(portfolioId);
-  const { portfolio } = usePortfolio(portfolioId);
+  const portfolio = useAppSelector(selectPortfolioById(portfolioId));
+  const editingId = useAppSelector(state => state.portfolios.editingId);
+  const isEditOpen = editingId === portfolioId;
   const [performance, setPerformance] = useState<PerformanceSnapshot[]>([]);
   const [perfLoading, setPerfLoading] = useState(true);
   const [showSecondary, setShowSecondary] = useState(false);
-  const [isEditOpen, setIsEditOpen] = useState(false);
   const deferRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load performance in background — don't block initial render
@@ -112,7 +115,7 @@ export const PortfolioDashboard = () => {
             ↻ Refresh
           </button>
           {portfolio && (
-            <button className="btn btn-ghost" onClick={() => setIsEditOpen(true)} title="Edit portfolio settings">
+            <button className="btn btn-ghost" onClick={() => dispatch(openEditModal(portfolioId))} title="Edit portfolio settings">
               ✏ Edit
             </button>
           )}
@@ -298,11 +301,11 @@ export const PortfolioDashboard = () => {
         </div>
       )}
 
-      {isEditOpen && portfolio && (
+      {portfolio && isEditOpen && (
         <EditPortfolioModal
           portfolio={portfolio}
-          onClose={() => setIsEditOpen(false)}
-          onSaved={() => setIsEditOpen(false)}
+          onClose={() => dispatch(closeEditModal())}
+          onSaved={updated => { dispatch(upsertPortfolio(updated)); dispatch(closeEditModal()); }}
         />
       )}
     </div>
