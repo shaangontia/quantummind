@@ -66,21 +66,24 @@ export async function retrieveMemories(
   const andQuery = tokens.join(' AND ');
   const orQuery  = tokens.join(' OR ');
 
-  const portfolioFilter = portfolioId != null
-    ? `AND (m.source_id = '${portfolioId}' OR m.source_id IS NULL)`
-    : '';
-
   const runQuery = async (ftsMatch: string): Promise<string[]> => {
-    const result = await db.execute({
-      sql: `SELECT m.content
-            FROM tars_memory_fts fts
-            JOIN tars_memory m ON m.id = fts.rowid
-            WHERE tars_memory_fts MATCH ?
-            ${portfolioFilter}
-            ORDER BY rank
-            LIMIT ?`,
-      args: [ftsMatch, TOP_K],
-    });
+    // Parameterized SQL — no string interpolation of portfolioId
+    const sql = portfolioId != null
+      ? `SELECT m.content
+         FROM tars_memory_fts fts
+         JOIN tars_memory m ON m.id = fts.rowid
+         WHERE tars_memory_fts MATCH ?
+           AND (m.source_id = ? OR m.source_id IS NULL)
+         ORDER BY rank LIMIT ?`
+      : `SELECT m.content
+         FROM tars_memory_fts fts
+         JOIN tars_memory m ON m.id = fts.rowid
+         WHERE tars_memory_fts MATCH ?
+         ORDER BY rank LIMIT ?`;
+    const args = portfolioId != null
+      ? [ftsMatch, String(portfolioId), TOP_K]
+      : [ftsMatch, TOP_K];
+    const result = await db.execute({ sql, args });
     return result.rows.map(r => String(r.content));
   };
 

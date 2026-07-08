@@ -711,10 +711,14 @@ router.post('/tars/chat', async (req: Request, res: Response) => {
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ success: false, error: 'message required' });
   }
-  const chatPortfolioId: number | undefined =
-    typeof portfolioId === 'number' ? portfolioId
-    : typeof portfolioId === 'string' ? (parseInt(portfolioId, 10) || undefined)
-    : undefined;
+  const chatPortfolioId: number | undefined = (() => {
+    if (typeof portfolioId === 'number') return portfolioId;
+    if (typeof portfolioId === 'string') {
+      const n = parseInt(portfolioId, 10);
+      return Number.isNaN(n) ? undefined : n;  // explicit NaN check — 0 is valid
+    }
+    return undefined;
+  })();
   try {
     res.set('Cache-Control', 'no-store');
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
