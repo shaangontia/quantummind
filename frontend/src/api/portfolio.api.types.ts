@@ -58,6 +58,7 @@ export interface Trade {
   signal_reason?: string;
   portfolio_value_before?: number;
   portfolio_value_after?: number;
+  realized_pnl?: number | null;
   status: 'EXECUTED' | 'SIMULATED' | 'FAILED';
 }
 

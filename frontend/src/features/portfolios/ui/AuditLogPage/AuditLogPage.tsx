@@ -74,6 +74,7 @@ export const AuditLogPage = () => {
                     <th className="text-right">Amount</th>
                     <th className="text-right">Brokerage</th>
                     <th className="text-right">Net Amount</th>
+                    <th className="text-right">Realized P&L</th>
                     <th>Reason</th>
                     <th>Status</th>
                   </tr>
@@ -96,6 +97,15 @@ export const AuditLogPage = () => {
                       <td className="text-right text-muted">{formatINR(t.brokerage)}</td>
                       <td className={`text-right ${t.action === 'BUY' ? 'tag-negative' : 'tag-positive'}`}>
                         {formatINR(t.net_amount)}
+                      </td>
+                      <td className="text-right" style={{
+                        fontWeight: 600,
+                        color: t.realized_pnl == null ? '#64748b'
+                          : t.realized_pnl >= 0 ? '#10b981' : '#ef4444'
+                      }}>
+                        {t.action !== 'SELL' ? '—'
+                          : t.realized_pnl == null ? 'Pending'
+                          : (t.realized_pnl >= 0 ? '+' : '') + formatINR(t.realized_pnl)}
                       </td>
                       <td className="reason-cell">{t.signal_reason ?? '—'}</td>
                       <td>
