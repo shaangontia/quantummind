@@ -24,7 +24,7 @@ import {
   isUnderDailyTurnoverLimit,
   isUnderPositionCap,
 } from './tradingGuards.js';
-import { isNseMarketOpen, SYMBOL_TIER, type StockQuote } from './marketData.js';
+import { isNseMarketOpen, type StockQuote } from './marketData.js';
 import { logger } from '../lib/logger.js';
 
 export interface RiskDecision {
@@ -48,12 +48,6 @@ export interface RiskContext {
 // Maximum portfolio drawdown from peak before halting buys (20%)
 const MAX_DRAWDOWN_HALT_PCT = 0.20;
 
-// Market-cap tier allocation caps (% of total NAV)
-const TIER_CAPS: Record<'large' | 'mid' | 'small', { max: number; label: string }> = {
-  large: { max: 0.60, label: 'Large-cap (max 60% NAV)' },
-  mid:   { max: 0.35, label: 'Mid-cap (max 35% NAV)' },
-  small: { max: 0.15, label: 'Small-cap (max 15% NAV)' },
-};
 
 export async function evaluateRisk(ctx: RiskContext): Promise<RiskDecision> {
   const checks: string[] = [];
@@ -107,34 +101,7 @@ export async function evaluateRisk(ctx: RiskContext): Promise<RiskDecision> {
     }
   }
 
-  // 7a. Tier allocation cap (BUY only) — enforce large/mid/small-cap NAV limits
-  checks.push('tier_allocation');
-  if (ctx.action === 'BUY') {
-    const tier = SYMBOL_TIER[ctx.symbol] ?? 'large'; // default large if unknown
-    const tierCap = TIER_CAPS[tier];
-    // Sum current NAV allocated to this tier
-    const sameTierSymbols = Object.entries(SYMBOL_TIER)
-      .filter(([, t]) => t === tier)
-      .map(([s]) => s);
-    const placeholders = sameTierSymbols.map(() => '?').join(',');
-    const tierHoldings = await queryOne(
-      `SELECT COALESCE(SUM(quantity * COALESCE(current_price, avg_buy_price)), 0) as tier_nav FROM holdings WHERE portfolio_id = ? AND symbol IN (${placeholders})`,
-      [ctx.portfolioId, ...sameTierSymbols]
-    );
-    const tierNav = Number(tierHoldings?.tier_nav ?? 0);
-    const tradeAmount = ctx.quantity * ctx.price;
-    if (tierNav + tradeAmount > tierCap.max * ctx.portfolioNAV) {
-      const remaining = tierCap.max * ctx.portfolioNAV - tierNav;
-      const maxTierQty = Math.floor(remaining / ctx.price);
-      if (maxTierQty <= 0) {
-        logger.riskBlock(ctx.portfolioId, ctx.symbol, `${tierCap.label} cap reached — ${(tierNav / ctx.portfolioNAV * 100).toFixed(1)}% of NAV already in ${tier}-cap`);
-        return { approved: false, reason: `${tierCap.label} cap reached`, checksRun: checks };
-      }
-      return { approved: true, reason: `${tierCap.label} cap applied — qty reduced to ${maxTierQty}`, maxAllowedQty: maxTierQty, checksRun: checks };
-    }
-  }
-
-  // 7b. Position concentration cap (BUY only)
+  // 7. Position concentration cap (BUY only) — max 10% NAV per symbol (only per-symbol limit)
   checks.push('position_cap');
   if (ctx.action === 'BUY') {
     const amount = ctx.quantity * ctx.price;

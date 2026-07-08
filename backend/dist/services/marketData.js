@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SYMBOL_TIER = exports.DEFAULT_WATCHLIST = void 0;
+exports.DEFAULT_WATCHLIST = exports.NSE_UNIVERSE = void 0;
 exports.toNseSymbol = toNseSymbol;
 exports.isNseMarketOpen = isNseMarketOpen;
 exports.getDisplayQuote = getDisplayQuote;
@@ -11,6 +11,7 @@ exports.getQuote = getQuote;
 exports.getExecutableQuote = getExecutableQuote;
 exports.getMultipleQuotes = getMultipleQuotes;
 exports.getRsi = getRsi;
+exports.getCycleWatchlist = getCycleWatchlist;
 const https_1 = __importDefault(require("https"));
 function toNseSymbol(symbol) {
     return symbol.endsWith('.NS') ? symbol : `${symbol}.NS`;
@@ -289,65 +290,67 @@ async function getRsi(symbol, period = 14) {
     }
 }
 // NSE blue-chip watchlist — no penny stocks, all established companies
-exports.DEFAULT_WATCHLIST = [
-    // ─── Large-Cap (Nifty 50) — target 50–60% NAV ───────────────────────────────
-    'RELIANCE.NS', // Reliance Industries — Conglomerate
-    'TCS.NS', // TCS — IT
-    'HDFCBANK.NS', // HDFC Bank — Banking
-    'INFY.NS', // Infosys — IT
-    'ICICIBANK.NS', // ICICI Bank — Banking
-    'HINDUNILVR.NS', // Hindustan Unilever — FMCG
-    'SBIN.NS', // SBI — Banking
-    'BHARTIARTL.NS', // Bharti Airtel — Telecom
-    'KOTAKBANK.NS', // Kotak Bank — Banking
-    'WIPRO.NS', // Wipro — IT
-    'AXISBANK.NS', // Axis Bank — Banking
-    'LT.NS', // L&T — Infrastructure
-    'ASIANPAINT.NS', // Asian Paints — Consumer
-    'MARUTI.NS', // Maruti Suzuki — Auto
-    'TITAN.NS', // Titan — Consumer
-    'BAJFINANCE.NS', // Bajaj Finance — NBFC
-    'SUNPHARMA.NS', // Sun Pharma — Pharma
-    'HCLTECH.NS', // HCL Tech — IT
-    'TATAMOTORS.NS', // Tata Motors — Auto
-    'ONGC.NS', // ONGC — Energy
-    // ─── Mid-Cap (>₹5,000 Cr market cap) — target 25–35% NAV ───────────────────
-    'POLYCAB.NS', // Polycab India — Cables & Wires
-    'DIXONTECH.NS', // Dixon Technologies — Electronics manufacturing (EMS)
-    'PERSISTENT.NS', // Persistent Systems — IT services
-    'COFORGE.NS', // Coforge — Digital IT
-    'KPITTECH.NS', // KPIT Technologies — Automotive software
-    'CROMPTON.NS', // Crompton Greaves Consumer — Consumer electricals
-    'PIIND.NS', // PI Industries — Agrochemicals
-    'ASTRAL.NS', // Astral — Pipes & adhesives
-    'VOLTAS.NS', // Voltas — Cooling & HVAC
-    'MAXHEALTH.NS', // Max Healthcare — Hospitals
-    'GODREJPROP.NS', // Godrej Properties — Real estate
-    'MPHASIS.NS', // Mphasis — IT services
-    // ─── Small-Cap (>₹1,000 Cr market cap) — target 5–15% NAV ──────────────────
-    'LATENTVIEW.NS', // Latent View Analytics — Data analytics
-    'CLEAN.NS', // Clean Science and Technology — Specialty chemicals
-    'NAZARA.NS', // Nazara Technologies — Gaming & esports
-    'BIKAJI.NS', // Bikaji Foods — FMCG/snacks
-    'ROUTE.NS', // Route Mobile — CPaaS/cloud communications
-];
 /**
- * Market cap tier for each watchlist symbol.
- * Used by the Risk Engine to enforce allocation caps:
- *   large: 50–60% NAV  |  mid: 25–35% NAV  |  small: 5–15% NAV
+ * NSE Open Universe — ~150 liquid NSE-listed stocks across all market cap segments.
+ * No tier restrictions. The Risk Engine enforces only per-symbol position caps (10% NAV).
+ * The market cycle evaluates a rotating sample each run to stay within API rate limits.
+ * Min price filter: ₹50 (applied in signal engine). No sector or cap-size restrictions.
+ *
+ * Expansion: Add any NSE-listed symbol ending in .NS. The system will automatically
+ * include it in rotation on the next deploy.
  */
-exports.SYMBOL_TIER = {
-    // Large-cap
-    'RELIANCE.NS': 'large', 'TCS.NS': 'large', 'HDFCBANK.NS': 'large', 'INFY.NS': 'large',
-    'ICICIBANK.NS': 'large', 'HINDUNILVR.NS': 'large', 'SBIN.NS': 'large', 'BHARTIARTL.NS': 'large',
-    'KOTAKBANK.NS': 'large', 'WIPRO.NS': 'large', 'AXISBANK.NS': 'large', 'LT.NS': 'large',
-    'ASIANPAINT.NS': 'large', 'MARUTI.NS': 'large', 'TITAN.NS': 'large', 'BAJFINANCE.NS': 'large',
-    'SUNPHARMA.NS': 'large', 'HCLTECH.NS': 'large', 'TATAMOTORS.NS': 'large', 'ONGC.NS': 'large',
-    // Mid-cap
-    'POLYCAB.NS': 'mid', 'DIXONTECH.NS': 'mid', 'PERSISTENT.NS': 'mid', 'COFORGE.NS': 'mid',
-    'KPITTECH.NS': 'mid', 'CROMPTON.NS': 'mid', 'PIIND.NS': 'mid', 'ASTRAL.NS': 'mid',
-    'VOLTAS.NS': 'mid', 'MAXHEALTH.NS': 'mid', 'GODREJPROP.NS': 'mid', 'MPHASIS.NS': 'mid',
-    // Small-cap
-    'LATENTVIEW.NS': 'small', 'CLEAN.NS': 'small', 'NAZARA.NS': 'small',
-    'BIKAJI.NS': 'small', 'ROUTE.NS': 'small',
-};
+exports.NSE_UNIVERSE = [
+    // ── Nifty 50 ───────────────────────────────────────────────────────────
+    'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
+    'HINDUNILVR.NS', 'SBIN.NS', 'BHARTIARTL.NS', 'KOTAKBANK.NS', 'WIPRO.NS',
+    'AXISBANK.NS', 'LT.NS', 'ASIANPAINT.NS', 'MARUTI.NS', 'TITAN.NS',
+    'BAJFINANCE.NS', 'SUNPHARMA.NS', 'HCLTECH.NS', 'TATAMOTORS.NS', 'ONGC.NS',
+    'NTPC.NS', 'POWERGRID.NS', 'JSWSTEEL.NS', 'GRASIM.NS', 'ULTRACEMCO.NS',
+    'BPCL.NS', 'DRREDDY.NS', 'HEROMOTOCO.NS', 'DIVISLAB.NS', 'NESTLEIND.NS',
+    'APOLLOHOSP.NS', 'CIPLA.NS', 'TATACONSUM.NS', 'EICHERMOT.NS', 'SHRIRAMFIN.NS',
+    'BAJAJFINSV.NS', 'ADANIENT.NS', 'COALINDIA.NS', 'HINDALCO.NS', 'M&M.NS',
+    'BRITANNIA.NS', 'TATAPOWER.NS', 'SBILIFE.NS', 'HDFCLIFE.NS', 'BAJAJ-AUTO.NS',
+    'INDUSINDBK.NS', 'LTF.NS', 'TECHM.NS', 'ADANIPORTS.NS', 'TATASTEEL.NS',
+    // ── Nifty Next 50 / MidCap 150 ─────────────────────────────────────────
+    'POLYCAB.NS', 'DIXONTECH.NS', 'PERSISTENT.NS', 'COFORGE.NS', 'KPITTECH.NS',
+    'CROMPTON.NS', 'PIIND.NS', 'ASTRAL.NS', 'VOLTAS.NS', 'MAXHEALTH.NS',
+    'GODREJPROP.NS', 'MPHASIS.NS', 'RVNL.NS', 'IRFC.NS', 'PFC.NS',
+    'RECLTD.NS', 'CHOLAFIN.NS', 'MUTHOOTFIN.NS', 'VEDL.NS', 'TRENT.NS',
+    'AMBUJACEM.NS', 'ACC.NS', 'BERGEPAINT.NS', 'CONCOR.NS', 'CUMMINSIND.NS',
+    'MOTHERSON.NS', 'BALKRISIND.NS', 'AUROPHARMA.NS', 'SYNGENE.NS', 'LALPATHLAB.NS',
+    'METROPOLIS.NS', 'SUNTV.NS', 'INDUSTOWER.NS', 'NAUKRI.NS', 'DMART.NS',
+    'ZOMATO.NS', 'PAYTM.NS', 'NYKAA.NS', 'DELHIVERY.NS', 'CARTRADE.NS',
+    'ABFRL.NS', 'PAGEIND.NS', 'KAYNES.NS', 'SYRMA.NS', 'AEROFLEX.NS',
+    'GRINDWELL.NS', 'JYOTHYLAB.NS', 'KAJARIACER.NS', 'RAMKRISHNA.NS', 'ELGIEQUIP.NS',
+    // ── Nifty SmallCap 250 (liquid, >₹50, positive cash flow) ──────────────────
+    'LATENTVIEW.NS', 'CLEAN.NS', 'NAZARA.NS', 'BIKAJI.NS', 'ROUTE.NS',
+    'CAMPUS.NS', 'MEDPLUS.NS', 'HAPPYFORGE.NS', 'KIMS.NS', 'RAINBOW.NS',
+    'TARSONS.NS', 'SUDARSCHEM.NS', 'TIINDIA.NS', 'JKPAPER.NS', 'HFCL.NS',
+    'FINEORG.NS', 'INTELLECT.NS', 'MASTEK.NS', 'ZENSAR.NS', 'RATEGAIN.NS',
+    'INOX.NS', 'INOXWIND.NS', 'TRIVENI.NS', 'KPRMILL.NS', 'WELSPUNIND.NS',
+    'GPPL.NS', 'RHIM.NS', 'NOCIL.NS', 'TATVA.NS', 'ANURAS.NS',
+    'CRAFTSMAN.NS', 'JINDALSAW.NS', 'GARFIBRES.NS', 'ELECON.NS', 'DYNAMATECH.NS',
+    'TEJASNET.NS', 'GLAND.NS', 'VIJAYA.NS', 'IDFCFIRSTB.NS', 'BANDHANBNK.NS',
+    // ── Sectoral Picks — PSU, Defence, EV, Green Energy ────────────────────
+    'HAL.NS', 'BEL.NS', 'BHEL.NS', 'BEML.NS', 'MAZAGON.NS',
+    'COCHINSHIP.NS', 'GRSE.NS', 'IDEA.NS', 'IREDA.NS', 'NHPC.NS',
+    'SJVN.NS', 'TORNTPOWER.NS', 'CESC.NS', 'RELINFRA.NS', 'TATACHEM.NS',
+];
+/** Backward-compat alias — same as NSE_UNIVERSE */
+exports.DEFAULT_WATCHLIST = exports.NSE_UNIVERSE;
+/**
+ * Returns a deterministic rotating sample of stocks to evaluate each cycle.
+ * rotationSeed: use cycle timestamp floored to 5-min bucket for determinism.
+ * Size: evaluate 50 stocks per cycle → full universe covered every ~3 cycles (~15 min)
+ */
+function getCycleWatchlist(rotationSeed, sampleSize = 50) {
+    const shuffled = [...exports.NSE_UNIVERSE];
+    // Seeded Fisher-Yates shuffle using cycle bucket as seed
+    let seed = rotationSeed;
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        const j = seed % (i + 1);
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled.slice(0, Math.min(sampleSize, shuffled.length));
+}
