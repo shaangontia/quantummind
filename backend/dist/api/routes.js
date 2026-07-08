@@ -248,35 +248,87 @@ router.post('/portfolios/:id/trade', async (req, res) => {
 });
 // ─── Cron trigger (called by Vercel Cron / external scheduler) ────────────────
 // ─── TARS Chatbot ───────────────────────────────────────────────────────────
+/** Company name / ticker → NSE .NS symbol for TARS live price lookups */
+const TARS_COMPANY_MAP = {
+    'tcs': 'TCS.NS', 'tata consultancy': 'TCS.NS',
+    'reliance': 'RELIANCE.NS', 'ril': 'RELIANCE.NS',
+    'infosys': 'INFY.NS', 'infy': 'INFY.NS',
+    'hdfc bank': 'HDFCBANK.NS', 'hdfcbank': 'HDFCBANK.NS',
+    'icici bank': 'ICICIBANK.NS', 'icici': 'ICICIBANK.NS',
+    'sbi': 'SBIN.NS', 'state bank': 'SBIN.NS',
+    'wipro': 'WIPRO.NS', 'hcl': 'HCLTECH.NS', 'hcltech': 'HCLTECH.NS',
+    'bajaj finance': 'BAJFINANCE.NS', 'bajfinance': 'BAJFINANCE.NS',
+    'kotak': 'KOTAKBANK.NS', 'kotak bank': 'KOTAKBANK.NS',
+    'axis bank': 'AXISBANK.NS', 'axis': 'AXISBANK.NS',
+    'larsen': 'LT.NS', 'l&t': 'LT.NS',
+    'titan': 'TITAN.NS', 'asian paints': 'ASIANPAINT.NS',
+    'maruti': 'MARUTI.NS', 'maruti suzuki': 'MARUTI.NS',
+    'sun pharma': 'SUNPHARMA.NS', 'sunpharma': 'SUNPHARMA.NS',
+    'tata motors': 'TATAMOTORS.NS', 'tatamotors': 'TATAMOTORS.NS',
+    'ongc': 'ONGC.NS', 'ntpc': 'NTPC.NS', 'powergrid': 'POWERGRID.NS', 'power grid': 'POWERGRID.NS',
+    'jsw steel': 'JSWSTEEL.NS', 'ultratech': 'ULTRACEMCO.NS',
+    'dr reddy': 'DRREDDY.NS', 'drreddy': 'DRREDDY.NS',
+    'nestle': 'NESTLEIND.NS', 'apollo hospital': 'APOLLOHOSP.NS',
+    'cipla': 'CIPLA.NS', 'airtel': 'BHARTIARTL.NS', 'bharti airtel': 'BHARTIARTL.NS',
+    'hindustan unilever': 'HINDUNILVR.NS', 'hul': 'HINDUNILVR.NS',
+    'britannia': 'BRITANNIA.NS', 'polycab': 'POLYCAB.NS',
+    'dixon': 'DIXONTECH.NS', 'persistent': 'PERSISTENT.NS', 'coforge': 'COFORGE.NS',
+    'kpit': 'KPITTECH.NS', 'hal': 'HAL.NS', 'hindustan aeronautics': 'HAL.NS',
+    'bel': 'BEL.NS', 'bharat electronics': 'BEL.NS',
+    'zomato': 'ZOMATO.NS', 'naukri': 'NAUKRI.NS',
+    'tata steel': 'TATASTEEL.NS', 'adani': 'ADANIENT.NS', 'coal india': 'COALINDIA.NS',
+    'hindalco': 'HINDALCO.NS', 'irfc': 'IRFC.NS', 'rvnl': 'RVNL.NS',
+};
+function tarsResolveSymbol(message) {
+    const msg = message.toLowerCase();
+    const nsMatch = msg.match(/\b([a-z0-9&-]+)\.ns\b/);
+    if (nsMatch)
+        return nsMatch[1].toUpperCase() + '.NS';
+    let best = null;
+    let bestLen = 0;
+    for (const [key, sym] of Object.entries(TARS_COMPANY_MAP)) {
+        if (msg.includes(key) && key.length > bestLen) {
+            best = sym;
+            bestLen = key.length;
+        }
+    }
+    return best;
+}
+async function tarsLiveContext(message) {
+    const sym = tarsResolveSymbol(message);
+    if (!sym)
+        return '';
+    try {
+        const { getDisplayQuote } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
+        const q = await getDisplayQuote(sym);
+        const ist = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        const sign = q.change >= 0 ? '+' : '';
+        return `\n\n[LIVE MARKET DATA — as of ${ist} IST]\nStock: ${sym}\nLTP: ₹${q.price.toFixed(2)}\nChange: ${sign}${q.change.toFixed(2)} (${sign}${q.changePct.toFixed(2)}%)\nProvider: ${q.provider} | Fresh: ${q.isFresh}`;
+    }
+    catch {
+        return `\n\n[MARKET DATA] Unable to fetch live price for ${sym} right now. Please check the QuantumMind dashboard.`;
+    }
+}
 const TARS_SYSTEM_PROMPT = `You are TARS, the AI assistant for QuantumMind — an AI-driven virtual Indian stock trading portal.
-You are named after the robot from the movie Interstellar. Honesty setting: 90%. Humor setting: 75%. You are intelligent, helpful, slightly witty, and direct.
+You are named after the robot from the movie Interstellar. Honesty setting: 90%. Humor setting: 75%.
+
+CRITICAL RULE: You have access to LIVE market data via Yahoo Finance. When the user asks for a stock price, LTP, or current value, the system automatically fetches a real-time quote and injects it into this conversation as [LIVE MARKET DATA]. Use those exact figures in your answer. NEVER say you cannot access real-time data. NEVER mention a "knowledge cutoff" for prices — you have live data.
 
 About QuantumMind:
 - Fully autonomous AI-managed virtual trading system for NSE-listed Indian stocks
 - Targets 15% annual return (30% over 2 years) with aggressive strategy
-- Uses real-time NSE prices via Yahoo Finance + Groww fallback
+- Real-time NSE prices via Yahoo Finance (query2 → query1 CDN fallback) + Groww unofficial fallback
 - LLM (Groq llama-3.1-8b-instant) analyses corporate news for trade signals
 - ML stack: RSI(14), 52-week range, linear regression momentum, Kelly Criterion
 - Adaptive feedback loop: signal weights auto-adjust based on win/loss history
 - Market regime detection: BULL / BEAR / SIDEWAYS gates trade thresholds
-- Brokerage: 0.2% flat per trade (approximates STT + NSE charges + stamp duty + GST)
+- Brokerage: 0.2% flat per trade (STT + NSE charges + stamp duty + GST ≈ 0.2–0.25%)
 - Safety guards: kill switch, 10% NAV per symbol cap, daily trade limits, NSE holiday calendar
-- No real money — simulation only
-- All prices are virtual, all trades are simulated
+- No real money — simulation only. All trades are virtual.
 - Database: Turso cloud SQLite (Mumbai ap-south-1 region)
-- Deployed on Vercel serverless
-- Universe: ~1800+ NSE EQ-series stocks above ₹30 (fetched daily from NSE EQUITY_L.csv)
+- Universe: ~1800+ NSE EQ-series stocks above ₹30
 
-You help users understand:
-- How the system works
-- What signals mean
-- How trades are executed
-- Portfolio metrics (NAV, P&L, return %)
-- Brokerage and fees
-- Risk management
-- How to interpret the dashboard
-
-Keep answers concise and clear. If asked something outside QuantumMind scope, politely redirect.`;
+When [LIVE MARKET DATA] is present in this conversation, cite those exact figures. Keep answers concise and accurate.`;
 router.post('/tars/chat', async (req, res) => {
     const { message, history } = req.body;
     if (!message || typeof message !== 'string') {
@@ -296,7 +348,10 @@ router.post('/tars/chat', async (req, res) => {
                 }
             }
         }
-        messages.push({ role: 'user', content: message.slice(0, 500) });
+        // Inject live market data if the message mentions a known stock
+        const liveCtx = await tarsLiveContext(message);
+        const userContent = message.slice(0, 500) + liveCtx;
+        messages.push({ role: 'user', content: userContent });
         const response = await groq.chat.completions.create({
             model: 'llama-3.1-8b-instant',
             messages,
@@ -310,7 +365,7 @@ router.post('/tars/chat', async (req, res) => {
         res.status(500).json({ success: false, error: String(err) });
     }
 });
-// ─── Health checks ───────────────────────────────────────────────────────────
+// ─── Health checks ───────────────────────────────────────────────────────────────────
 router.get('/health', (_req, res) => {
     res.json({ status: 'OK', service: 'QuantumMind', ts: new Date().toISOString() });
 });
@@ -327,7 +382,7 @@ router.get('/health/market-data', async (_req, res) => {
     const start = Date.now();
     try {
         const { getExecutableQuote } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
-        const q = await getExecutableQuote('RELIANCE.NS'); // liquid benchmark symbol
+        const q = await getExecutableQuote('RELIANCE.NS');
         const latencyMs = Date.now() - start;
         const status = q.isFresh ? 'OK' : 'DEGRADED';
         res.json({ status, provider: q.provider, price: q.price, isFresh: q.isFresh, latencyMs });
@@ -346,9 +401,9 @@ router.get('/health/cron', async (_req, res) => {
         res.json({ status: 'OK', lastCycleLockedUntil: null });
     }
 });
-// ─── Kill switch admin endpoint ───────────────────────────────────────────────
+// ─── Kill switch admin endpoint ───────────────────────────────────────────────────────────
 router.post('/admin/trading-enabled', async (req, res) => {
-    const adminSecret = process.env.CRON_SECRET; // reuse cron secret for admin
+    const adminSecret = process.env.CRON_SECRET;
     const provided = req.headers.authorization?.replace('Bearer ', '');
     if (adminSecret && provided !== adminSecret)
         return res.status(401).json({ error: 'Unauthorized' });
@@ -356,9 +411,8 @@ router.post('/admin/trading-enabled', async (req, res) => {
     await (0, turso_js_1.run)('UPDATE trading_config SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key=?', [String(enabled), 'global_trading_enabled']);
     res.json({ success: true, global_trading_enabled: enabled });
 });
-// ─── Cron trigger (called by Vercel Cron / external scheduler) ────────────────
+// ─── Cron trigger ────────────────────────────────────────────────────────────────────────
 router.post('/cron/market-cycle', async (req, res) => {
-    // Auth: require CRON_SECRET env var to match Authorization header or ?secret= query param
     const cronSecret = process.env.CRON_SECRET;
     if (cronSecret) {
         const provided = req.headers.authorization?.replace('Bearer ', '') ??
@@ -377,7 +431,7 @@ router.post('/cron/market-cycle', async (req, res) => {
         res.status(500).json({ success: false, error: String(err) });
     }
 });
-// ─── Lightweight price-only refresh (fast, no signal generation) ──────────────
+// ─── Lightweight price-only refresh ───────────────────────────────────────────────────────
 router.post('/cron/price-update', async (req, res) => {
     const cronSecret = process.env.CRON_SECRET;
     if (cronSecret) {
@@ -386,7 +440,7 @@ router.post('/cron/price-update', async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized' });
     }
     try {
-        const { getMultipleQuotes, DEFAULT_WATCHLIST } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
+        const { getMultipleQuotes } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
         const holdings = await (0, turso_js_1.query)('SELECT DISTINCT symbol FROM holdings h JOIN portfolios p ON p.id = h.portfolio_id WHERE p.is_active = 1');
         if (!holdings.length)
             return res.json({ success: true, updated: 0 });
