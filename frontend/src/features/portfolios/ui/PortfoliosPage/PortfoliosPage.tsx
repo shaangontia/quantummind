@@ -78,6 +78,10 @@ export const PortfoliosPage = () => {
                     <span className="stat-v">{formatINR(p.initial_capital)}</span>
                   </div>
                   <div className="portfolio-stat">
+                    <span className="stat-l">Current Value</span>
+                    <span className="stat-v" style={{ fontWeight: 700 }}>{formatINR((p as any).current_nav ?? p.initial_capital)}</span>
+                  </div>
+                  <div className="portfolio-stat">
                     <span className="stat-l">Target</span>
                     <span className="stat-v tag-positive">{p.target_return_pct}%</span>
                   </div>
