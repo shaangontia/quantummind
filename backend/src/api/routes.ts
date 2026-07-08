@@ -317,9 +317,12 @@ router.get('/portfolios/:id/trades', async (req: Request, res: Response) => {
 router.get('/portfolios/:id/trades/:tradeId/explanation', async (req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'public, max-age=300');
+    const pid     = parseIntParam(req.params.id);
+    const tradeId = parseIntParam(req.params.tradeId);
+    if (pid === null || tradeId === null) return res.status(400).json({ success: false, error: 'Invalid id' });
     const trade = await queryOne(
       'SELECT * FROM trades WHERE id = ? AND portfolio_id = ?',
-      [parseIntParam(req.params.tradeId), parseIntParam(req.params.id)]
+      [tradeId, pid]
     );
     if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
 
@@ -381,9 +384,11 @@ router.get('/portfolios/:id/performance', async (req: Request, res: Response) =>
 // ─── Signals ──────────────────────────────────────────────────────────────────
 
 router.get('/portfolios/:id/signals', async (req: Request, res: Response) => {
+  const sigPid = parseIntParam(req.params.id);
+  if (sigPid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
   res.json({ success: true, data: await query(
     'SELECT * FROM market_signals WHERE portfolio_id = ? ORDER BY signal_time DESC LIMIT 100',
-    [parseIntParam(req.params.id)]
+    [sigPid]
   )});
 });
 
