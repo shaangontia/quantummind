@@ -29,6 +29,7 @@ export interface CreatePortfolioPayload {
   targetReturnPct: number;
   rebalanceFrequency: RebalanceFrequency;
   preferredSectors?: string[];
+  preferredCaps?: string[];
 }
 
 export interface Holding {

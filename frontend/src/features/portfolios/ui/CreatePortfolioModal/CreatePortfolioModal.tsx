@@ -23,12 +23,22 @@ const DEFAULT_FORM: CreatePortfolioPayload = {
   targetReturnPct: 15,
   rebalanceFrequency: 'Monthly',
   preferredSectors: [],
+  preferredCaps: [],
 };
 
 export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModalProps) => {
   const [form, setForm] = useState<CreatePortfolioPayload>(DEFAULT_FORM);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const toggleCap = (cap: string) => {
+    setForm(f => ({
+      ...f,
+      preferredCaps: f.preferredCaps?.includes(cap)
+        ? f.preferredCaps.filter(c => c !== cap)
+        : [...(f.preferredCaps ?? []), cap],
+    }));
+  };
 
   const toggleSector = (sector: string) => {
     setForm(f => ({
@@ -155,6 +165,27 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
               <option value="Monthly">Monthly</option>
               <option value="Quarterly">Quarterly</option>
             </select>
+          </div>
+
+          <div className="form-group">
+            <label>Market Cap Focus (optional — AI decides weight based on target &amp; horizon)</label>
+            <div className="sectors-grid">
+              {['Small Cap', 'Mid Cap', 'Large Cap'].map(cap => (
+                <button
+                  key={cap}
+                  type="button"
+                  className={`sector-chip ${form.preferredCaps?.includes(cap) ? 'selected' : ''}`}
+                  onClick={() => toggleCap(cap)}
+                >
+                  {cap}
+                </button>
+              ))}
+            </div>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
+              {form.preferredCaps && form.preferredCaps.length > 0
+                ? `AI will allocate ~50% to ${form.preferredCaps.join(' + ')}, rest across other caps`
+                : 'No restriction — AI invests across all market caps freely'}
+            </p>
           </div>
 
           <div className="form-group">

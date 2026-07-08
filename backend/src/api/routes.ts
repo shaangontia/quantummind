@@ -34,11 +34,11 @@ router.get('/portfolios', async (_req: Request, res: Response) => {
 });
 
 router.post('/portfolios', async (req: Request, res: Response) => {
-  const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, preferredSectors } = req.body;
+  const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, preferredSectors, preferredCaps } = req.body;
   if (!name || !initialCapital) return res.status(400).json({ success: false, error: 'name and initialCapital required' });
   const result = await run(
-    'INSERT INTO portfolios (name,description,initial_capital,current_cash,risk_tolerance,investment_horizon_months,target_return_pct,preferred_sectors) VALUES (?,?,?,?,?,?,?,?)',
-    [name, description||null, initialCapital, initialCapital, riskTolerance||'Medium', investmentHorizonMonths||12, targetReturnPct||15.0, preferredSectors ? JSON.stringify(preferredSectors) : null]
+    'INSERT INTO portfolios (name,description,initial_capital,current_cash,risk_tolerance,investment_horizon_months,target_return_pct,preferred_sectors,preferred_caps) VALUES (?,?,?,?,?,?,?,?,?)',
+    [name, description||null, initialCapital, initialCapital, riskTolerance||'Medium', investmentHorizonMonths||12, targetReturnPct||15.0, preferredSectors ? JSON.stringify(preferredSectors) : null, preferredCaps ? JSON.stringify(preferredCaps) : null]
   );
   res.status(201).json({ success: true, data: await queryOne('SELECT * FROM portfolios WHERE id = ?', [result.lastInsertRowid]) });
 });

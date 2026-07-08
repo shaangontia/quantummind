@@ -20,6 +20,14 @@ export async function runMigrations(): Promise<void> {
     await db.execute('ALTER TABLE trades ADD COLUMN realized_pnl REAL');
     console.log('[DB] Migration: trades.realized_pnl column added');
   } catch (_) { /* already exists — ignore */ }
+  try {
+    await db.execute("ALTER TABLE portfolios ADD COLUMN preferred_caps TEXT DEFAULT NULL");
+    console.log('[DB] Migration: portfolios.preferred_caps column added');
+  } catch (_) { /* already exists — ignore */ }
+  try {
+    await db.execute("ALTER TABLE portfolios ADD COLUMN preferred_cap TEXT DEFAULT NULL");
+    console.log('[DB] Migration: portfolios.preferred_cap column added');
+  } catch (_) { /* already exists — ignore */ }
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS portfolios (
     rebalance_frequency TEXT NOT NULL DEFAULT 'Monthly'
         CHECK(rebalance_frequency IN ('Weekly', 'Monthly', 'Quarterly')),
     preferred_sectors TEXT,       -- JSON array of sectors
+    preferred_cap TEXT,            -- 'small' | 'mid' | 'large' | NULL (AI decides freely)
     strategy_rules TEXT,          -- JSON object: signal thresholds, stop-loss %, take-profit %
     is_active INTEGER DEFAULT 1,  -- 0 = deactivated / archived
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
