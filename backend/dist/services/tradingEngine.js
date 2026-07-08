@@ -259,11 +259,26 @@ ctx // structured context for explainability
         action,
         timestamp: new Date().toISOString(),
     }) : null;
-    statements.push({
-        sql: 'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before, trade_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-        args: [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore, tradeReasonJson],
-    });
-    if (action === 'BUY') {
+    // For SELL: compute realized PnL before building statements so it can be
+    // included in the INSERT itself — keeping the entire operation atomic.
+    let realizedPnlOnTrade = null;
+    if (action === 'SELL') {
+        const h = holdingsForNAV.find((h) => h.symbol === symbol);
+        if (!h) {
+            logger_js_1.logger.warn({ job: 'trading-engine', portfolioId, symbol, reason: 'SELL skipped — holding not found in NAV snapshot' });
+            return null;
+        }
+        realizedPnlOnTrade = (price - Number(h.avg_buy_price)) * quantity - brokerage;
+        const newQty = Number(h.quantity) - quantity;
+        if (newQty <= 0.001) {
+            statements.push({ sql: 'DELETE FROM holdings WHERE portfolio_id=? AND symbol=?', args: [portfolioId, symbol] });
+        }
+        else {
+            statements.push({ sql: 'UPDATE holdings SET quantity=?, updated_at=CURRENT_TIMESTAMP WHERE portfolio_id=? AND symbol=?', args: [newQty, portfolioId, symbol] });
+        }
+        statements.push({ sql: 'UPDATE portfolios SET current_cash=current_cash+?, updated_at=CURRENT_TIMESTAMP WHERE id=?', args: [netAmount, portfolioId] });
+    }
+    else {
         const existing = holdingsForNAV.find((h) => h.symbol === symbol);
         if (existing) {
             const newQty = Number(existing.quantity) + quantity;
@@ -275,23 +290,15 @@ ctx // structured context for explainability
         }
         statements.push({ sql: 'UPDATE portfolios SET current_cash=current_cash-?, updated_at=CURRENT_TIMESTAMP WHERE id=?', args: [netAmount, portfolioId] });
     }
-    else {
-        const h = holdingsForNAV.find((h) => h.symbol === symbol);
-        const realizedPnlOnTrade = (price - Number(h.avg_buy_price)) * quantity - brokerage;
-        const newQty = Number(h.quantity) - quantity;
-        if (newQty <= 0.001) {
-            statements.push({ sql: 'DELETE FROM holdings WHERE portfolio_id=? AND symbol=?', args: [portfolioId, symbol] });
-        }
-        else {
-            statements.push({ sql: 'UPDATE holdings SET quantity=?, updated_at=CURRENT_TIMESTAMP WHERE portfolio_id=? AND symbol=?', args: [newQty, portfolioId, symbol] });
-        }
-        statements.push({ sql: 'UPDATE portfolios SET current_cash=current_cash+?, updated_at=CURRENT_TIMESTAMP WHERE id=?', args: [netAmount, portfolioId] });
-        // Realized PnL is stored in a subsequent update — use a placeholder INSERT then UPDATE
-        // (LibSQL batch index 0 = INSERT trades; we'll patch realized_pnl via separate non-batched call)
-        // Note: we update after batch since we need lastInsertRowid
+    // INSERT trade with realized_pnl included — fully atomic, no follow-up UPDATE needed
+    statements.unshift({
+        sql: 'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before, trade_reason, realized_pnl) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        args: [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore, tradeReasonJson, realizedPnlOnTrade],
+    });
+    if (action === 'SELL') {
+        // statements already built above — execute and return
         const results = await (0, turso_js_2.batchWithResults)(statements);
         const tradeId = results[0].lastInsertRowid;
-        await (0, turso_js_1.run)('UPDATE trades SET realized_pnl=? WHERE id=?', [realizedPnlOnTrade, tradeId]);
         logger_js_1.logger.trade(portfolioId, symbol, 'SELL', price, quote?.provider ?? 'unknown', true, reason, { qty: quantity, netAmount, realizedPnl: realizedPnlOnTrade });
         return tradeId;
     }

@@ -89,18 +89,20 @@ async function evaluateRisk(ctx) {
         }
     }
     // 8. Portfolio drawdown check (BUY only — respects portfolio-level max_drawdown_pct)
+    // Drawdown = decline from peak NAV (not from initial capital, which would miss intra-period peaks).
     checks.push('drawdown_check');
     if (ctx.action === 'BUY') {
-        const portfolio = await (0, turso_js_1.queryOne)('SELECT initial_capital, max_drawdown_pct FROM portfolios WHERE id=?', [ctx.portfolioId]);
+        const portfolio = await (0, turso_js_1.queryOne)('SELECT initial_capital, peak_nav, max_drawdown_pct FROM portfolios WHERE id=?', [ctx.portfolioId]);
         if (portfolio) {
-            // Use portfolio-specific drawdown cap if set; fallback to global default
             const drawdownLimit = portfolio.max_drawdown_pct != null
                 ? Number(portfolio.max_drawdown_pct) / 100
                 : MAX_DRAWDOWN_HALT_PCT;
-            const drawdown = 1 - ctx.portfolioNAV / Number(portfolio.initial_capital);
+            // Use peak_nav if available; fall back to initial_capital for portfolios without a recorded peak yet
+            const peakNAV = portfolio.peak_nav != null ? Number(portfolio.peak_nav) : Number(portfolio.initial_capital);
+            const drawdown = peakNAV > 0 ? 1 - ctx.portfolioNAV / peakNAV : 0;
             if (drawdown > drawdownLimit) {
-                logger_js_1.logger.riskBlock(ctx.portfolioId, ctx.symbol, `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% exceeds ${(drawdownLimit * 100).toFixed(0)}% limit`);
-                return { approved: false, reason: `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% — BUY halted (limit: ${(drawdownLimit * 100).toFixed(0)}%)`, checksRun: checks };
+                logger_js_1.logger.riskBlock(ctx.portfolioId, ctx.symbol, `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% from peak exceeds ${(drawdownLimit * 100).toFixed(0)}% limit`);
+                return { approved: false, reason: `Portfolio drawdown ${(drawdown * 100).toFixed(1)}% from peak — BUY halted (limit: ${(drawdownLimit * 100).toFixed(0)}%)`, checksRun: checks };
             }
         }
     }

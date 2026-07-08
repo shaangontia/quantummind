@@ -158,10 +158,16 @@ async function runPortfolioTradingCycle(portfolioId, riskTolerance) {
     return { trades: tradeCount, signals: signalCount };
 }
 async function snapshotAll() {
-    const portfolios = await (0, turso_js_1.query)('SELECT id FROM portfolios WHERE is_active = 1');
-    for (const { id } of portfolios) {
-        const s = await (0, tradingEngine_js_1.getPortfolioSummary)(Number(id));
+    const portfolios = await (0, turso_js_1.query)('SELECT id, peak_nav FROM portfolios WHERE is_active = 1');
+    for (const p of portfolios) {
+        const id = Number(p.id);
+        const s = await (0, tradingEngine_js_1.getPortfolioSummary)(id);
         await (0, turso_js_1.run)('INSERT INTO performance_snapshots (portfolio_id,total_portfolio_value,invested_value,cash_balance,unrealized_pnl,realized_pnl,total_pnl,return_pct,target_return_pct,holdings_count) VALUES (?,?,?,?,?,?,?,?,?,?)', [id, s.totalValue, s.investedValue, s.cashBalance, s.unrealizedPnl, s.realizedPnl, s.totalPnl, s.returnPct, s.targetReturnPct, s.holdings.length]);
+        // Update peak_nav whenever current value exceeds recorded peak (for true drawdown calculation)
+        const currentPeak = p.peak_nav != null ? Number(p.peak_nav) : 0;
+        if (s.totalValue > currentPeak) {
+            await (0, turso_js_1.run)('UPDATE portfolios SET peak_nav=? WHERE id=?', [s.totalValue, id]);
+        }
         console.log(`[P${id}] Snapshot ₹${s.totalValue.toFixed(0)} | ${s.returnPct.toFixed(2)}%`);
     }
 }

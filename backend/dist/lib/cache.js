@@ -71,21 +71,23 @@ async function kvDel(key) {
     const { kv } = await Promise.resolve().then(() => __importStar(require('@vercel/kv')));
     await kv.del(key);
 }
-// 2. Upstash Redis (HTTP-based, serverless-safe)
+// 2. Upstash Redis (HTTP-based, serverless-safe) — singleton to avoid per-call client init
+let _upstash = null;
+async function getUpstash() {
+    if (!_upstash) {
+        const { Redis } = await Promise.resolve().then(() => __importStar(require('@upstash/redis')));
+        _upstash = new Redis({ url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN });
+    }
+    return _upstash;
+}
 async function upstashGet(key) {
-    const { Redis } = await Promise.resolve().then(() => __importStar(require('@upstash/redis')));
-    const r = new Redis({ url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN });
-    return r.get(key);
+    return (await getUpstash()).get(key);
 }
 async function upstashSet(key, value, ttl) {
-    const { Redis } = await Promise.resolve().then(() => __importStar(require('@upstash/redis')));
-    const r = new Redis({ url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN });
-    await r.set(key, value, { ex: ttl });
+    await (await getUpstash()).set(key, value, { ex: ttl });
 }
 async function upstashDel(key) {
-    const { Redis } = await Promise.resolve().then(() => __importStar(require('@upstash/redis')));
-    const r = new Redis({ url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN });
-    await r.del(key);
+    await (await getUpstash()).del(key);
 }
 class MemCache {
     constructor() {
@@ -154,14 +156,13 @@ exports.cache = {
         }
         mem.del(key);
     },
-    /** Invalidate by key prefix — pattern match in memory; exact key in Redis (add specific del calls for Redis) */
-    async invalidate(pattern) {
-        if (MODE === 'memory') {
-            mem.invalidatePattern(pattern);
-            return;
-        }
-        // For Redis: caller must pass the exact key via del()
-        // Pattern-based SCAN not used here (overkill for this scale)
+    /**
+     * Invalidate a cache entry.
+     * All callsites pass exact keys (e.g. `portfolio_summary_1`) so this
+     * delegates to del() on all backends. Pattern-based SCAN is unnecessary.
+     */
+    async invalidate(key) {
+        await this.del(key);
     },
     async getOrSet(key, fn, ttlSec) {
         const hit = await this.get(key);

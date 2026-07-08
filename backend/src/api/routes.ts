@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import Groq from 'groq-sdk';
 import { query, queryOne, run } from '../db/turso.js';
 import { getQuote } from '../services/marketData.js';
@@ -20,6 +21,37 @@ function parseIntParam(val: string | undefined, fallback?: number): number | nul
   const n = parseInt(val ?? '', 10);
   return isNaN(n) ? null : n;
 }
+
+// ─── Validation schemas ──────────────────────────────────────────────────────────────
+const RISK_TOLERANCE     = ['Low', 'Medium', 'High', 'Very High'] as const;
+const REBALANCE_FREQ     = ['Weekly', 'Monthly', 'Quarterly', 'Never'] as const;
+const VOLATILITY_PREF    = ['Low', 'Moderate', 'High'] as const;
+
+const portfolioCreateSchema = z.object({
+  name:                    z.string().min(1).max(100),
+  description:             z.string().max(500).optional(),
+  initialCapital:          z.number().positive().max(1_000_000_000), // max ₹100Cr
+  riskTolerance:           z.enum(RISK_TOLERANCE).optional(),
+  investmentHorizonMonths: z.number().int().min(1).max(600).optional(),
+  targetReturnPct:         z.number().min(0).max(200).optional(),
+  preferredSectors:        z.array(z.string()).optional(),
+  preferredCaps:           z.array(z.string()).optional(),
+});
+
+const portfolioPatchSchema = z.object({
+  name:                    z.string().min(1).max(100).optional(),
+  description:             z.string().max(500).optional(),
+  initialCapital:          z.number().positive().max(1_000_000_000).optional(),
+  riskTolerance:           z.enum(RISK_TOLERANCE).optional(),
+  investmentHorizonMonths: z.number().int().min(1).max(600).optional(),
+  targetReturnPct:         z.number().min(0).max(200).optional(),
+  rebalanceFrequency:      z.enum(REBALANCE_FREQ).optional(),
+  preferredSectors:        z.array(z.string()).optional(),
+  preferredCaps:           z.array(z.string()).optional(),
+  volatilityPreference:    z.enum(VOLATILITY_PREF).optional(),
+  investmentGoal:          z.string().max(200).optional(),
+  maxDrawdownPct:          z.number().min(1).max(100).optional(),
+});
 
 /** Fail-closed admin auth middleware. Rejects if CRON_SECRET is unset. */
 function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
@@ -55,8 +87,9 @@ router.get('/portfolios', async (_req: Request, res: Response) => {
 });
 
 router.post('/portfolios', async (req: Request, res: Response) => {
-  const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, preferredSectors, preferredCaps } = req.body;
-  if (!name || !initialCapital) return res.status(400).json({ success: false, error: 'name and initialCapital required' });
+  const parsed = portfolioCreateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
+  const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, preferredSectors, preferredCaps } = parsed.data;
   const result = await run(
     'INSERT INTO portfolios (name,description,initial_capital,current_cash,risk_tolerance,investment_horizon_months,target_return_pct,preferred_sectors,preferred_caps) VALUES (?,?,?,?,?,?,?,?,?)',
     [name, description||null, initialCapital, initialCapital, riskTolerance||'Medium', investmentHorizonMonths||12, targetReturnPct||15.0, preferredSectors ? JSON.stringify(preferredSectors) : null, preferredCaps ? JSON.stringify(preferredCaps) : null]
@@ -76,12 +109,14 @@ router.get('/portfolios/:id/summary', async (req: Request, res: Response) => {
 
 router.patch('/portfolios/:id', async (req: Request, res: Response) => {
   try {
+    const parsed = portfolioPatchSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
     const {
       name, description, initialCapital,
       riskTolerance, investmentHorizonMonths, targetReturnPct,
       rebalanceFrequency, preferredSectors, preferredCaps,
       volatilityPreference, investmentGoal, maxDrawdownPct,
-    } = req.body;
+    } = parsed.data;
     const id = parseIntParam(req.params.id);
     if (id === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
 

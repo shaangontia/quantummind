@@ -32,8 +32,13 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const zod_1 = require("zod");
+const groq_sdk_1 = __importDefault(require("groq-sdk"));
 const turso_js_1 = require("../db/turso.js");
 const marketData_js_1 = require("../services/marketData.js");
 const tradingEngine_js_1 = require("../services/tradingEngine.js");
@@ -43,6 +48,58 @@ const mlEngine_js_1 = require("../services/mlEngine.js");
 const adaptiveEngine_js_1 = require("../services/adaptiveEngine.js");
 const marketData_js_2 = require("../services/marketData.js");
 const cache_js_1 = require("../lib/cache.js");
+// ─── Singletons ──────────────────────────────────────────────────────────────
+const groqClient = new groq_sdk_1.default({ apiKey: process.env.groq_key });
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+/** Parse an integer route/query param; returns null if invalid */
+function parseIntParam(val, fallback) {
+    if (val === undefined && fallback !== undefined)
+        return fallback;
+    const n = parseInt(val ?? '', 10);
+    return isNaN(n) ? null : n;
+}
+// ─── Validation schemas ──────────────────────────────────────────────────────────────
+const RISK_TOLERANCE = ['Low', 'Medium', 'High', 'Very High'];
+const REBALANCE_FREQ = ['Weekly', 'Monthly', 'Quarterly', 'Never'];
+const VOLATILITY_PREF = ['Low', 'Moderate', 'High'];
+const portfolioCreateSchema = zod_1.z.object({
+    name: zod_1.z.string().min(1).max(100),
+    description: zod_1.z.string().max(500).optional(),
+    initialCapital: zod_1.z.number().positive().max(1000000000), // max ₹100Cr
+    riskTolerance: zod_1.z.enum(RISK_TOLERANCE).optional(),
+    investmentHorizonMonths: zod_1.z.number().int().min(1).max(600).optional(),
+    targetReturnPct: zod_1.z.number().min(0).max(200).optional(),
+    preferredSectors: zod_1.z.array(zod_1.z.string()).optional(),
+    preferredCaps: zod_1.z.array(zod_1.z.string()).optional(),
+});
+const portfolioPatchSchema = zod_1.z.object({
+    name: zod_1.z.string().min(1).max(100).optional(),
+    description: zod_1.z.string().max(500).optional(),
+    initialCapital: zod_1.z.number().positive().max(1000000000).optional(),
+    riskTolerance: zod_1.z.enum(RISK_TOLERANCE).optional(),
+    investmentHorizonMonths: zod_1.z.number().int().min(1).max(600).optional(),
+    targetReturnPct: zod_1.z.number().min(0).max(200).optional(),
+    rebalanceFrequency: zod_1.z.enum(REBALANCE_FREQ).optional(),
+    preferredSectors: zod_1.z.array(zod_1.z.string()).optional(),
+    preferredCaps: zod_1.z.array(zod_1.z.string()).optional(),
+    volatilityPreference: zod_1.z.enum(VOLATILITY_PREF).optional(),
+    investmentGoal: zod_1.z.string().max(200).optional(),
+    maxDrawdownPct: zod_1.z.number().min(1).max(100).optional(),
+});
+/** Fail-closed admin auth middleware. Rejects if CRON_SECRET is unset. */
+function requireAdminAuth(req, res, next) {
+    const secret = process.env.CRON_SECRET;
+    if (!secret) {
+        res.status(503).json({ error: 'Auth not configured - set CRON_SECRET env var' });
+        return;
+    }
+    const provided = req.headers.authorization?.replace('Bearer ', '') ?? req.query.secret;
+    if (provided !== secret) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+    }
+    next();
+}
 const router = (0, express_1.Router)();
 // ─── Portfolios ──────────────────────────────────────────────────────────────
 router.get('/portfolios', async (_req, res) => {
@@ -65,15 +122,18 @@ router.get('/portfolios', async (_req, res) => {
     }
 });
 router.post('/portfolios', async (req, res) => {
-    const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, preferredSectors, preferredCaps } = req.body;
-    if (!name || !initialCapital)
-        return res.status(400).json({ success: false, error: 'name and initialCapital required' });
+    const parsed = portfolioCreateSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
+    const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, preferredSectors, preferredCaps } = parsed.data;
     const result = await (0, turso_js_1.run)('INSERT INTO portfolios (name,description,initial_capital,current_cash,risk_tolerance,investment_horizon_months,target_return_pct,preferred_sectors,preferred_caps) VALUES (?,?,?,?,?,?,?,?,?)', [name, description || null, initialCapital, initialCapital, riskTolerance || 'Medium', investmentHorizonMonths || 12, targetReturnPct || 15.0, preferredSectors ? JSON.stringify(preferredSectors) : null, preferredCaps ? JSON.stringify(preferredCaps) : null]);
     res.status(201).json({ success: true, data: await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [result.lastInsertRowid]) });
 });
 router.get('/portfolios/:id/summary', async (req, res) => {
     try {
-        const id = parseInt(req.params.id);
+        const id = parseIntParam(req.params.id);
+        if (id === null)
+            return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
         const data = await cache_js_1.cache.getOrSet(`portfolio_summary_${id}`, () => (0, tradingEngine_js_1.getPortfolioSummary)(id), cache_js_1.TTL.PORTFOLIO_SUMMARY);
         res.set('Cache-Control', 'no-store'); // Portfolio NAV must never be served stale
         res.json({ success: true, data });
@@ -84,8 +144,13 @@ router.get('/portfolios/:id/summary', async (req, res) => {
 });
 router.patch('/portfolios/:id', async (req, res) => {
     try {
-        const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, rebalanceFrequency, preferredSectors, preferredCaps, volatilityPreference, investmentGoal, maxDrawdownPct, } = req.body;
-        const id = parseInt(req.params.id);
+        const parsed = portfolioPatchSchema.safeParse(req.body);
+        if (!parsed.success)
+            return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
+        const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, rebalanceFrequency, preferredSectors, preferredCaps, volatilityPreference, investmentGoal, maxDrawdownPct, } = parsed.data;
+        const id = parseIntParam(req.params.id);
+        if (id === null)
+            return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
         const existing = await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [id]);
         if (!existing)
             return res.status(404).json({ success: false, error: 'Portfolio not found' });
@@ -108,8 +173,8 @@ router.patch('/portfolios/:id', async (req, res) => {
         const tradeCount = Number(tradesRow?.cnt ?? 0);
         const latestSnap = await (0, turso_js_1.queryOne)('SELECT total_portfolio_value FROM performance_snapshots WHERE portfolio_id = ? ORDER BY snapshot_time DESC LIMIT 1', [id]);
         const currentNAV = latestSnap ? Number(latestSnap.total_portfolio_value) : Number(existing.initial_capital);
-        const initCapital = Number(existing.initial_capital ?? 0);
-        const drawdownPct = initCapital > 0 ? ((initCapital - currentNAV) / initCapital) * 100 : 0;
+        const peakNAV = existing.peak_nav != null ? Number(existing.peak_nav) : Number(existing.initial_capital);
+        const drawdownPct = peakNAV > 0 ? ((peakNAV - currentNAV) / peakNAV) * 100 : 0;
         const drawdownLimit = Number(existing.max_drawdown_pct ?? 20);
         const isVirgin = tradeCount === 0 && holdingsCount === 0;
         const isMature = tradeCount >= 20;
@@ -119,7 +184,7 @@ router.patch('/portfolios/:id', async (req, res) => {
             volatilityPreference, investmentGoal, investmentHorizonMonths,
             targetReturnPct, rebalanceFrequency];
         const strategyChangeRequested = STRATEGY_FIELDS.some(f => f != null);
-        // ── Guard 2: DRAWDOWN_HALT — all strategy fields hard-locked ─────────────
+        // ── Guard 2: DRAWDOWN_HALT - all strategy fields hard-locked ─────────────
         if (!isVirgin && inDrawdown && strategyChangeRequested) {
             return res.status(423).json({
                 success: false,
@@ -128,7 +193,7 @@ router.patch('/portfolios/:id', async (req, res) => {
                 meta: { drawdownPct: Math.round(drawdownPct * 10) / 10, drawdownLimit, holdingsCount, tradeCount },
             });
         }
-        // ── Guard 3: MATURE — risk tolerance hard-locked ──────────────────────────
+        // ── Guard 3: MATURE - risk tolerance hard-locked ──────────────────────────
         // AI has 20+ cycles of position thesis built on current risk profile.
         // Changing it would silently shift stop-loss on all live positions.
         if (isMature && riskTolerance != null) {
@@ -195,7 +260,10 @@ router.patch('/portfolios/:id', async (req, res) => {
     }
 });
 router.delete('/portfolios/:id', async (req, res) => {
-    await (0, turso_js_1.run)('UPDATE portfolios SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?', [parseInt(req.params.id)]);
+    const id = parseIntParam(req.params.id);
+    if (id === null)
+        return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+    await (0, turso_js_1.run)('UPDATE portfolios SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?', [id]);
     res.json({ success: true });
 });
 // ─── Portfolio edit-state ─────────────────────────────────────────────────────
@@ -203,7 +271,9 @@ router.delete('/portfolios/:id', async (req, res) => {
 // Frontend queries this before opening the modal to render the correct UX.
 router.get('/portfolios/:id/edit-state', async (req, res) => {
     try {
-        const id = parseInt(req.params.id);
+        const id = parseIntParam(req.params.id);
+        if (id === null)
+            return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
         const portfolio = await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [id]);
         if (!portfolio)
             return res.status(404).json({ success: false, error: 'Portfolio not found' });
@@ -215,9 +285,10 @@ router.get('/portfolios/:id/edit-state', async (req, res) => {
         const tradeCount = Number(tradesRow?.cnt ?? 0);
         const latestSnap = await (0, turso_js_1.queryOne)('SELECT total_portfolio_value FROM performance_snapshots WHERE portfolio_id = ? ORDER BY snapshot_time DESC LIMIT 1', [id]);
         const currentNAV = latestSnap ? Number(latestSnap.total_portfolio_value) : Number(portfolio.initial_capital);
-        const initCapital = Number(portfolio.initial_capital ?? 0);
-        const drawdownPct = initCapital > 0 ? ((initCapital - currentNAV) / initCapital) * 100 : 0;
+        const peakNAV = portfolio.peak_nav != null ? Number(portfolio.peak_nav) : Number(portfolio.initial_capital);
+        const drawdownPct = peakNAV > 0 ? ((peakNAV - currentNAV) / peakNAV) * 100 : 0;
         const drawdownLimit = Number(portfolio.max_drawdown_pct ?? 20);
+        const initCapital = Number(portfolio.initial_capital ?? 0);
         const investedValue = initCapital - Number(portfolio.current_cash ?? 0);
         const isVirgin = tradeCount === 0 && holdingsCount === 0;
         const isMature = tradeCount >= 20;
@@ -278,10 +349,12 @@ router.get('/portfolios/:id/edit-state', async (req, res) => {
 });
 // ─── Trades ───────────────────────────────────────────────────────────────────
 router.get('/portfolios/:id/trades', async (req, res) => {
-    const pid = parseInt(req.params.id);
-    const page = parseInt(req.query.page || '1');
-    const limit = parseInt(req.query.limit || '50');
-    const offset = (page - 1) * limit;
+    const pid = parseIntParam(req.params.id);
+    if (pid === null)
+        return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+    const page = parseIntParam(req.query.page, 1) ?? 1;
+    const limit = parseIntParam(req.query.limit, 50) ?? 50;
+    const offset = (Math.max(page, 1) - 1) * Math.min(limit, 200);
     const totalRow = await (0, turso_js_1.queryOne)('SELECT COUNT(*) as cnt FROM trades WHERE portfolio_id = ?', [pid]);
     const total = Number(totalRow?.cnt ?? 0);
     const trades = await (0, turso_js_1.query)('SELECT * FROM trades WHERE portfolio_id = ? ORDER BY trade_time DESC LIMIT ? OFFSET ?', [pid, limit, offset]);
@@ -291,7 +364,11 @@ router.get('/portfolios/:id/trades', async (req, res) => {
 router.get('/portfolios/:id/trades/:tradeId/explanation', async (req, res) => {
     try {
         res.set('Cache-Control', 'public, max-age=300');
-        const trade = await (0, turso_js_1.queryOne)('SELECT * FROM trades WHERE id = ? AND portfolio_id = ?', [parseInt(req.params.tradeId), parseInt(req.params.id)]);
+        const pid = parseIntParam(req.params.id);
+        const tradeId = parseIntParam(req.params.tradeId);
+        if (pid === null || tradeId === null)
+            return res.status(400).json({ success: false, error: 'Invalid id' });
+        const trade = await (0, turso_js_1.queryOne)('SELECT * FROM trades WHERE id = ? AND portfolio_id = ?', [tradeId, pid]);
         if (!trade)
             return res.status(404).json({ success: false, error: 'Trade not found' });
         let ctx = {};
@@ -305,9 +382,7 @@ router.get('/portfolios/:id/trades/:tradeId/explanation', async (req, res) => {
             ? `Structured data: ${JSON.stringify(ctx)}`
             : `Signal reason text: ${trade.signal_reason}`;
         const prompt = `You are TARS, the AI for QuantumMind virtual trading. Explain this trade decision in 2-3 clear sentences.\nTrade: ${trade.action} ${trade.quantity} shares of ${trade.symbol} at ₹${trade.price} on ${trade.trade_time}.\n${contextBlock}\n\nMention the key indicators that drove the decision (RSI, news, momentum). Keep it concise.`;
-        const Groq = (await Promise.resolve().then(() => __importStar(require('groq-sdk')))).default;
-        const groq = new Groq({ apiKey: process.env.groq_key });
-        const response = await groq.chat.completions.create({
+        const response = await groqClient.chat.completions.create({
             model: 'llama-3.1-8b-instant',
             messages: [{ role: 'user', content: prompt }],
             temperature: 0.4,
@@ -323,12 +398,17 @@ router.get('/portfolios/:id/trades/:tradeId/explanation', async (req, res) => {
 // ─── Performance ──────────────────────────────────────────────────────────────
 router.get('/portfolios/:id/performance', async (req, res) => {
     try {
-        const pid = parseInt(req.params.id);
-        const days = parseInt(req.query.days || '30');
-        const cacheKey = `perf_${pid}_${days}`;
+        const pid = parseIntParam(req.params.id);
+        if (pid === null)
+            return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+        const days = parseIntParam(req.query.days, 30) ?? 30;
+        const safeDays = Math.min(Math.max(days, 1), 365); // clamp 1–365
+        const cacheKey = `perf_${pid}_${safeDays}`;
         const data = await cache_js_1.cache.getOrSet(cacheKey, async () => {
             // If no snapshots yet, return synthetic baseline from portfolio creation
-            const snapshots = await (0, turso_js_1.query)(`SELECT * FROM performance_snapshots WHERE portfolio_id = ? AND snapshot_time >= datetime('now','-${days} days') ORDER BY snapshot_time ASC`, [pid]);
+            const snapshots = await (0, turso_js_1.query)(
+            // Use parameterized interval via DATE arithmetic — no string interpolation
+            'SELECT * FROM performance_snapshots WHERE portfolio_id = ? AND snapshot_time >= datetime(\'now\', \'-\' || ? || \' days\') ORDER BY snapshot_time ASC', [pid, safeDays]);
             if (snapshots.length === 0) {
                 // Return a single baseline data point so chart isn't empty
                 const portfolio = await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [pid]);
@@ -346,13 +426,20 @@ router.get('/portfolios/:id/performance', async (req, res) => {
 });
 // ─── Signals ──────────────────────────────────────────────────────────────────
 router.get('/portfolios/:id/signals', async (req, res) => {
-    res.json({ success: true, data: await (0, turso_js_1.query)('SELECT * FROM market_signals WHERE portfolio_id = ? ORDER BY signal_time DESC LIMIT 100', [parseInt(req.params.id)]) });
+    const sigPid = parseIntParam(req.params.id);
+    if (sigPid === null)
+        return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+    res.json({ success: true, data: await (0, turso_js_1.query)('SELECT * FROM market_signals WHERE portfolio_id = ? ORDER BY signal_time DESC LIMIT 100', [sigPid]) });
 });
 // ─── Sector Allocation ─────────────────────────────────────────────────────────
-router.get('/portfolios/:id/sectors', async (req, res) => {
+async function sectorAllocationHandler(req, res) {
     try {
         res.set('Cache-Control', 'public, max-age=60');
-        const pid = parseInt(req.params.id);
+        const pid = parseIntParam(req.params.id);
+        if (pid === null) {
+            res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+            return;
+        }
         const { getSymbolSector } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
         const holdings = await (0, turso_js_1.query)('SELECT symbol, quantity, current_price, avg_buy_price FROM holdings WHERE portfolio_id = ?', [pid]);
         const sectorMap = {};
@@ -378,11 +465,9 @@ router.get('/portfolios/:id/sectors', async (req, res) => {
     catch (err) {
         res.status(500).json({ success: false, error: String(err) });
     }
-});
-// Also expose as /sector-allocation for backward compat
-router.get('/portfolios/:id/sector-allocation', async (req, res) => {
-    return req.app._router.handle({ ...req, url: req.url.replace('sector-allocation', 'sectors') }, res, () => { });
-});
+}
+router.get('/portfolios/:id/sectors', sectorAllocationHandler);
+router.get('/portfolios/:id/sector-allocation', sectorAllocationHandler); // backward compat alias
 // ─── News ─────────────────────────────────────────────────────────────────────
 router.get('/news', async (_req, res) => {
     try {
@@ -402,7 +487,7 @@ router.get('/news/high-signal', async (_req, res) => {
         res.status(500).json({ success: false, error: String(err) });
     }
 });
-// GET /api/news/intelligence — Groq LLM analysis (expensive — CDN cached)
+// GET /api/news/intelligence - Groq LLM analysis (expensive - CDN cached)
 router.get('/news/intelligence', async (_req, res) => {
     try {
         res.set('Cache-Control', 'public, max-age=300, s-maxage=300');
@@ -416,7 +501,9 @@ router.get('/news/intelligence', async (_req, res) => {
 router.get('/portfolios/:id/benchmark', async (req, res) => {
     try {
         res.set('Cache-Control', 'public, max-age=300');
-        const pid = parseInt(req.params.id);
+        const pid = parseIntParam(req.params.id);
+        if (pid === null)
+            return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
         const portfolio = await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [pid]);
         if (!portfolio)
             return res.status(404).json({ success: false, error: 'Portfolio not found' });
@@ -471,7 +558,7 @@ router.get('/portfolios/:id/benchmark', async (req, res) => {
     }
 });
 // ─── ML Insights ──────────────────────────────────────────────────────────────
-// GET /api/ml/momentum/:symbol — ML momentum score (public, CDN cached)
+// GET /api/ml/momentum/:symbol - ML momentum score (public, CDN cached)
 router.get('/ml/momentum/:symbol', async (req, res) => {
     try {
         const sym = req.params.symbol;
@@ -482,7 +569,7 @@ router.get('/ml/momentum/:symbol', async (req, res) => {
         res.status(500).json({ success: false, error: String(err) });
     }
 });
-// GET /api/ml/kelly/:symbol — Kelly Criterion position size
+// GET /api/ml/kelly/:symbol - Kelly Criterion position size
 router.get('/ml/kelly/:symbol', async (req, res) => {
     try {
         res.json({ success: true, data: await (0, mlEngine_js_1.computeKellySize)(req.params.symbol) });
@@ -491,10 +578,13 @@ router.get('/ml/kelly/:symbol', async (req, res) => {
         res.status(500).json({ success: false, error: String(err) });
     }
 });
-// GET /api/ml/correlation/:id — correlation matrix for portfolio holdings
+// GET /api/ml/correlation/:id - correlation matrix for portfolio holdings
 router.get('/ml/correlation/:id', async (req, res) => {
     try {
-        const holdings = await (0, turso_js_1.query)('SELECT symbol FROM holdings WHERE portfolio_id = ?', [parseInt(req.params.id)]);
+        const corrId = parseIntParam(req.params.id);
+        if (corrId === null)
+            return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+        const holdings = await (0, turso_js_1.query)('SELECT symbol FROM holdings WHERE portfolio_id = ?', [corrId]);
         const symbols = holdings.map((h) => h.symbol);
         res.json({ success: true, data: await (0, mlEngine_js_1.computeCorrelationMatrix)(symbols) });
     }
@@ -526,7 +616,7 @@ router.get('/adaptive/report', async (_req, res) => {
 });
 router.get('/adaptive/regime', async (_req, res) => {
     try {
-        res.set('Cache-Control', 'public, max-age=3600, s-maxage=3600'); // 1 hour — regime doesn't change intra-day
+        res.set('Cache-Control', 'public, max-age=3600, s-maxage=3600'); // 1 hour - regime doesn't change intra-day
         res.json({ success: true, data: await cache_js_1.cache.getOrSet('market_regime', adaptiveEngine_js_1.detectMarketRegime, cache_js_1.TTL.MARKET_REGIME) });
     }
     catch (err) {
@@ -547,25 +637,27 @@ router.post('/portfolios/:id/trade', async (req, res) => {
     const { symbol, companyName, action, quantity, price, reason } = req.body;
     if (!symbol || !action || !quantity || !price)
         return res.status(400).json({ success: false, error: 'symbol, action, quantity, price required' });
-    const pid = parseInt(req.params.id);
+    const pid = parseIntParam(req.params.id);
+    if (pid === null)
+        return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
     const tradeId = await (0, tradingEngine_js_1.executeTrade)(pid, symbol, companyName || symbol, action, quantity, price, reason || 'Manual trade');
     if (tradeId) {
         cache_js_1.cache.invalidate(`portfolio_summary_${pid}`);
         res.json({ success: true, tradeId });
     }
     else
-        res.status(400).json({ success: false, error: 'Trade failed — check cash or holdings' });
+        res.status(400).json({ success: false, error: 'Trade failed - check cash or holdings' });
 });
 // ─── Cron trigger (called by Vercel Cron / external scheduler) ────────────────
 // ─── TARS Chatbot ───────────────────────────────────────────────────────────
 /**
- * TARS live price context — no hardcoded map.
+ * TARS live price context - no hardcoded map.
  *
  * Strategy:
  * 1. Look for explicit .NS symbols in the message (e.g. TCS.NS, RELIANCE.NS)
- * 2. Look for uppercase words (2–15 chars) that could be NSE tickers — try each against Yahoo Finance
+ * 2. Look for uppercase words (2-15 chars) that could be NSE tickers - try each against Yahoo Finance
  * 3. Use the NSE_UNIVERSE from marketData as the known-ticker reference for quick validation
- * No separate company map needed — same data the trading engine uses.
+ * No separate company map needed - same data the trading engine uses.
  */
 async function tarsLiveContext(message) {
     const { getDisplayQuote, NSE_UNIVERSE } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
@@ -574,7 +666,7 @@ async function tarsLiveContext(message) {
     // 1. Explicit .NS match
     const explicitMatch = message.match(/\b([A-Za-z0-9&-]+)\.NS\b/i);
     const explicitSym = explicitMatch ? explicitMatch[1].toUpperCase() + '.NS' : null;
-    // 2. Uppercase potential tickers (2–15 chars, no spaces) that exist in our universe
+    // 2. Uppercase potential tickers (2-15 chars, no spaces) that exist in our universe
     const upperTokens = [...message.matchAll(/\b([A-Z][A-Z0-9&-]{1,14})\b/g)]
         .map(m => m[1])
         .filter(t => universeSet.has(t));
@@ -591,17 +683,17 @@ async function tarsLiveContext(message) {
             if (q.price > 0) {
                 const ist = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
                 const sign = q.change >= 0 ? '+' : '';
-                return `\n\n[LIVE MARKET DATA — as of ${ist} IST]\nStock: ${sym} (${q.shortName ?? ''})\nLTP: ₹${q.price.toFixed(2)}\nChange: ${sign}${q.change.toFixed(2)} (${sign}${q.changePct.toFixed(2)}%)\nProvider: ${q.provider} | Fresh: ${q.isFresh}`;
+                return `\n\n[LIVE MARKET DATA - as of ${ist} IST]\nStock: ${sym} (${q.shortName ?? ''})\nLTP: ₹${q.price.toFixed(2)}\nChange: ${sign}${q.change.toFixed(2)} (${sign}${q.changePct.toFixed(2)}%)\nProvider: ${q.provider} | Fresh: ${q.isFresh}`;
             }
         }
         catch { /* try next candidate */ }
     }
     return ''; // no stock found in message
 }
-const TARS_SYSTEM_PROMPT = `You are TARS, the AI assistant for QuantumMind — an AI-driven virtual Indian stock trading portal.
+const TARS_SYSTEM_PROMPT = `You are TARS, the AI assistant for QuantumMind - an AI-driven virtual Indian stock trading portal.
 You are named after the robot from the movie Interstellar. Honesty setting: 90%. Humor setting: 75%.
 
-CRITICAL RULE: You have access to LIVE market data via Yahoo Finance. When the user asks for a stock price, LTP, or current value, the system automatically fetches a real-time quote and injects it into this conversation as [LIVE MARKET DATA]. Use those exact figures in your answer. NEVER say you cannot access real-time data. NEVER mention a "knowledge cutoff" for prices — you have live data.
+CRITICAL RULE: You have access to LIVE market data via Yahoo Finance. When the user asks for a stock price, LTP, or current value, the system automatically fetches a real-time quote and injects it into this conversation as [LIVE MARKET DATA]. Use those exact figures in your answer. NEVER say you cannot access real-time data. NEVER mention a "knowledge cutoff" for prices - you have live data.
 
 About QuantumMind:
 - Fully autonomous AI-managed virtual trading system for NSE-listed Indian stocks
@@ -611,9 +703,9 @@ About QuantumMind:
 - ML stack: RSI(14), 52-week range, linear regression momentum, Kelly Criterion
 - Adaptive feedback loop: signal weights auto-adjust based on win/loss history
 - Market regime detection: BULL / BEAR / SIDEWAYS gates trade thresholds
-- Brokerage: 0.2% flat per trade (STT + NSE charges + stamp duty + GST ≈ 0.2–0.25%)
+- Brokerage: 0.2% flat per trade (STT + NSE charges + stamp duty + GST ≈ 0.2-0.25%)
 - Safety guards: kill switch, 10% NAV per symbol cap, daily trade limits, NSE holiday calendar
-- No real money — simulation only. All trades are virtual.
+- No real money - simulation only. All trades are virtual.
 - Database: Turso cloud SQLite (Mumbai ap-south-1 region)
 - Universe: ~1800+ NSE EQ-series stocks above ₹30
 
@@ -625,8 +717,6 @@ router.post('/tars/chat', async (req, res) => {
     }
     try {
         res.set('Cache-Control', 'no-store');
-        const Groq = (await Promise.resolve().then(() => __importStar(require('groq-sdk')))).default;
-        const groq = new Groq({ apiKey: process.env.groq_key });
         const messages = [
             { role: 'system', content: TARS_SYSTEM_PROMPT },
         ];
@@ -641,7 +731,7 @@ router.post('/tars/chat', async (req, res) => {
         const liveCtx = await tarsLiveContext(message);
         const userContent = message.slice(0, 500) + liveCtx;
         messages.push({ role: 'user', content: userContent });
-        const response = await groq.chat.completions.create({
+        const response = await groqClient.chat.completions.create({
             model: 'llama-3.1-8b-instant',
             messages,
             temperature: 0.6,
@@ -691,29 +781,23 @@ router.get('/health/cron', async (_req, res) => {
     }
 });
 // ─── Kill switch admin endpoint ───────────────────────────────────────────────────────────
-router.post('/admin/trading-enabled', async (req, res) => {
-    const adminSecret = process.env.CRON_SECRET;
-    const provided = req.headers.authorization?.replace('Bearer ', '');
-    if (adminSecret && provided !== adminSecret)
-        return res.status(401).json({ error: 'Unauthorized' });
+router.post('/admin/trading-enabled', requireAdminAuth, async (req, res) => {
     const { enabled } = req.body;
     await (0, turso_js_1.run)('UPDATE trading_config SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key=?', [String(enabled), 'global_trading_enabled']);
     res.json({ success: true, global_trading_enabled: enabled });
 });
 // ─── Backtest bootstrap admin endpoint ────────────────────────────────────────────────────────
-router.post('/admin/backtest/run', async (req, res) => {
-    const adminSecret = process.env.CRON_SECRET;
-    const provided = req.headers.authorization?.replace('Bearer ', '');
-    if (adminSecret && provided !== adminSecret)
-        return res.status(401).json({ error: 'Unauthorized' });
+router.post('/admin/backtest/run', requireAdminAuth, async (req, res) => {
     try {
         res.json({ success: true, message: 'Backtest bootstrap started asynchronously. Check logs for progress.' });
-        // Run async — don’t block the HTTP response (may take 10+ min for full universe)
         const { symbols } = req.body;
-        setImmediate(async () => {
-            const { bootstrapSignalWeights } = await Promise.resolve().then(() => __importStar(require('../services/backtestWeights.js')));
-            const result = await bootstrapSignalWeights(symbols);
-            console.log('[Admin] Backtest bootstrap complete:', JSON.stringify(result, null, 2));
+        // Run async — don't block HTTP response. Wrapped in try-catch so rejection is logged.
+        setImmediate(() => {
+            (async () => {
+                const { bootstrapSignalWeights } = await Promise.resolve().then(() => __importStar(require('../services/backtestWeights.js')));
+                const result = await bootstrapSignalWeights(symbols);
+                console.log('[Admin] Backtest bootstrap complete:', JSON.stringify(result, null, 2));
+            })().catch(e => console.error('[Admin] Backtest bootstrap FAILED:', String(e)));
         });
     }
     catch (err) {
@@ -721,11 +805,7 @@ router.post('/admin/backtest/run', async (req, res) => {
     }
 });
 // ─── Backtest status / results ────────────────────────────────────────────────────────────────
-router.get('/admin/backtest/weights', async (req, res) => {
-    const adminSecret = process.env.CRON_SECRET;
-    const provided = req.headers.authorization?.replace('Bearer ', '');
-    if (adminSecret && provided !== adminSecret)
-        return res.status(401).json({ error: 'Unauthorized' });
+router.get('/admin/backtest/weights', requireAdminAuth, async (req, res) => {
     try {
         const weights = await (0, turso_js_1.query)('SELECT * FROM signal_weights ORDER BY source');
         const priceRows = await (0, turso_js_1.query)('SELECT COUNT(*) as cnt FROM backtesting_prices').catch(() => [{ cnt: 0 }]);
@@ -736,16 +816,7 @@ router.get('/admin/backtest/weights', async (req, res) => {
     }
 });
 // ─── Cron trigger ────────────────────────────────────────────────────────────────────────
-router.post('/cron/market-cycle', async (req, res) => {
-    const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret) {
-        const provided = req.headers.authorization?.replace('Bearer ', '') ??
-            req.query.secret;
-        if (provided !== cronSecret) {
-            console.warn('[Cron] Unauthorized cycle trigger attempt from', req.ip);
-            return res.status(401).json({ success: false, error: 'Unauthorized' });
-        }
-    }
+router.post('/cron/market-cycle', requireAdminAuth, async (req, res) => {
     try {
         const { runMarketCycle } = await Promise.resolve().then(() => __importStar(require('../scheduler/marketMonitor.js')));
         await runMarketCycle();
@@ -756,13 +827,7 @@ router.post('/cron/market-cycle', async (req, res) => {
     }
 });
 // ─── Lightweight price-only refresh ───────────────────────────────────────────────────────
-router.post('/cron/price-update', async (req, res) => {
-    const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret) {
-        const provided = req.headers.authorization?.replace('Bearer ', '') ?? req.query.secret;
-        if (provided !== cronSecret)
-            return res.status(401).json({ error: 'Unauthorized' });
-    }
+router.post('/cron/price-update', requireAdminAuth, async (req, res) => {
     try {
         const { getMultipleQuotes } = await Promise.resolve().then(() => __importStar(require('../services/marketData.js')));
         const holdings = await (0, turso_js_1.query)('SELECT DISTINCT symbol FROM holdings h JOIN portfolios p ON p.id = h.portfolio_id WHERE p.is_active = 1');

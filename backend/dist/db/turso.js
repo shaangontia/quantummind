@@ -73,6 +73,12 @@ async function runMigrations() {
         console.log('[DB] Migration: portfolios.strategy_updated_at added');
     }
     catch (_) { /* already exists */ }
+    try {
+        // peak_nav: highest total portfolio value ever recorded; used for true drawdown calculation
+        await db.execute('ALTER TABLE portfolios ADD COLUMN peak_nav REAL DEFAULT NULL');
+        console.log('[DB] Migration: portfolios.peak_nav added');
+    }
+    catch (_) { /* already exists */ }
 }
 async function query(sql, args = []) {
     const db = getClient();
