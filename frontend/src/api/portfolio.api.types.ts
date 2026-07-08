@@ -26,6 +26,30 @@ export interface Portfolio {
 
 export type UpdatePortfolioPayload = Partial<CreatePortfolioPayload>;
 
+export type PortfolioLifecycleState = 'VIRGIN' | 'ACTIVE' | 'MATURE' | 'DRAWDOWN_HALT' | 'ARCHIVED';
+
+export type EditableField =
+  | 'name' | 'description' | 'capitalTopUp' | 'capitalReduction'
+  | 'rebalanceFrequency' | 'targetReturnPct' | 'investmentHorizonMonths'
+  | 'preferredSectors' | 'preferredCaps' | 'volatilityPreference'
+  | 'investmentGoal' | 'riskTolerance' | 'maxDrawdownPct';
+
+export interface PortfolioEditState {
+  state: PortfolioLifecycleState;
+  editability: {
+    free: EditableField[];
+    warn: EditableField[];
+    locked: EditableField[];
+    capitalFloor: number;
+  };
+  meta: {
+    holdingsCount: number;
+    tradeCount: number;
+    drawdownPct: number;
+    drawdownLimit: number;
+  };
+}
+
 export interface CreatePortfolioPayload {
   name: string;
   description?: string;

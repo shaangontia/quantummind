@@ -2,6 +2,7 @@ import type {
   ApiResponse,
   CreatePortfolioPayload,
   UpdatePortfolioPayload,
+  PortfolioEditState,
   Holding,
   MarketSignal,
   PerformanceSnapshot,
@@ -61,5 +62,6 @@ export const portfolioApi = {
     get<PerformanceSnapshot[]>(`/portfolios/${id}/performance?days=${days}`),
   signals: (id: number) => get<MarketSignal[]>(`/portfolios/${id}/signals`),
   update: (id: number, payload: UpdatePortfolioPayload) => patch<Portfolio>(`/portfolios/${id}`, payload),
+  editState: (id: number) => get<PortfolioEditState>(`/portfolios/${id}/edit-state`),
   deactivate: (id: number) => del(`/portfolios/${id}`),
 };
