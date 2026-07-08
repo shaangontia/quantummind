@@ -50,7 +50,7 @@ export const PortfoliosPage = () => {
       {!isLoading && portfolios.length > 0 && (
         <div className="portfolios-grid">
           {portfolios.map(p => {
-            const returnPct = 0; // Will be populated from performance snapshot
+            const returnPct = (p as any).return_pct ?? 0;
             const isPositive = returnPct >= 0;
             return (
               <div
@@ -83,8 +83,8 @@ export const PortfoliosPage = () => {
                   </div>
                   <div className="portfolio-stat">
                     <span className="stat-l">Current Return</span>
-                    <span className={`stat-v ${isPositive ? 'tag-positive' : 'tag-negative'}`}>
-                      {formatPct(returnPct)}
+                    <span className={`stat-v ${isPositive ? 'tag-positive' : 'tag-negative'}`} style={{ fontWeight: 700 }}>
+                      {isPositive ? '+' : ''}{formatPct(returnPct)}
                     </span>
                   </div>
                   <div className="portfolio-stat">

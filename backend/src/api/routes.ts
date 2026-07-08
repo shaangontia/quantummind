@@ -16,7 +16,20 @@ const router = Router();
 router.get('/portfolios', async (_req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'no-store');
-    res.json({ success: true, data: await query('SELECT * FROM portfolios ORDER BY created_at DESC') });
+    // Enrich each portfolio with live return_pct computed from holdings + cash vs initial_capital
+    const portfolios = await query('SELECT * FROM portfolios ORDER BY created_at DESC');
+    const enriched = await Promise.all(portfolios.map(async (p: any) => {
+      const holdingsValue = await query(
+        'SELECT COALESCE(SUM(quantity * COALESCE(current_price, avg_buy_price)), 0) as nav FROM holdings WHERE portfolio_id = ?',
+        [p.id]
+      );
+      const nav = Number(holdingsValue[0]?.nav ?? 0) + Number(p.current_cash);
+      const returnPct = Number(p.initial_capital) > 0
+        ? ((nav - Number(p.initial_capital)) / Number(p.initial_capital)) * 100
+        : 0;
+      return { ...p, current_nav: nav, return_pct: returnPct };
+    }));
+    res.json({ success: true, data: enriched });
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
 
