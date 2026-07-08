@@ -337,12 +337,26 @@ export async function executeTrade(
     const results = await batchWithResults(statements);
     const tradeId = results[0].lastInsertRowid;
     logger.trade(portfolioId, symbol, 'SELL', price, quote?.provider ?? 'unknown', true, reason, { qty: quantity, netAmount, realizedPnl: realizedPnlOnTrade });
+    // Record signal for adaptive weight learning (fire-and-forget; non-blocking)
+    const signalSourceSell = ctx?.groqSentiment != null ? 'news_sentiment'
+      : ctx?.momentumScore != null ? 'momentum'
+      : 'technical';
+    recordSignalForTracking(portfolioId, symbol, 'SELL', signalSourceSell, price, new Date().toISOString()).catch(
+      e => console.warn('[Adaptive] recordSignalForTracking failed:', e)
+    );
     return tradeId;
   }
 
   const results = await batchWithResults(statements);
   const tradeId = results[0].lastInsertRowid;
   logger.trade(portfolioId, symbol, 'BUY', price, quote?.provider ?? 'unknown', true, reason, { qty: quantity, netAmount });
+  // Record signal for adaptive weight learning (fire-and-forget; non-blocking)
+  const signalSourceBuy = ctx?.groqSentiment != null ? 'news_sentiment'
+    : ctx?.momentumScore != null ? 'momentum'
+    : 'technical';
+  recordSignalForTracking(portfolioId, symbol, 'BUY', signalSourceBuy, price, new Date().toISOString()).catch(
+    e => console.warn('[Adaptive] recordSignalForTracking failed:', e)
+  );
   return tradeId;
 }
 

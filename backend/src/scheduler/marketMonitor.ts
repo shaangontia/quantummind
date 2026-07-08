@@ -5,6 +5,7 @@ import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, i
 import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
+import { resolveSignalOutcomes } from '../services/adaptiveEngine.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -226,6 +227,9 @@ export function startScheduler(): void {
   cron.schedule('0 * * * *', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
   // After-market snapshot
   cron.schedule('0 16 * * 1-5', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
+  // Nightly adaptive learning: resolve signal outcomes + recalibrate weights
+  // Runs at 20:00 IST on weekdays — 5+ hours after market close so exit prices are settled
+  cron.schedule('0 20 * * 1-5', () => { resolveSignalOutcomes().catch(console.error); }, { timezone: 'Asia/Kolkata' });
 
   console.log('[Scheduler] All cron jobs active (IST)');
 }
