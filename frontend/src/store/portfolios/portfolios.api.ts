@@ -64,7 +64,8 @@ export const portfoliosApi = baseApi.injectEndpoints({
 
     updatePortfolio: builder.mutation<Portfolio, { id: number; payload: UpdatePortfolioPayload }>({
       query: ({ id, payload }) => ({ url: `/portfolios/${id}`, method: 'PATCH', body: payload }),
-      // Optimistic update + tag invalidation
+      // Optimistic cache update — no invalidatesTags needed; updateQueryData patches both
+      // list and summary caches in-place to avoid triggering LIST refetch on the portfolio page.
       onQueryStarted: async ({ id }, { dispatch, queryFulfilled }) => {
         try {
           const { data: updated } = await queryFulfilled;
@@ -82,7 +83,6 @@ export const portfoliosApi = baseApi.injectEndpoints({
           }));
         } catch { /* handled by RTK Query error state */ }
       },
-      invalidatesTags: (_result, _err, { id }) => [{ type: 'Portfolio', id }],
     }),
 
     // ─── Deactivate ───────────────────────────────────────────────────────────

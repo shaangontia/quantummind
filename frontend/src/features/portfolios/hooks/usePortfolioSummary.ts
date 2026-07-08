@@ -4,9 +4,7 @@ import { useGetPortfolioSummaryQuery } from '../../../store/portfolios/index.ts'
 export const summaryKey = (id: number) => ['portfolio-summary', id] as const;
 
 export const usePortfolioSummary = (id: number) => {
-  const { data, isLoading, error, refetch, fulfilledTimeStamp } = useGetPortfolioSummaryQuery(id, {
-    pollingInterval: 30_000,
-  });
+  const { data, isLoading, error, refetch, fulfilledTimeStamp } = useGetPortfolioSummaryQuery(id);
 
   const lastFetchedAt = fulfilledTimeStamp ? new Date(fulfilledTimeStamp) : null;
 

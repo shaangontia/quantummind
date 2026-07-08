@@ -137,3 +137,32 @@ textarea {
 .tag-positive { color: var(--accent-green); }
 .tag-negative { color: var(--accent-red); }
 .tag-neutral { color: var(--text-secondary); }
+
+/* ── Mobile modal base ────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .modal-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .modal-content {
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    width: 100% !important;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+
+  .form-row {
+    flex-direction: column;
+  }
+
+  .form-actions {
+    flex-direction: column-reverse;
+    gap: 8px;
+  }
+
+  .form-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

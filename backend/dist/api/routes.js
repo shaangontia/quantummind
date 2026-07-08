@@ -61,7 +61,8 @@ function parseIntParam(val, fallback) {
 // ─── Validation schemas ──────────────────────────────────────────────────────────────
 const RISK_TOLERANCE = ['Low', 'Medium', 'High', 'Very High'];
 const REBALANCE_FREQ = ['Weekly', 'Monthly', 'Quarterly', 'Never'];
-const VOLATILITY_PREF = ['Low', 'Moderate', 'High'];
+const VOLATILITY_PREF = ['low', 'medium', 'high']; // lowercase — matches DB default + frontend
+const INVESTMENT_GOAL = ['growth', 'income', 'retirement'];
 const portfolioCreateSchema = zod_1.z.object({
     name: zod_1.z.string().min(1).max(100),
     description: zod_1.z.string().max(500).optional(),
@@ -83,7 +84,7 @@ const portfolioPatchSchema = zod_1.z.object({
     preferredSectors: zod_1.z.array(zod_1.z.string()).optional(),
     preferredCaps: zod_1.z.array(zod_1.z.string()).optional(),
     volatilityPreference: zod_1.z.enum(VOLATILITY_PREF).optional(),
-    investmentGoal: zod_1.z.string().max(200).optional(),
+    investmentGoal: zod_1.z.enum(INVESTMENT_GOAL).optional(),
     maxDrawdownPct: zod_1.z.number().min(1).max(100).optional(),
 });
 /** Fail-closed admin auth middleware. Rejects if CRON_SECRET is unset. */

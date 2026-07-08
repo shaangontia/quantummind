@@ -1,47 +1,52 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../../../../store/hooks.ts';
-import { openEditModal, closeEditModal, selectPortfolioById, useGetPortfolioPerformanceQuery } from '../../../../store/portfolios/index.ts';
+import { openEditModal, closeEditModal, selectPortfolioById } from '../../../../store/portfolios/index.ts';
+import { useGetPortfolioSummaryQuery } from '../../../../store/portfolios/index.ts';
 import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx';
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ReferenceLine, ResponsiveContainer, Legend,
-} from 'recharts';
-import { usePortfolioSummary } from '../../hooks/usePortfolioSummary.ts';
-import type { SummaryHolding } from '../../../../api/portfolio.api.types.ts';
-import { StatCard } from '../../../../shared/ui/StatCard/StatCard.tsx';
-import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
-import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
-import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
-import { formatINR, formatPct, riskColor } from '../../model/portfolios.utils.ts';
-import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
-import { NewsFeed } from '../../../news/ui/NewsFeed/NewsFeed.tsx';
-import { AdaptivePanel } from '../../../intelligence/ui/AdaptivePanel/AdaptivePanel.tsx';
+import { PortfolioStats } from '../PortfolioStats/index.ts';
+import { HoldingsTable } from '../HoldingsTable/index.ts';
+import { PerformanceChart } from '../PerformanceChart/index.ts';
 import { SectorAllocationChart } from '../SectorAllocationChart/SectorAllocationChart.tsx';
 import { BenchmarkChart } from '../BenchmarkChart/BenchmarkChart.tsx';
-import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
+import { NewsFeed } from '../../../news/ui/NewsFeed/NewsFeed.tsx';
+import { AdaptivePanel } from '../../../intelligence/ui/AdaptivePanel/AdaptivePanel.tsx';
+import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
+import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
+import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
+import { riskColor } from '../../model/portfolios.utils.ts';
+import { isNSEMarketOpen } from '../../model/portfolios.marketHours.ts';
+import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
 import './PortfolioDashboard.css';
 
+/**
+ * Orchestrator — owns layout and header state only.
+ * Each section (stats, holdings, performance, benchmark, sectors)
+ * owns its own RTK Query subscription and market-hours polling.
+ * RTK Query deduplicates network requests across components sharing the
+ * same query key, so there is still only ONE request per endpoint.
+ */
 export const PortfolioDashboard = () => {
   const { id } = useParams<{ id: string }>();
   const portfolioId = Number(id);
   const navigate = useNavigate();
 
   const dispatch = useAppDispatch();
-  const { summary, isLoading, error, refresh, lastFetchedAt } = usePortfolioSummary(portfolioId);
   const portfolio = useAppSelector(selectPortfolioById(portfolioId));
   const editingId = useAppSelector(state => state.portfolios.editingId);
   const isEditOpen = editingId === portfolioId;
-  // RTK Query — performance (lazy after first paint)
-  const { data: performanceData, isLoading: perfLoading } = useGetPortfolioPerformanceQuery(
-    { id: portfolioId, days: 90 },
-  );
-  const performance = performanceData ?? [];
 
+  // Header-level subscription — drives initial loading/error states, provides refetch for the
+  // manual refresh button, and shares the cache entry with PortfolioStats + HoldingsTable
+  // (RTK Query deduplication: zero extra network cost).
+  const { data: headerData, isLoading, error, refetch, fulfilledTimeStamp } =
+    useGetPortfolioSummaryQuery(portfolioId);
+
+  const lastFetchedAt = fulfilledTimeStamp ? new Date(fulfilledTimeStamp) : null;
+
+  // Defer low-priority panels (news, AI, benchmark, sector) until after first paint
   const [showSecondary, setShowSecondary] = useState(false);
   const deferRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Defer news + adaptive panel by 300ms after first paint
   useEffect(() => {
     deferRef.current = setTimeout(() => setShowSecondary(true), 300);
     return () => { if (deferRef.current) clearTimeout(deferRef.current); };
@@ -51,28 +56,16 @@ export const PortfolioDashboard = () => {
     return <div className="center-page"><Spinner size={40} /></div>;
   }
 
-  if (error || !summary) {
+  if (error || !headerData) {
     return (
       <EmptyState
         icon="⚠"
         title="Failed to load portfolio"
-        description={error ?? 'Portfolio not found'}
+        description={error ? ('error' in error ? String(error.error) : 'Failed to load') : 'Portfolio not found'}
         action={<button className="btn btn-ghost" onClick={() => navigate('/')}>← Back</button>}
       />
     );
   }
-
-  const { holdings, returnPct, unrealizedPnl, totalPnl, totalValue, investedValue, cashBalance, targetReturnPct, riskTolerance, investmentHorizonMonths } = summary;
-  const isPositive = returnPct >= 0;
-  const targetGapPct = targetReturnPct - returnPct;
-  const unrealizedPnlPct = investedValue > 0 ? (unrealizedPnl / investedValue) * 100 : 0;
-  const totalPnlPct = investedValue > 0 ? (totalPnl / investedValue) * 100 : 0;
-
-  const chartData = performance.map(s => ({
-    date: new Date(s.snapshot_time).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
-    return: parseFloat(s.return_pct.toFixed(2)),
-    target: s.target_return_pct,
-  }));
 
   return (
     <div className="dashboard">
@@ -80,187 +73,54 @@ export const PortfolioDashboard = () => {
       <div className="breadcrumb">
         <Link to="/" className="breadcrumb-link">Portfolios</Link>
         <span>›</span>
-        <span>{summary.name}</span>
+        <span>{headerData.name}</span>
       </div>
 
       {/* Header */}
       <div className="dashboard-header">
         <div>
           <div className="dashboard-title-row">
-            <h1 className="dashboard-title">{summary.name}</h1>
-            <Badge variant={riskColor(riskTolerance) as BadgeVariant}>
-              {riskTolerance} Risk
+            <h1 className="dashboard-title">{headerData.name}</h1>
+            <Badge variant={riskColor(headerData.riskTolerance) as BadgeVariant}>
+              {headerData.riskTolerance} Risk
             </Badge>
           </div>
         </div>
         <div className="dashboard-actions">
           {lastFetchedAt && (
             <span style={{ fontSize: '0.75rem', color: '#64748b', alignSelf: 'center' }}>
-              Prices as of {lastFetchedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              {isNSEMarketOpen()
+                ? `Live · ${lastFetchedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+                : `Closed · ${lastFetchedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`}
             </span>
           )}
-          <button className="btn btn-ghost" onClick={() => void refresh()} title="Refresh prices">
+          <button className="btn btn-ghost" onClick={() => void refetch()} title="Refresh prices">
             ↻ Refresh
           </button>
           {portfolio && (
-            <button className="btn btn-ghost" onClick={() => dispatch(openEditModal(portfolioId))} title="Edit portfolio settings">
+            <button
+              className="btn btn-ghost"
+              onClick={() => dispatch(openEditModal(portfolioId))}
+              title="Edit portfolio settings"
+            >
               ✏ Edit
             </button>
           )}
-          <Link to={`/portfolios/${portfolioId}/signals`} className="btn btn-ghost">
-            Signals
-          </Link>
-          <Link to={`/portfolios/${portfolioId}/trades`} className="btn btn-ghost">
-            Audit Log
-          </Link>
+          <Link to={`/portfolios/${portfolioId}/signals`} className="btn btn-ghost">Signals</Link>
+          <Link to={`/portfolios/${portfolioId}/trades`} className="btn btn-ghost">Audit Log</Link>
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="stats-grid">
-        <StatCard
-          label="Total Portfolio Value"
-          value={formatINR(totalValue)}
-          sub={formatPct(returnPct)}
-          trend={isPositive ? 'up' : 'down'}
-        />
-        <StatCard
-          label="Invested Value"
-          value={formatINR(investedValue)}
-        />
-        <StatCard
-          label="Cash Balance"
-          value={formatINR(cashBalance)}
-          sub="Available"
-          trend="neutral"
-        />
-        <StatCard
-          label="Unrealized P&L"
-          value={(unrealizedPnl >= 0 ? '+' : '') + formatINR(unrealizedPnl)}
-          sub={(unrealizedPnlPct >= 0 ? '+' : '') + formatPct(unrealizedPnlPct)}
-          trend={unrealizedPnl >= 0 ? 'up' : 'down'}
-          accent={unrealizedPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}
-        />
-        <StatCard
-          label="Total P&L"
-          value={(totalPnl >= 0 ? '+' : '') + formatINR(totalPnl)}
-          sub={(totalPnlPct >= 0 ? '+' : '') + formatPct(totalPnlPct) + ' overall'}
-          trend={totalPnl >= 0 ? 'up' : 'down'}
-          accent={totalPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}
-        />
-        <StatCard
-          label="Target Return"
-          value={`${targetReturnPct}%`}
-          sub={targetGapPct > 0 ? `${targetGapPct.toFixed(1)}% to go` : 'Target achieved!'}
-          trend={targetGapPct <= 0 ? 'up' : 'neutral'}
-          accent="var(--accent-purple)"
-        />
-        <StatCard
-          label="Holdings"
-          value={String(holdings.length)}
-          sub={`${investmentHorizonMonths}m horizon`}
-          trend="neutral"
-        />
-      </div>
+      {/* Stats — independent subscription, polls during market hours */}
+      <PortfolioStats portfolioId={portfolioId} />
 
-      {/* Performance Chart */}
-      <div className="chart-card card">
-        <h2 className="section-title">Performance vs Target</h2>
-        {perfLoading ? (
-          <div className="chart-loading">
-            <SkeletonBlock height={280} borderRadius={8} />
-          </div>
-        ) : chartData.length === 0 ? (
-          <EmptyState icon="📈" title="No performance data yet" description="Data will appear after the first monitoring cycle." />
-        ) : (
-          <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2d3748" />
-              <XAxis dataKey="date" stroke="#64748b" tick={{ fontSize: 12 }} />
-              <YAxis stroke="#64748b" tick={{ fontSize: 12 }} unit="%" />
-              <Tooltip
-                contentStyle={{ background: '#1a2035', border: '1px solid #2d3748', borderRadius: 8 }}
-                labelStyle={{ color: '#94a3b8' }}
-                formatter={(v: number) => [`${v}%`]}
-              />
-              <Legend />
-              <ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 4" />
-              <Line
-                type="monotone"
-                dataKey="return"
-                name="Portfolio Return"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 4 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="target"
-                name="Target Return"
-                stroke="#8b5cf6"
-                strokeWidth={1.5}
-                strokeDasharray="6 3"
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        )}
-      </div>
+      {/* Performance chart — independent subscription */}
+      <PerformanceChart portfolioId={portfolioId} />
 
-      {/* Holdings Table */}
-      <div className="card">
-        <h2 className="section-title">Current Holdings</h2>
-        {holdings.length === 0 ? (
-          <EmptyState icon="💼" title="No holdings yet" description="The AI will build positions on the next trading cycle." />
-        ) : (
-          <div className="table-wrapper">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Company</th>
-                  <th>Sector</th>
-                  <th className="text-right">Qty</th>
-                  <th className="text-right">Avg Buy Price</th>
-                  <th className="text-right">Current Price</th>
-                  <th className="text-right">Value</th>
-                  <th className="text-right">P&L</th>
-                  <th className="text-right">Return</th>
-                  <th>Last Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {holdings.map((h: SummaryHolding) => (
-                    <tr key={h.symbol}>
-                      <td><strong>{h.symbol}</strong></td>
-                      <td>{h.companyName}</td>
-                      <td></td>
-                      <td className="text-right">{h.quantity}</td>
-                      <td className="text-right">{formatINR(h.avgBuyPrice)}</td>
-                      <td className="text-right">
-                          {formatINR(h.currentPrice)}
-                          {h.priceStatus === 'STALE' && (
-                            <span title="Price data is stale — not used for trade execution" style={{ marginLeft: 4, color: '#f59e0b', fontSize: '0.75rem' }}>⚠</span>
-                          )}
-                        </td>
-                      <td className="text-right">{formatINR(h.currentValue)}</td>
-                      <td className="text-right" style={{ color: h.pnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
-                        {h.pnl >= 0 ? '+' : ''}{formatINR(h.pnl)}
-                      </td>
-                      <td className="text-right" style={{ color: h.pnlPct >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
-                        {h.pnlPct >= 0 ? '+' : ''}{formatPct(h.pnlPct)}
-                      </td>
-                      <td className="text-muted">—</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {/* Holdings table — independent subscription, polls during market hours */}
+      <HoldingsTable portfolioId={portfolioId} />
 
-      {/* Benchmark + Sector side-by-side — deferred */}
+      {/* Low-priority panels — deferred 300 ms, static after load */}
       {showSecondary && (
         <div className="two-col-cards">
           <div className="card">
@@ -274,7 +134,6 @@ export const PortfolioDashboard = () => {
         </div>
       )}
 
-      {/* Adaptive Intelligence Panel — deferred */}
       {showSecondary && (
         <div className="card">
           <h2 className="section-title">AI Intelligence Engine</h2>
@@ -282,7 +141,6 @@ export const PortfolioDashboard = () => {
         </div>
       )}
 
-      {/* NSE News Feed — deferred */}
       {showSecondary && (
         <div className="card">
           <NewsFeed compact />

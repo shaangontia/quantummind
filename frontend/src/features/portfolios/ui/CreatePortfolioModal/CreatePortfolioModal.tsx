@@ -103,11 +103,15 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
               <label htmlFor="capital">Initial Capital (₹)</label>
               <input
                 id="capital"
-                type="number"
-                min={10000}
-                step={10000}
-                value={form.initialCapital}
-                onChange={e => setForm(f => ({ ...f, initialCapital: Number(e.target.value) }))}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={form.initialCapital || ''}
+                onChange={e => {
+                  const digits = e.target.value.replace(/\D/g, '');
+                  setForm(f => ({ ...f, initialCapital: digits ? parseInt(digits, 10) : 0 }));
+                }}
+                onFocus={e => e.target.select()}
                 className="form-input"
               />
             </div>

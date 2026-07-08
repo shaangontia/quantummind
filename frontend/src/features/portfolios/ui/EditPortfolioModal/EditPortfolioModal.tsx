@@ -219,15 +219,17 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
               </label>
               <input
                 id="ep-capital"
-                type="number"
-                min={capitalFloor || 10000}
-                step={10000}
-                value={form.initialCapital}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={form.initialCapital || ''}
                 onChange={e => {
-                  const val = Number(e.target.value);
+                  const digits = e.target.value.replace(/\D/g, '');
+                  const val = digits ? parseInt(digits, 10) : 0;
                   setForm(f => ({ ...f, initialCapital: val }));
                   if (val >= capitalFloor) setFieldError(prev => ({ ...prev, capitalReduction: undefined }));
                 }}
+                onFocus={e => e.target.select()}
                 className="form-input"
                 style={form.initialCapital < capitalFloor ? { borderColor: '#ef4444' } : {}}
               />
