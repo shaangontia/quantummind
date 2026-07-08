@@ -147,6 +147,13 @@ export async function runMarketCycle(): Promise<void> {
 
   try {
     await updateAllPrices();
+    // Refresh index prices once per day (check if last stored date is today)
+    const today = new Date().toISOString().slice(0, 10);
+    const lastIdx = await queryOne("SELECT date FROM index_prices ORDER BY date DESC LIMIT 1").catch(() => null);
+    if (!lastIdx || String(lastIdx.date) < today) {
+      const { fetchAndStoreIndexHistory } = await import('../services/indexData.js');
+      fetchAndStoreIndexHistory().catch(e => logger.warn({ reason: `[IndexData] refresh failed: ${e}` }));
+    }
     const portfolios = await query('SELECT * FROM portfolios WHERE is_active = 1');
     for (const p of portfolios) {
       const { trades, signals } = await runPortfolioTradingCycle(Number(p.id), p.risk_tolerance as string);

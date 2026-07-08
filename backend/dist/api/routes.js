@@ -228,6 +228,64 @@ router.get('/news/intelligence', async (_req, res) => {
         res.status(500).json({ success: false, error: String(err) });
     }
 });
+// ─── Index Benchmarking ─────────────────────────────────────────────────────
+router.get('/portfolios/:id/benchmark', async (req, res) => {
+    try {
+        res.set('Cache-Control', 'public, max-age=300');
+        const pid = parseInt(req.params.id);
+        const portfolio = await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [pid]);
+        if (!portfolio)
+            return res.status(404).json({ success: false, error: 'Portfolio not found' });
+        const { getIndexHistory, fetchAndStoreIndexHistory, INDEX_SYMBOLS } = await Promise.resolve().then(() => __importStar(require('../services/indexData.js')));
+        // Ensure we have index data (fetch if table is empty)
+        const existing = await (0, turso_js_1.query)('SELECT COUNT(*) as cnt FROM index_prices');
+        if ((existing[0]?.cnt ?? 0) < 10) {
+            await fetchAndStoreIndexHistory(); // lazy-load on first benchmark request
+        }
+        // Portfolio inception date
+        const fromDate = String(portfolio.created_at ?? '').slice(0, 10) || new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+        const toDate = new Date().toISOString().slice(0, 10);
+        // Performance snapshots for portfolio NAV over time
+        const snapshots = await (0, turso_js_1.query)('SELECT snapshot_date, total_value FROM performance_snapshots WHERE portfolio_id = ? AND snapshot_date >= ? ORDER BY snapshot_date ASC', [pid, fromDate]);
+        // Index histories
+        const [nifty50History, nifty500History] = await Promise.all([
+            getIndexHistory(INDEX_SYMBOLS.NIFTY50, fromDate, toDate),
+            getIndexHistory(INDEX_SYMBOLS.NIFTY500, fromDate, toDate),
+        ]);
+        // Compute returns normalised to 100 at inception
+        const portfolioBase = snapshots.length > 0 ? Number(snapshots[0].total_value) : Number(portfolio.initial_capital);
+        const nifty50Base = nifty50History.length > 0 ? nifty50History[0].close : null;
+        const nifty500Base = nifty500History.length > 0 ? nifty500History[0].close : null;
+        const portfolioNow = snapshots.length > 0 ? Number(snapshots[snapshots.length - 1].total_value) : portfolioBase;
+        const portfolioReturnPct = portfolioBase > 0 ? ((portfolioNow - portfolioBase) / portfolioBase) * 100 : 0;
+        const nifty50Now = nifty50History.length > 0 ? nifty50History[nifty50History.length - 1].close : null;
+        const nifty500Now = nifty500History.length > 0 ? nifty500History[nifty500History.length - 1].close : null;
+        const nifty50ReturnPct = nifty50Base && nifty50Now ? ((nifty50Now - nifty50Base) / nifty50Base) * 100 : null;
+        const nifty500ReturnPct = nifty500Base && nifty500Now ? ((nifty500Now - nifty500Base) / nifty500Base) * 100 : null;
+        const alpha = nifty50ReturnPct != null ? portfolioReturnPct - nifty50ReturnPct : null;
+        // Chart series: portfolio NAV normalised to 100
+        const portfolioSeries = snapshots.map(s => ({
+            date: String(s.snapshot_date).slice(0, 10),
+            value: portfolioBase > 0 ? (Number(s.total_value) / portfolioBase) * 100 : 100,
+        }));
+        const nifty50Series = nifty50History.map(r => ({ date: r.date, value: nifty50Base ? (r.close / nifty50Base) * 100 : 100 }));
+        const nifty500Series = nifty500History.map(r => ({ date: r.date, value: nifty500Base ? (r.close / nifty500Base) * 100 : 100 }));
+        res.json({
+            success: true,
+            data: {
+                portfolioReturnPct: Math.round(portfolioReturnPct * 100) / 100,
+                nifty50ReturnPct: nifty50ReturnPct != null ? Math.round(nifty50ReturnPct * 100) / 100 : null,
+                nifty500ReturnPct: nifty500ReturnPct != null ? Math.round(nifty500ReturnPct * 100) / 100 : null,
+                alpha: alpha != null ? Math.round(alpha * 100) / 100 : null,
+                period: { from: fromDate, to: toDate },
+                series: { portfolio: portfolioSeries, nifty50: nifty50Series, nifty500: nifty500Series },
+            }
+        });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: String(err) });
+    }
+});
 // ─── ML Insights ──────────────────────────────────────────────────────────────
 // GET /api/ml/momentum/:symbol — ML momentum score (public, CDN cached)
 router.get('/ml/momentum/:symbol', async (req, res) => {
