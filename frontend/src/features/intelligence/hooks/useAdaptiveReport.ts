@@ -1,29 +1,26 @@
-import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import type { AdaptiveReport } from '../../../api/adaptive.api.types.ts';
 
+export const ADAPTIVE_REPORT_KEY = ['adaptive-report'] as const;
+
+const fetchAdaptiveReport = async (): Promise<AdaptiveReport> => {
+  const res = await fetch('/api/adaptive/report');
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error ?? 'Failed to load adaptive report');
+  return json.data as AdaptiveReport;
+};
+
 export const useAdaptiveReport = () => {
-  const [report, setReport] = useState<AdaptiveReport | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, isLoading, error } = useQuery<AdaptiveReport, Error>({
+    queryKey: ADAPTIVE_REPORT_KEY,
+    queryFn: fetchAdaptiveReport,
+    staleTime: 5 * 60_000,       // adaptive weights change slowly
+    refetchInterval: 5 * 60_000,
+  });
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch('/api/adaptive/report');
-        const json = await res.json();
-        if (json.success) setReport(json.data);
-        else setError(json.error ?? 'Failed');
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    void load();
-    const timer = setInterval(() => void load(), 5 * 60_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  return { report, isLoading, error };
+  return {
+    report: data ?? null,
+    isLoading,
+    error: error?.message ?? null,
+  };
 };

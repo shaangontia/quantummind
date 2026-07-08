@@ -1,34 +1,26 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { portfolioApi } from '../../../api/portfolio.api.ts';
 import type { PortfolioSummary } from '../../../api/portfolio.api.types.ts';
 
+export const summaryKey = (id: number) => ['portfolio-summary', id] as const;
+
 export const usePortfolioSummary = (id: number) => {
-  const [summary, setSummary] = useState<PortfolioSummary | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null);
+  const qc = useQueryClient();
+  const { data, isLoading, error, dataUpdatedAt } = useQuery<PortfolioSummary, Error>({
+    queryKey: summaryKey(id),
+    queryFn: () => portfolioApi.summary(id),
+    staleTime: 30_000,           // fresh for 30s — matches backend cache TTL
+    refetchInterval: 30_000,     // auto-poll every 30s
+  });
 
-  const load = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const data = await portfolioApi.summary(id);
-      setSummary(data);
-      setLastFetchedAt(new Date());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load summary');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [id]);
+  const refresh = () => qc.invalidateQueries({ queryKey: summaryKey(id) });
+  const lastFetchedAt = dataUpdatedAt ? new Date(dataUpdatedAt) : null;
 
-  useEffect(() => { void load(); }, [load]);
-
-  // Auto-refresh every 30s — matches backend cache TTL so fresh prices appear quickly after cron
-  useEffect(() => {
-    const timer = setInterval(() => { void load(); }, 30_000);
-    return () => clearInterval(timer);
-  }, [load]);
-
-  return { summary, isLoading, error, refresh: load, lastFetchedAt };
+  return {
+    summary: data ?? null,
+    isLoading,
+    error: error?.message ?? null,
+    refresh,
+    lastFetchedAt,
+  };
 };

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { portfolioApi } from '../../../../api/portfolio.api.ts';
 import type { Trade, ApiResponse } from '../../../../api/portfolio.api.types.ts';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -12,25 +13,18 @@ export const AuditLogPage = () => {
   const { id } = useParams<{ id: string }>();
   const portfolioId = Number(id);
 
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [total, setTotal] = useState(0);
 
-  useEffect(() => {
-    setIsLoading(true);
-    portfolioApi.trades(portfolioId, page, 50)
-      .then((res: ApiResponse<Trade[]>) => {
-        setTrades(res.data);
-        if (res.pagination) {
-          setTotalPages(res.pagination.pages);
-          setTotal(res.pagination.total);
-        }
-      })
-      .catch(console.error)
-      .finally(() => setIsLoading(false));
-  }, [portfolioId, page]);
+  const { data, isLoading } = useQuery<ApiResponse<Trade[]>>({
+    queryKey: ['trades', portfolioId, page],
+    queryFn: () => portfolioApi.trades(portfolioId, page, 50),
+    staleTime: 30_000,
+    placeholderData: prev => prev, // keep prev page visible while next loads
+  });
+
+  const trades = data?.data ?? [];
+  const totalPages = data?.pagination?.pages ?? 1;
+  const total = data?.pagination?.total ?? 0;
 
   return (
     <div className="audit-page">

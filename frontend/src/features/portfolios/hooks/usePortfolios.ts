@@ -1,26 +1,23 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { portfolioApi } from '../../../api/portfolio.api.ts';
 import type { Portfolio } from '../../../api/portfolio.api.types.ts';
 
+export const PORTFOLIOS_KEY = ['portfolios'] as const;
+
 export const usePortfolios = () => {
-  const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const qc = useQueryClient();
+  const { data, isLoading, error } = useQuery<Portfolio[], Error>({
+    queryKey: PORTFOLIOS_KEY,
+    queryFn: () => portfolioApi.list(),
+    staleTime: 30_000,
+  });
 
-  const load = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const data = await portfolioApi.list();
-      setPortfolios(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load portfolios');
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const refresh = () => qc.invalidateQueries({ queryKey: PORTFOLIOS_KEY });
 
-  useEffect(() => { void load(); }, [load]);
-
-  return { portfolios, isLoading, error, refresh: load };
+  return {
+    portfolios: data ?? [],
+    isLoading,
+    error: error?.message ?? null,
+    refresh,
+  };
 };

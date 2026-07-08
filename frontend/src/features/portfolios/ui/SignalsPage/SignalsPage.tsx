@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { portfolioApi } from '../../../../api/portfolio.api.ts';
 import type { MarketSignal } from '../../../../api/portfolio.api.types.ts';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -20,22 +20,12 @@ export const SignalsPage = () => {
   const { id } = useParams<{ id: string }>();
   const portfolioId = Number(id);
 
-  const [signals, setSignals] = useState<MarketSignal[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    portfolioApi.signals(portfolioId)
-      .then(setSignals)
-      .catch(console.error)
-      .finally(() => setIsLoading(false));
-
-    // Auto-refresh every 30s
-    const timer = setInterval(() => {
-      portfolioApi.signals(portfolioId).then(setSignals).catch(console.error);
-    }, 30_000);
-
-    return () => clearInterval(timer);
-  }, [portfolioId]);
+  const { data: signals = [], isLoading } = useQuery<MarketSignal[]>({
+    queryKey: ['signals', portfolioId],
+    queryFn: () => portfolioApi.signals(portfolioId),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
 
   return (
     <div className="signals-page">
