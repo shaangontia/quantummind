@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.applyAdvancedRiskProfile = applyAdvancedRiskProfile;
 exports.generateSignal = generateSignal;
 exports.executeTrade = executeTrade;
 exports.getPortfolioSummary = getPortfolioSummary;
@@ -19,8 +20,38 @@ function getThresholds(risk) {
         return { rsiBuy: 28, rsiSell: 75, stopLoss: 0.05, takeProfit: 0.15, maxPosPct: 0.03 };
     return { rsiBuy: 35, rsiSell: 70, stopLoss: 0.08, takeProfit: 0.25, maxPosPct: 0.05 };
 }
+/**
+ * Adjust thresholds based on portfolio-level volatility_preference and investment_goal.
+ * Called in generateSignal() after loading the base risk thresholds.
+ */
+function applyAdvancedRiskProfile(base, volatilityPref, investmentGoal) {
+    let { rsiBuy, rsiSell, stopLoss, takeProfit, maxPosPct } = base;
+    // Volatility preference adjustments
+    if (volatilityPref === 'low') {
+        rsiBuy = Math.min(rsiBuy, 25); // tighter oversold threshold — only buy deeper dips
+        maxPosPct = Math.min(maxPosPct, 0.03); // smaller positions
+    }
+    else if (volatilityPref === 'high') {
+        rsiBuy = Math.max(rsiBuy, 38); // more permissive — buy before full oversold
+        maxPosPct = Math.min(maxPosPct, 0.08); // allow larger positions
+    }
+    // Investment goal adjustments
+    if (investmentGoal === 'income') {
+        takeProfit = Math.min(takeProfit, 0.15); // take profits sooner for income
+        stopLoss = Math.min(stopLoss, 0.07); // tighter stop — protect income
+    }
+    else if (investmentGoal === 'retirement') {
+        rsiBuy = Math.min(rsiBuy, 28); // only buy strong oversold for retirement
+        stopLoss = Math.min(stopLoss, 0.06); // tight stop — preserve capital
+        maxPosPct = Math.min(maxPosPct, 0.04); // conservative sizing
+    }
+    else if (investmentGoal === 'growth') {
+        takeProfit = Math.max(takeProfit, 0.25); // let winners run
+    }
+    return { rsiBuy, rsiSell, stopLoss, takeProfit, maxPosPct };
+}
 const MIN_STOCK_PRICE = 30; // ₹30 min — any NSE equity above this is eligible
-async function generateSignal(symbol, risk = 'Medium') {
+async function generateSignal(symbol, risk = 'Medium', volatilityPref = null, investmentGoal = null) {
     try {
         // Run all data fetches in parallel
         // getExecutableQuote: always fresh, cross-validated, never cached
@@ -52,6 +83,10 @@ async function generateSignal(symbol, risk = 'Medium') {
         ]);
         if (regime) {
             t = { ...t, rsiBuy: regime.rsiBuy, rsiSell: regime.rsiSell, stopLoss: regime.stopLoss };
+        }
+        // Apply advanced risk profile overrides (Phase 5)
+        if (volatilityPref || investmentGoal) {
+            t = applyAdvancedRiskProfile(t, volatilityPref, investmentGoal);
         }
         const w = (src) => weights.get(src)?.weight ?? 1.0;
         const notes = [];

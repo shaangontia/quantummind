@@ -69,10 +69,14 @@ async function runPortfolioTradingCycle(portfolioId, riskTolerance) {
     const summary = await (0, tradingEngine_js_1.getPortfolioSummary)(portfolioId);
     const stopLoss = riskTolerance === 'High' ? 0.12 : riskTolerance === 'Low' ? 0.05 : 0.08;
     const takeProfit = riskTolerance === 'High' ? 0.30 : riskTolerance === 'Low' ? 0.15 : 0.25;
+    // Load advanced risk profile for this portfolio
+    const portfolioProfile = await (0, turso_js_1.queryOne)('SELECT volatility_preference, investment_goal FROM portfolios WHERE id = ?', [portfolioId]);
+    const _volPref = portfolioProfile?.volatility_preference ?? null;
+    const _invGoal = portfolioProfile?.investment_goal ?? null;
     let sellSignalCount = 0;
     // Sell scan
     for (const h of summary.holdings) {
-        const signal = await (0, tradingEngine_js_1.generateSignal)(h.symbol, riskTolerance);
+        const signal = await (0, tradingEngine_js_1.generateSignal)(h.symbol, riskTolerance, _volPref, _invGoal);
         if (!signal)
             continue;
         const lossRatio = (signal.price - h.avgBuyPrice) / h.avgBuyPrice;
@@ -114,7 +118,7 @@ async function runPortfolioTradingCycle(portfolioId, riskTolerance) {
     // Apply cap preference if portfolio has one set
     // preferred_caps: JSON array e.g. ["small"] | ["mid","large"] | null (null = open market, no bias)
     // When multiple caps selected, the first one drives the 50% bias; others are included in the "rest" pool
-    const portfolio = await (0, turso_js_1.queryOne)('SELECT preferred_caps FROM portfolios WHERE id = ?', [portfolioId]);
+    const portfolio = await (0, turso_js_1.queryOne)('SELECT preferred_caps, volatility_preference, investment_goal FROM portfolios WHERE id = ?', [portfolioId]);
     let preferredCap = null;
     if (portfolio?.preferred_caps) {
         try {
@@ -128,8 +132,10 @@ async function runPortfolioTradingCycle(portfolioId, riskTolerance) {
         ? (0, marketData_js_1.getBiasedCycleWatchlist)(fullUniverse, preferredCap, cycleSlot, 50, 0.5)
         : fullUniverse.slice(0, 50);
     const candidates = cycleUniverse.filter(s => !held.has(s)).slice(0, 8); // up to 8 new position candidates
+    const volatilityPref = portfolio?.volatility_preference ?? null;
+    const investmentGoal = portfolio?.investment_goal ?? null;
     for (const symbol of candidates) {
-        const signal = await (0, tradingEngine_js_1.generateSignal)(symbol, riskTolerance);
+        const signal = await (0, tradingEngine_js_1.generateSignal)(symbol, riskTolerance, volatilityPref, investmentGoal);
         if (!signal || signal.action !== 'BUY' || signal.strength === 'WEAK')
             continue;
         signalCount++;

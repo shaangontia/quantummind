@@ -52,6 +52,22 @@ async function runMigrations() {
     )`);
     }
     catch (_) { /* ignore */ }
+    // Phase 5: advanced risk profiling columns on portfolios
+    try {
+        await db.execute('ALTER TABLE portfolios ADD COLUMN max_drawdown_pct REAL DEFAULT 20');
+        console.log('[DB] Migration: portfolios.max_drawdown_pct added');
+    }
+    catch (_) { /* already exists */ }
+    try {
+        await db.execute("ALTER TABLE portfolios ADD COLUMN volatility_preference TEXT DEFAULT 'medium'");
+        console.log('[DB] Migration: portfolios.volatility_preference added');
+    }
+    catch (_) { /* already exists */ }
+    try {
+        await db.execute("ALTER TABLE portfolios ADD COLUMN investment_goal TEXT DEFAULT 'growth'");
+        console.log('[DB] Migration: portfolios.investment_goal added');
+    }
+    catch (_) { /* already exists */ }
 }
 async function query(sql, args = []) {
     const db = getClient();

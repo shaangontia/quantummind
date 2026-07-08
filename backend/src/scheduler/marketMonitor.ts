@@ -31,10 +31,15 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
   const stopLoss = riskTolerance === 'High' ? 0.12 : riskTolerance === 'Low' ? 0.05 : 0.08;
   const takeProfit = riskTolerance === 'High' ? 0.30 : riskTolerance === 'Low' ? 0.15 : 0.25;
 
+  // Load advanced risk profile for this portfolio
+  const portfolioProfile = await queryOne('SELECT volatility_preference, investment_goal FROM portfolios WHERE id = ?', [portfolioId]);
+  const _volPref = portfolioProfile?.volatility_preference as string | null ?? null;
+  const _invGoal = portfolioProfile?.investment_goal as string | null ?? null;
+
   let sellSignalCount = 0;
   // Sell scan
   for (const h of summary.holdings) {
-    const signal = await generateSignal(h.symbol, riskTolerance);
+    const signal = await generateSignal(h.symbol, riskTolerance, _volPref, _invGoal);
     if (!signal) continue;
     const lossRatio = (signal.price - h.avgBuyPrice) / h.avgBuyPrice;
     let shouldSell = false, reason = signal.reason;
@@ -87,8 +92,11 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
 
   const candidates = cycleUniverse.filter(s => !held.has(s)).slice(0, 8); // up to 8 new position candidates
 
+  const volatilityPref = portfolio?.volatility_preference as string | null ?? null;
+  const investmentGoal = portfolio?.investment_goal as string | null ?? null;
+
   for (const symbol of candidates) {
-    const signal = await generateSignal(symbol, riskTolerance);
+    const signal = await generateSignal(symbol, riskTolerance, volatilityPref, investmentGoal);
     if (!signal || signal.action !== 'BUY' || signal.strength === 'WEAK') continue;
     signalCount++;
     logger.signal(portfolioId, symbol, signal.action, signal.strength, signal.reason, signal.price);
