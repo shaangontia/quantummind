@@ -226,11 +226,11 @@ export const PortfolioDashboard = () => {
                           )}
                         </td>
                       <td className="text-right">{formatINR(h.currentValue)}</td>
-                      <td className={`text-right ${h.pnl >= 0 ? 'tag-positive' : 'tag-negative'}`}>
-                        {formatINR(h.pnl)}
+                      <td className="text-right" style={{ color: h.pnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+                        {h.pnl >= 0 ? '+' : ''}{formatINR(h.pnl)}
                       </td>
-                      <td className={`text-right ${h.pnlPct >= 0 ? 'tag-positive' : 'tag-negative'}`}>
-                        {formatPct(h.pnlPct)}
+                      <td className="text-right" style={{ color: h.pnlPct >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+                        {h.pnlPct >= 0 ? '+' : ''}{formatPct(h.pnlPct)}
                       </td>
                       <td className="text-muted">—</td>
                     </tr>
