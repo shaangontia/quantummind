@@ -33,7 +33,35 @@ export const BenchmarkChart = ({ portfolioId }: Props) => {
       const res = await fetch(`/api/portfolios/${portfolioId}/benchmark`);
       const json = await res.json();
       if (!json.success) throw new Error(json.error ?? 'Failed to load benchmark');
-      return json.data as BenchmarkData;
+
+      // Backend returns separate series arrays normalised to 100 at inception.
+      // Merge by date into BenchmarkPoint[] and convert normalised value → % return.
+      const raw = json.data as {
+        alpha: number | null;
+        series: {
+          portfolio: { date: string; value: number }[];
+          nifty50:   { date: string; value: number }[];
+          nifty500:  { date: string; value: number }[];
+        };
+      };
+
+      const portfolioMap = new Map(raw.series.portfolio.map(p => [p.date, p.value]));
+      const nifty50Map   = new Map(raw.series.nifty50.map(p  => [p.date, p.value]));
+      const nifty500Map  = new Map(raw.series.nifty500.map(p => [p.date, p.value]));
+
+      const allDates = [...new Set([
+        ...raw.series.nifty50.map(p  => p.date),
+        ...raw.series.nifty500.map(p => p.date),
+      ])].sort();
+
+      const merged: BenchmarkPoint[] = allDates.map(date => ({
+        date,
+        portfolioReturn: (portfolioMap.get(date) ?? 100) - 100,
+        nifty50Return:   (nifty50Map.get(date)   ?? 100) - 100,
+        nifty500Return:  (nifty500Map.get(date)  ?? 100) - 100,
+      }));
+
+      return { alpha: raw.alpha ?? 0, data: merged } satisfies BenchmarkData;
     },
     staleTime: 5 * 60_000,
     refetchInterval: 10 * 60_000,
