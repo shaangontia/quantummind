@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import Groq from 'groq-sdk';
+import { retrieveMemories } from '../services/ragService.js';
 import { query, queryOne, run } from '../db/turso.js';
 import { getQuote } from '../services/marketData.js';
 import { getPortfolioSummary, executeTrade } from '../services/tradingEngine.js';
@@ -701,7 +702,9 @@ About QuantumMind:
 - Database: Turso cloud SQLite (Mumbai ap-south-1 region)
 - Universe: ~1800+ NSE EQ-series stocks above ₹30
 
-When [LIVE MARKET DATA] is present in this conversation, cite those exact figures. Keep answers concise and accurate.`;
+When [LIVE MARKET DATA] is present in this conversation, cite those exact figures.
+When [RELEVANT MEMORY CONTEXT] is present, use it to answer questions about recent trades, market cycles, and portfolio activity. Cite it naturally — do not say "according to memory", just answer as if you know it.
+Keep answers concise and accurate.`;
 
 router.post('/tars/chat', async (req: Request, res: Response) => {
   const { message, history } = req.body;
@@ -720,9 +723,15 @@ router.post('/tars/chat', async (req: Request, res: Response) => {
         }
       }
     }
+    // RAG: retrieve relevant memories before calling Groq
+    const memories = await retrieveMemories(message);
+    const ragCtx = memories.length > 0
+      ? `\n\n[RELEVANT MEMORY CONTEXT]\n${memories.map((m, i) => `${i + 1}. ${m}`).join('\n')}`
+      : '';
+
     // Inject live market data if the message mentions a known stock
     const liveCtx = await tarsLiveContext(message);
-    const userContent = message.slice(0, 500) + liveCtx;
+    const userContent = message.slice(0, 500) + liveCtx + ragCtx;
     messages.push({ role: 'user', content: userContent });
 
     const response = await groqClient.chat.completions.create({

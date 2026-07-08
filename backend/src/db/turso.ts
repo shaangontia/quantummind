@@ -63,6 +63,27 @@ export async function runMigrations(): Promise<void> {
     await db.execute('ALTER TABLE portfolios ADD COLUMN peak_nav REAL DEFAULT NULL');
     console.log('[DB] Migration: portfolios.peak_nav added');
   } catch (_) { /* already exists */ }
+
+  // Phase 6: RAG-based TARS memory — vector store in Turso
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS tars_memory (
+      id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+      content     TEXT     NOT NULL,
+      embedding   F32_BLOB(512),
+      source_type TEXT     NOT NULL,
+      source_id   TEXT,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    console.log('[DB] Migration: tars_memory table ensured');
+  } catch (err) { console.warn('[DB] tars_memory table creation skipped:', err); }
+
+  try {
+    // Vector index for approximate nearest-neighbour search on embeddings
+    await db.execute(
+      `CREATE INDEX IF NOT EXISTS tars_memory_vec_idx ON tars_memory (libsql_vector_idx(embedding))`
+    );
+    console.log('[DB] Migration: tars_memory_vec_idx ensured');
+  } catch (err) { console.warn('[DB] Vector index skipped (may need Turso vector extension):', err); }
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

@@ -4,6 +4,36 @@ import { generateSignal, executeTrade, getPortfolioSummary } from '../services/t
 import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen } from '../services/marketData.js';
 import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
+import { rememberFact, pruneMemory } from '../services/ragService.js';
+
+/**
+ * Write a cycle-level summary to TARS memory so RAG can surface recent
+ * market activity when the user asks questions about portfolio behaviour.
+ */
+async function writeMarketCycleMemory(
+  portfolioCount: number,
+  trades: number,
+  signals: number,
+): Promise<void> {
+  const ist = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+  const content = `Market cycle at ${ist} IST: ${portfolioCount} active portfolios scanned. `
+    + `${signals} trade signals generated, ${trades} trades executed. `
+    + `Market was ${isNseMarketOpen() ? 'OPEN' : 'CLOSED'} at cycle time.`;
+  await rememberFact(content, 'cycle_summary');
+
+  // Write last 5 trade narratives from the DB into memory
+  const recentTrades = await query(
+    `SELECT t.symbol, t.action, t.quantity, t.price, t.trade_time, t.trade_reason
+     FROM trades t ORDER BY t.trade_time DESC LIMIT 5`
+  );
+  for (const t of recentTrades) {
+    const narrative = `Trade: ${t.action} ${t.quantity} shares of ${t.symbol} at ₹${t.price} on ${t.trade_time}.`
+      + (t.trade_reason ? ` Reason: ${typeof t.trade_reason === 'string' ? t.trade_reason.slice(0, 300) : ''}` : '');
+    await rememberFact(narrative, 'trade_narrative', String(t.symbol));
+  }
+
+  await pruneMemory(5000);
+}
 
 async function updateAllPrices(): Promise<void> {
   const holdings = await query(`
@@ -176,6 +206,11 @@ export async function runMarketCycle(): Promise<void> {
     }
     await snapshotAll();
     logger.cronCycle({ portfolioCount: portfolios.length, tradesExecuted, signalsGenerated, durationMs: Date.now() - cycleStart });
+
+    // Phase 6: write cycle summary to RAG memory (non-blocking, best-effort)
+    writeMarketCycleMemory(portfolios.length, tradesExecuted, signalsGenerated).catch(
+      e => console.warn('[RAG] Memory write failed:', e)
+    );
   } finally {
     await releaseCycleLock();
   }
