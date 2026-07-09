@@ -23,7 +23,7 @@ export const portfolioCreateSchema = z.object({
   initialCapital:          z.number().positive().max(1_000_000_000),
   riskTolerance:           z.enum(RISK_TOLERANCE).optional(),
   investmentHorizonMonths: z.number().int().min(1).max(600).optional(),
-  targetReturnPct:         z.number().min(0).max(200).optional(),
+  targetReturnPct:         z.number().min(0).optional(), // no upper cap — multibagger targets valid
   preferredSectors:        z.array(z.string()).optional(),
   preferredCaps:           z.array(z.string()).optional(),
 });
@@ -34,7 +34,7 @@ export const portfolioPatchSchema = z.object({
   initialCapital:          z.number().positive().max(1_000_000_000).optional(),
   riskTolerance:           z.enum(RISK_TOLERANCE).optional(),
   investmentHorizonMonths: z.number().int().min(1).max(600).optional(),
-  targetReturnPct:         z.number().min(0).max(200).optional(),
+  targetReturnPct:         z.number().min(0).optional(), // no upper cap — multibagger targets valid
   rebalanceFrequency:      z.enum(REBALANCE_FREQ).optional(),
   preferredSectors:        z.array(z.string()).optional(),
   preferredCaps:           z.array(z.string()).optional(),

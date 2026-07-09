@@ -69,7 +69,10 @@ function linearSlope(arr: number[]): number {
   return den === 0 ? 0 : num / den;
 }
 
-const BROKERAGE = 0.002; // 0.2% per trade (round-trip = 0.4%)
+// Flat ₹5 per trade (platform rate). Backtest uses entry price as proxy for trade value.
+// Approximated as a ratio: 5/entryPrice. Applied once at exit (covers both legs).
+// TODO: pass quantity when available for exact flat-fee deduction.
+const BROKERAGE_FLAT_INR = 5;
 const HOLD_DAYS = 10;    // simulate 10-day holding period
 const MIN_PRICE = 30;    // same as live engine
 
@@ -107,7 +110,8 @@ function detectSignals(rows: OHLCVRow[]): BacktestSignal[] {
 
     const toSignal = (type: SignalType): BacktestSignal => {
       if (exitPrice === null) return { symbol, date: current.date, signalType: type, entryPrice, exitPrice: null, holdDays: HOLD_DAYS, returnPct: null, outcome: 'open' };
-      const ret = (exitPrice - entryPrice) / entryPrice - BROKERAGE;
+      const brokeragePct = (BROKERAGE_FLAT_INR * 2) / entryPrice; // round-trip: buy + sell = ₹10
+      const ret = (exitPrice - entryPrice) / entryPrice - brokeragePct;
       return {
         symbol,
         date: current.date,

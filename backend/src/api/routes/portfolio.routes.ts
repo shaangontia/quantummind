@@ -5,6 +5,7 @@ import { getPortfolioSummary } from '../../services/tradingEngine.js';
 import { executeTrade } from '../../services/tradingEngine.js';
 import { cache, TTL } from '../../lib/cache.js';
 import { parseIntParam, portfolioCreateSchema, portfolioPatchSchema } from './helpers.js';
+import { deriveRiskLevel } from '../../services/riskClassifier.js';
 
 const router = Router();
 
@@ -37,11 +38,18 @@ router.post('/portfolios', verifyAuth, async (req: Request, res: Response) => {
   const parsed = portfolioCreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
   const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, preferredSectors, preferredCaps } = parsed.data;
+  // Derive risk level from inputs; honour explicit user override if provided
+  const { level: derivedRisk, explanation: riskExplanation } = deriveRiskLevel({
+    targetReturnPct,
+    investmentHorizonMonths,
+  });
+  const effectiveRisk = riskTolerance ?? derivedRisk;
   const result = await run(
     'INSERT INTO portfolios (name,description,initial_capital,current_cash,risk_tolerance,investment_horizon_months,target_return_pct,preferred_sectors,preferred_caps,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?)',
-    [name, description || null, initialCapital, initialCapital, riskTolerance || 'Medium', investmentHorizonMonths || 12, targetReturnPct || 15.0, preferredSectors ? JSON.stringify(preferredSectors) : null, preferredCaps ? JSON.stringify(preferredCaps) : null, req.user!.id]
+    [name, description || null, initialCapital, initialCapital, effectiveRisk, investmentHorizonMonths || 12, targetReturnPct || 15.0, preferredSectors ? JSON.stringify(preferredSectors) : null, preferredCaps ? JSON.stringify(preferredCaps) : null, req.user!.id]
   );
-  res.status(201).json({ success: true, data: await queryOne('SELECT * FROM portfolios WHERE id = ?', [result.lastInsertRowid]) });
+  const portfolio = await queryOne('SELECT * FROM portfolios WHERE id = ?', [result.lastInsertRowid]);
+  res.status(201).json({ success: true, data: portfolio, meta: { derivedRisk, riskExplanation, overridden: !!riskTolerance } });
 });
 
 // ─── Portfolio summary (live NAV) ─────────────────────────────────────────────
@@ -96,6 +104,23 @@ router.patch('/portfolios/:id', verifyAuth, verifyOwner, async (req: Request, re
     }
 
     const cashDelta = initialCapital != null ? Number(initialCapital) - Number(existing.initial_capital ?? 0) : 0;
+
+    // Auto-derive risk level when not explicitly provided and signals changed
+    const signalFields = [targetReturnPct, investmentHorizonMonths, maxDrawdownPct, volatilityPreference];
+    const signalChanged = signalFields.some(f => f != null);
+    let effectiveRiskTolerance = riskTolerance ?? null;
+    let derivedRiskMeta: { derivedRisk: string; riskExplanation: string } | null = null;
+    if (!riskTolerance && !isMature && signalChanged) {
+      const { level: derivedRisk, explanation: riskExplanation } = deriveRiskLevel({
+        targetReturnPct: targetReturnPct ?? Number(existing.target_return_pct ?? 15),
+        investmentHorizonMonths: investmentHorizonMonths ?? Number(existing.investment_horizon_months ?? 12),
+        maxDrawdownPct: maxDrawdownPct ?? Number(existing.max_drawdown_pct ?? 20),
+        volatilityPreference: volatilityPreference ?? existing.volatility_preference ?? 'medium',
+      });
+      effectiveRiskTolerance = derivedRisk;
+      derivedRiskMeta = { derivedRisk, riskExplanation };
+    }
+
     await run(
       `UPDATE portfolios SET name=COALESCE(?,name), description=COALESCE(?,description), initial_capital=COALESCE(?,initial_capital),
         current_cash=CASE WHEN ? IS NOT NULL THEN MAX(0,current_cash+?) ELSE current_cash END,
@@ -107,14 +132,14 @@ router.patch('/portfolios/:id', verifyAuth, verifyOwner, async (req: Request, re
         strategy_updated_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE strategy_updated_at END,
         updated_at=CURRENT_TIMESTAMP WHERE id=?`,
       [name ?? null, description ?? null, initialCapital ?? null, initialCapital ?? null, cashDelta,
-       riskTolerance ?? null, investmentHorizonMonths ?? null, targetReturnPct ?? null, rebalanceFrequency ?? null,
+       effectiveRiskTolerance, investmentHorizonMonths ?? null, targetReturnPct ?? null, rebalanceFrequency ?? null,
        preferredSectors != null ? JSON.stringify(preferredSectors) : null,
        preferredCaps != null ? JSON.stringify(preferredCaps) : null,
        volatilityPreference ?? null, investmentGoal ?? null, maxDrawdownPct ?? null,
        strategyChangeRequested ? 1 : 0, id]
     );
     const updated = await queryOne('SELECT * FROM portfolios WHERE id = ?', [id]);
-    res.json({ success: true, data: updated, meta: { state: isVirgin ? 'VIRGIN' : isMature ? 'MATURE' : 'ACTIVE', hasActiveHoldings: holdingsCount > 0, strategyQueued: strategyChangeRequested && holdingsCount > 0, tradeCount, drawdownPct: Math.round(drawdownPct * 10) / 10 } });
+    res.json({ success: true, data: updated, meta: { state: isVirgin ? 'VIRGIN' : isMature ? 'MATURE' : 'ACTIVE', hasActiveHoldings: holdingsCount > 0, strategyQueued: strategyChangeRequested && holdingsCount > 0, tradeCount, drawdownPct: Math.round(drawdownPct * 10) / 10, ...derivedRiskMeta } });
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
 
@@ -180,6 +205,16 @@ router.post('/portfolios/:id/trade', verifyAuth, verifyOwner, async (req: Reques
   const tradeId = await executeTrade(pid, symbol, companyName || symbol, action, quantity, price, reason || 'Manual trade');
   if (tradeId) { cache.invalidate(`portfolio_summary_${pid}`); res.json({ success: true, tradeId }); }
   else res.status(400).json({ success: false, error: 'Trade failed - check cash or holdings' });
+});
+
+// ─── Risk classification preview (no auth required — used for live UI preview) ─
+router.get('/risk/classify', (req: Request, res: Response) => {
+  const targetReturnPct         = req.query.targetReturnPct         ? Number(req.query.targetReturnPct)         : undefined;
+  const investmentHorizonMonths = req.query.investmentHorizonMonths ? Number(req.query.investmentHorizonMonths) : undefined;
+  const maxDrawdownPct          = req.query.maxDrawdownPct          ? Number(req.query.maxDrawdownPct)          : undefined;
+  const volatilityPreference    = req.query.volatilityPreference    ? String(req.query.volatilityPreference)    : undefined;
+  const result = deriveRiskLevel({ targetReturnPct, investmentHorizonMonths, maxDrawdownPct, volatilityPreference });
+  res.json({ success: true, data: result });
 });
 
 export default router;

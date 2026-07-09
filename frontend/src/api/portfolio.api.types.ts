@@ -1,4 +1,4 @@
-export type RiskTolerance = 'Low' | 'Medium' | 'High';
+export type RiskTolerance = 'Low' | 'Medium' | 'High' | 'Very High';
 export type RebalanceFrequency = 'Weekly' | 'Monthly' | 'Quarterly';
 export type TradeAction = 'BUY' | 'SELL';
 export type SignalType = 'BUY' | 'SELL' | 'HOLD' | 'WATCH';
@@ -54,7 +54,8 @@ export interface CreatePortfolioPayload {
   name: string;
   description?: string;
   initialCapital: number;
-  riskTolerance: RiskTolerance;
+  /** Optional — backend derives this from scoring inputs if omitted */
+  riskTolerance?: RiskTolerance;
   investmentHorizonMonths: number;
   targetReturnPct: number;
   rebalanceFrequency: RebalanceFrequency;

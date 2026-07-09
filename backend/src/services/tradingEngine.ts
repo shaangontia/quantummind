@@ -396,7 +396,7 @@ export async function executeTrade(
   if (!portfolio || !portfolio.is_active) return null;
 
   const amount = quantity * price;
-  const brokerage = amount * 0.002;
+  const brokerage = 5; // flat ₹5 per trade (platform rate) — TODO: integrate into signal scoring via CostAdjustedSignalValidator
   const netAmount = action === 'BUY' ? amount + brokerage : amount - brokerage;
 
   // Compute NAV

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useCreatePortfolioMutation } from '../../../../store/portfolios/index.ts';
 import type { CreatePortfolioPayload, RiskTolerance, RebalanceFrequency } from '../../../../api/portfolio.api.types.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
+import { useRiskClassifier } from '../../hooks/useRiskClassifier.ts';
 import './CreatePortfolioModal.css';
 
 interface CreatePortfolioModalProps {
@@ -14,11 +15,18 @@ const SECTORS = [
   'Energy', 'Infra', 'Telecom', 'Metals', 'Realty',
 ];
 
+const RISK_COLORS: Record<string, string> = {
+  'Low':       '#22c55e',
+  'Medium':    '#f59e0b',
+  'High':      '#ef4444',
+  'Very High': '#a855f7',
+};
+
 const DEFAULT_FORM: CreatePortfolioPayload = {
   name: '',
   description: '',
   initialCapital: 5_000_000,
-  riskTolerance: 'Medium',
+  // riskTolerance is omitted — derived by backend from scoring inputs
   investmentHorizonMonths: 24,
   targetReturnPct: 15,
   rebalanceFrequency: 'Monthly',
@@ -31,8 +39,20 @@ const DEFAULT_FORM: CreatePortfolioPayload = {
 
 export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModalProps) => {
   const [form, setForm] = useState<CreatePortfolioPayload>(DEFAULT_FORM);
+  const [riskOverride, setRiskOverride] = useState<RiskTolerance | null>(null);
+  const [showOverride, setShowOverride] = useState(false);
   const [createPortfolio, { isLoading }] = useCreatePortfolioMutation();
   const [error, setError] = useState<string | null>(null);
+
+  // Live risk classification from backend scoring model
+  const derivedRisk = useRiskClassifier({
+    targetReturnPct:        form.targetReturnPct,
+    investmentHorizonMonths: form.investmentHorizonMonths,
+    maxDrawdownPct:         form.maxDrawdownPct,
+    volatilityPreference:   form.volatilityPreference,
+  });
+
+  const effectiveRisk = riskOverride ?? derivedRisk?.level ?? null;
 
   const toggleCap = (cap: string) => {
     setForm(f => ({
@@ -57,7 +77,7 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
     if (!form.name.trim()) { setError('Portfolio name is required'); return; }
     setError(null);
     try {
-      await createPortfolio(form).unwrap();
+      await createPortfolio({ ...form, riskTolerance: effectiveRisk ?? undefined }).unwrap();
       onCreated();
     } catch (err: unknown) {
       setError((err as { error?: string })?.error ?? (err instanceof Error ? err.message : 'Failed to create portfolio'));
@@ -129,21 +149,71 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
             </div>
           </div>
 
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="risk">Risk Tolerance</label>
-              <select
-                id="risk"
-                value={form.riskTolerance}
-                onChange={e => setForm(f => ({ ...f, riskTolerance: e.target.value as RiskTolerance }))}
-                className="form-input"
+          {/* Derived risk classification banner */}
+          {derivedRisk && (
+            <div style={{
+              padding: '10px 14px',
+              borderRadius: 8,
+              background: 'rgba(255,255,255,0.04)',
+              border: `1px solid ${RISK_COLORS[derivedRisk.level] ?? '#666'}44`,
+              marginBottom: 4,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>AI-classified risk</span>
+                <span style={{
+                  fontWeight: 700,
+                  fontSize: '0.85rem',
+                  color: RISK_COLORS[effectiveRisk ?? derivedRisk.level],
+                }}>
+                  {riskOverride ? `${riskOverride} (override)` : derivedRisk.level}
+                </span>
+              </div>
+              <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '4px 0 6px' }}>
+                {derivedRisk.explanation}
+              </p>
+              <button
+                type="button"
+                style={{ fontSize: '0.72rem', color: 'var(--accent-blue)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                onClick={() => setShowOverride(v => !v)}
               >
-                <option value="Low">Low (Conservative)</option>
-                <option value="Medium">Medium (Balanced)</option>
-                <option value="High">High (Aggressive)</option>
-                <option value="Very High">Very High (Speculative)</option>
-              </select>
+                {showOverride ? 'Hide override' : 'Override classification'}
+              </button>
+              {showOverride && (
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {(['Low', 'Medium', 'High', 'Very High'] as RiskTolerance[]).map(level => (
+                    <button
+                      key={level}
+                      type="button"
+                      onClick={() => setRiskOverride(riskOverride === level ? null : level)}
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: 20,
+                        border: `1px solid ${RISK_COLORS[level]}`,
+                        background: riskOverride === level ? RISK_COLORS[level] + '33' : 'transparent',
+                        color: RISK_COLORS[level],
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                        fontWeight: riskOverride === level ? 700 : 400,
+                      }}
+                    >
+                      {level}
+                    </button>
+                  ))}
+                  {riskOverride && (
+                    <button
+                      type="button"
+                      onClick={() => setRiskOverride(null)}
+                      style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}
+                    >
+                      ✕ Clear override
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
+          )}
+
+          <div className="form-row">
             <div className="form-group">
               <label htmlFor="horizon">Investment Horizon (months)</label>
               <input
@@ -156,20 +226,19 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
                 className="form-input"
               />
             </div>
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="rebalance">Rebalance Frequency</label>
-            <select
-              id="rebalance"
-              value={form.rebalanceFrequency}
-              onChange={e => setForm(f => ({ ...f, rebalanceFrequency: e.target.value as RebalanceFrequency }))}
-              className="form-input"
-            >
-              <option value="Weekly">Weekly</option>
-              <option value="Monthly">Monthly</option>
-              <option value="Quarterly">Quarterly</option>
-            </select>
+            <div className="form-group">
+              <label htmlFor="rebalance">Rebalance Frequency</label>
+              <select
+                id="rebalance"
+                value={form.rebalanceFrequency}
+                onChange={e => setForm(f => ({ ...f, rebalanceFrequency: e.target.value as RebalanceFrequency }))}
+                className="form-input"
+              >
+                <option value="Weekly">Weekly</option>
+                <option value="Monthly">Monthly</option>
+                <option value="Quarterly">Quarterly</option>
+              </select>
+            </div>
           </div>
 
           <div className="form-group">
