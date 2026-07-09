@@ -144,10 +144,11 @@ export async function runMigrations(): Promise<void> {
     await db.execute('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0');
     console.log('[DB] Migration: users.is_admin column added');
   } catch (_) { /* already exists */ }
-  // Promote user id=1 to admin (the first registered / Google-login user)
-  try {
-    await db.execute('UPDATE users SET is_admin=1 WHERE id=1');
-  } catch (_) { /* ignore */ }
+  // Promote admin by ADMIN_EMAIL env var — survives DB resets, not tied to row ID
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (adminEmail) {
+    try { await db.execute({ sql: 'UPDATE users SET is_admin=1 WHERE email=?', args: [adminEmail] }); } catch (_) { /* ignore */ }
+  }
 
   // Phase 7: Volume integration — volume_ratio per trade
   try {
