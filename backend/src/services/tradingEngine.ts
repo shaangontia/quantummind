@@ -10,7 +10,7 @@ import { evaluateRisk } from './riskEngine.js';
 import { batchWithResults } from '../db/turso.js';
 import { logger } from '../lib/logger.js';
 import { getStockSentiment } from './newsService.js';
-import { getMLBoost } from './mlEngine.js';
+import { getMLBoost, computeTrendIndicators } from './mlEngine.js';
 import { getGroqStockSentiment } from './groqService.js';
 import { getSignalWeights, getCurrentRegime, recordSignalForTracking } from './adaptiveEngine.js';
 import { geminiTradeVeto } from './geminiService.js';
@@ -116,12 +116,13 @@ export async function generateSignal(
   try {
     // Run all data fetches in parallel
     // getExecutableQuote: always fresh, cross-validated, never cached
-    const [quote, rsi, sentiment, mlBoost, groqResult] = await Promise.allSettled([
+    const [quote, rsi, sentiment, mlBoost, groqResult, trendResult] = await Promise.allSettled([
       getExecutableQuote(symbol),
       getRsi(symbol),
       getStockSentiment(symbol).catch(() => null),
       getMLBoost(symbol, risk).catch(() => null),
       getGroqStockSentiment(symbol).catch(() => null),
+      computeTrendIndicators(symbol).catch(() => null),
     ]);
 
     const q = quote.status === 'fulfilled' ? quote.value : null;
@@ -141,6 +142,7 @@ export async function generateSignal(
     const sent = sentiment.status === 'fulfilled' ? sentiment.value : null;
     const ml = mlBoost.status === 'fulfilled' ? mlBoost.value : null;
     const groq = groqResult.status === 'fulfilled' ? groqResult.value : null;
+    const trend = trendResult.status === 'fulfilled' ? trendResult.value : null;
 
     // Use regime-calibrated thresholds if available, else fall back to risk tier
     let t = getThresholds(risk);
@@ -179,6 +181,25 @@ export async function generateSignal(
 
     if (q.changePct < -4) { buy  += 1; notes.push(`Day drop ${q.changePct.toFixed(1)}%`); }
     if (q.changePct >  5) { sell += 1; notes.push(`Day surge ${q.changePct.toFixed(1)}%`); }
+
+    // ── Volume confirmation ─────────────────────────────────────────────────
+    // High-volume dip = panic selling — buy opportunity
+    // Low-volume move = weak conviction on either side
+    // High-volume surge on up day = distribution risk (smart money selling into rally)
+    if (q.volumeRatio !== undefined) {
+      const vr = q.volumeRatio;
+      if (q.changePct < -2 && vr > 2.0) {
+        buy  += 1; notes.push(`High-volume dip (${vr.toFixed(1)}x avg) — volume-confirmed entry`);
+      } else if (q.changePct > 2 && vr > 2.5) {
+        sell += 1; notes.push(`High-volume surge (${vr.toFixed(1)}x avg) — distribution risk`);
+      } else if (vr < 0.4) {
+        // Thin volume: dampens both buy and sell signals from price action
+        if (buy > sell) { buy  -= 0.5; notes.push(`Low volume (${vr.toFixed(2)}x avg) — weak BUY conviction`); }
+        else if (sell > buy) { sell -= 0.5; notes.push(`Low volume (${vr.toFixed(2)}x avg) — weak SELL conviction`); }
+      } else {
+        notes.push(`Volume: ${vr.toFixed(2)}x avg`);
+      }
+    }
 
     // ── P/E Valuation filter (sector-relative) ─────────────────────────────────
     // P/E norms vary wildly by sector — FMCG trades at 50-70x normally;
@@ -253,6 +274,27 @@ export async function generateSignal(
     if (ml && ml.momentumBoost !== 0) {
       if (ml.momentumBoost > 0) { buy  += ml.momentumBoost; notes.push(ml.reason); }
       else                       { sell += Math.abs(ml.momentumBoost); notes.push(ml.reason); }
+    }
+
+    // ── MACD + EMA trend filter ───────────────────────────────────────────────
+    // Crossover events score directly. EMA state used as RSI filter.
+    if (trend) {
+      const { macd, emaCrossover } = trend;
+      if (macd) {
+        if (macd.bullishCrossover)       { buy  += 2; notes.push('MACD: bullish crossover (histogram flipped +)'); }
+        else if (macd.bearishCrossover)  { sell += 2; notes.push('MACD: bearish crossover (histogram flipped -)'); }
+        else if (macd.latestHistogram > 0){ buy  += 1; notes.push(`MACD: positive histogram (${macd.latestHistogram.toFixed(3)})`); }
+        else if (macd.latestHistogram < 0){ sell += 1; notes.push(`MACD: negative histogram (${macd.latestHistogram.toFixed(3)})`); }
+      }
+      if (emaCrossover) {
+        if (emaCrossover.goldenCross)     { buy  += 2; notes.push('EMA: golden cross (EMA20 above EMA50)'); }
+        else if (emaCrossover.deathCross) { sell += 2; notes.push('EMA: death cross (EMA20 below EMA50)'); }
+        else if (!emaCrossover.ema20AboveEma50 && rsiVal !== null && rsiVal < t.rsiBuy) {
+          // Bearish trend state — suppress RSI-generated BUY votes
+          buy = Math.max(0, buy - 1);
+          notes.push('EMA trend: bearish (EMA20 < EMA50) — RSI BUY dampened');
+        }
+      }
     }
 
     // ── Groq LLM (highest quality signal, weighted ×2) ────────────────────
@@ -440,8 +482,8 @@ export async function executeTrade(
 
   // INSERT trade with realized_pnl included — fully atomic, no follow-up UPDATE needed
   statements.unshift({
-    sql: 'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before, trade_reason, realized_pnl) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-    args: [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore, tradeReasonJson, realizedPnlOnTrade],
+    sql: 'INSERT INTO trades (portfolio_id, symbol, company_name, action, quantity, price, amount, brokerage, net_amount, signal_reason, portfolio_value_before, trade_reason, realized_pnl, volume_ratio) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    args: [portfolioId, symbol, companyName, action, quantity, price, amount, brokerage, netAmount, reason, valueBefore, tradeReasonJson, realizedPnlOnTrade, quote?.volumeRatio ?? null],
   });
 
   if (action === 'SELL') {

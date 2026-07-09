@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { query, queryOne, run } from '../db/turso.js';
 import { generateSignal, executeTrade, getPortfolioSummary } from '../services/tradingEngine.js';
-import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen, warmTwelveDataCache } from '../services/marketData.js';
+import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen, warmTwelveDataCache, fetchEarningsCalendar } from '../services/marketData.js';
 import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
@@ -299,6 +299,12 @@ export function startScheduler(): void {
   cron.schedule('0 * * * *', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
   // After-market snapshot
   cron.schedule('0 16 * * 1-5', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
+  // Weekly earnings calendar refresh — every Sunday at 08:00 IST
+  cron.schedule('0 8 * * 0', async () => {
+    const { getCycleWatchlist } = await import('../services/marketData.js');
+    const allSyms = getCycleWatchlist(0, 200);
+    await fetchEarningsCalendar(allSyms).catch(console.error);
+  }, { timezone: 'Asia/Kolkata' });
   // Nightly adaptive learning: resolve signal outcomes + recalibrate weights + Gemini portfolio insights
   // Runs at 20:00 IST on weekdays — 5+ hours after market close so exit prices are settled
   cron.schedule('0 20 * * 1-5', async () => {

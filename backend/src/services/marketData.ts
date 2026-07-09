@@ -12,6 +12,10 @@ export interface StockQuote {
   fiftyTwoWeekLow?: number;
   shortName?: string;
   timestamp: Date;
+  /** 20-day average volume from provider */
+  averageVolume?: number;
+  /** volume / averageVolume — > 1 means above-average activity today */
+  volumeRatio?: number;
   /** Trailing twelve-month P/E ratio — null if loss-making or unavailable */
   peRatio?: number | null;
   /** Trailing twelve-month EPS */
@@ -241,6 +245,10 @@ async function getQuoteTwelveData(nseSymbol: string): Promise<StockQuote | null>
       change: parseFloat(d.change ?? '0'),
       changePct: parseFloat(d.percent_change ?? '0'),
       volume: parseInt(d.volume ?? '0', 10),
+      averageVolume: d.average_volume ? parseInt(d.average_volume, 10) : undefined,
+      volumeRatio: d.average_volume && d.volume && parseInt(d.average_volume, 10) > 0
+        ? parseInt(d.volume, 10) / parseInt(d.average_volume, 10)
+        : undefined,
       fiftyTwoWeekHigh: d.fifty_two_week?.high ? parseFloat(d.fifty_two_week.high) : undefined,
       fiftyTwoWeekLow: d.fifty_two_week?.low ? parseFloat(d.fifty_two_week.low) : undefined,
       shortName: d.name,
@@ -317,6 +325,10 @@ async function getQuoteYahoo(
       change: price - (meta.chartPreviousClose ?? price),
       changePct: meta.chartPreviousClose ? ((price - meta.chartPreviousClose) / meta.chartPreviousClose) * 100 : 0,
       volume: meta.regularMarketVolume ?? 0,
+      averageVolume: meta.averageDailyVolume3Month ?? undefined,
+      volumeRatio: meta.averageDailyVolume3Month && meta.regularMarketVolume
+        ? meta.regularMarketVolume / meta.averageDailyVolume3Month
+        : undefined,
       fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh,
       fiftyTwoWeekLow: meta.fiftyTwoWeekLow,
       shortName: meta.shortName,
@@ -820,4 +832,57 @@ export function getCycleWatchlist(rotationSeed: number, sampleSize = 50): string
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
   return shuffled.slice(0, Math.min(sampleSize, shuffled.length));
+}
+
+// ─── Earnings Calendar ────────────────────────────────────────────────────────
+
+/**
+ * Fetch upcoming earnings dates for a batch of NSE symbols via Twelve Data /earnings.
+ * Upserts into the earnings_calendar table. Called weekly as a background job.
+ * Fails silently per-symbol — missing data never blocks trading.
+ */
+export async function fetchEarningsCalendar(nseSymbols: string[]): Promise<void> {
+  const apiKey = process.env.TWELVE_DATA_API_KEY;
+  if (!apiKey) return;
+
+  const { run: dbRun } = await import('../db/turso.js');
+  let fetched = 0;
+
+  for (const sym of nseSymbols) {
+    const tdSymbol = sym.replace('.NS', ':NSE');
+    const url = `https://api.twelvedata.com/earnings?symbol=${encodeURIComponent(tdSymbol)}&outputsize=5&apikey=${apiKey}`;
+    try {
+      const { data } = await httpsGet(url);
+      if (!data?.earnings || data.status === 'error') continue;
+      for (const e of data.earnings as any[]) {
+        if (!e.date) continue;
+        await dbRun(
+          `INSERT INTO earnings_calendar (symbol, earnings_date, is_confirmed)
+           VALUES (?, ?, ?)
+           ON CONFLICT(symbol, earnings_date) DO UPDATE SET is_confirmed=excluded.is_confirmed, fetched_at=CURRENT_TIMESTAMP`,
+          [sym, e.date, e.time != null ? 1 : 0]
+        );
+        fetched++;
+      }
+    } catch {
+      // Per-symbol failure is non-fatal
+    }
+  }
+  console.log(`[EarningsCalendar] Upserted ${fetched} earnings dates for ${nseSymbols.length} symbols`);
+}
+
+/**
+ * Returns true if the given NSE symbol has an earnings announcement within ±48h of now.
+ * Used as a BUY blackout gate in the risk engine.
+ */
+export async function isInEarningsBlackout(nseSymbol: string): Promise<boolean> {
+  const { queryOne: dbQueryOne } = await import('../db/turso.js');
+  const row = await dbQueryOne(
+    `SELECT earnings_date FROM earnings_calendar
+     WHERE symbol = ?
+       AND earnings_date BETWEEN date('now', '-2 days') AND date('now', '+2 days')
+     LIMIT 1`,
+    [nseSymbol]
+  );
+  return row != null;
 }

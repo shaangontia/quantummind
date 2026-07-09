@@ -24,7 +24,7 @@ import {
   isUnderDailyTurnoverLimit,
   isUnderPositionCap,
 } from './tradingGuards.js';
-import { isNseMarketOpen, type StockQuote, getSymbolSector } from './marketData.js';
+import { isNseMarketOpen, type StockQuote, getSymbolSector, isInEarningsBlackout } from './marketData.js';
 import { query as dbQuery } from '../db/turso.js';
 import { logger } from '../lib/logger.js';
 
@@ -161,6 +161,16 @@ export async function evaluateRisk(ctx: RiskContext): Promise<RiskDecision> {
         logger.riskBlock(ctx.portfolioId, ctx.symbol, `Sector cap: ${sector} would reach ${(newSectorPct * 100).toFixed(1)}% NAV (limit 35%)`);
         return { approved: false, reason: `Sector concentration cap: ${sector} sector at ${(newSectorPct * 100).toFixed(1)}% (max 35%)`, checksRun: checks };
       }
+    }
+  }
+
+  // 10. Earnings blackout gate (BUY only) — block within ±48h of earnings announcement
+  checks.push('earnings_blackout');
+  if (ctx.action === 'BUY') {
+    const inBlackout = await isInEarningsBlackout(ctx.symbol).catch(() => false);
+    if (inBlackout) {
+      logger.riskBlock(ctx.portfolioId, ctx.symbol, `Earnings blackout: announcement within ±48h`);
+      return { approved: false, reason: `Earnings blackout: ${ctx.symbol} has earnings within 48h — BUY blocked to avoid event risk`, checksRun: checks };
     }
   }
 

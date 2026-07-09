@@ -138,6 +138,25 @@ export async function runMigrations(): Promise<void> {
       END`);
     console.log('[DB] Migration: tars_memory FTS5 triggers ensured');
   } catch (err) { console.warn('[DB] FTS5 triggers skipped:', err); }
+
+  // Phase 7: Volume integration — volume_ratio per trade
+  try {
+    await db.execute('ALTER TABLE trades ADD COLUMN volume_ratio REAL DEFAULT NULL');
+    console.log('[DB] Migration: trades.volume_ratio column added');
+  } catch (_) { /* already exists */ }
+
+  // Phase 9: Earnings calendar blackout
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS earnings_calendar (
+      id           INTEGER  PRIMARY KEY AUTOINCREMENT,
+      symbol       TEXT     NOT NULL,
+      earnings_date TEXT    NOT NULL,
+      is_confirmed INTEGER  DEFAULT 0,
+      fetched_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(symbol, earnings_date)
+    )`);
+    console.log('[DB] Migration: earnings_calendar table ensured');
+  } catch (err) { console.warn('[DB] earnings_calendar table skipped:', err); }
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

@@ -210,3 +210,122 @@ export async function getMLBoost(symbol: string, riskTolerance = 'Medium'): Prom
     reason: reasons.join('; ') || 'ML: neutral',
   };
 }
+
+// ─── MACD + EMA Trend Indicators ─────────────────────────────────────────────
+
+/**
+ * Exponential Moving Average (EMA) over an array of prices.
+ * Uses standard smoothing factor: k = 2 / (period + 1)
+ */
+export function computeEMA(prices: number[], period: number): number[] {
+  if (prices.length < period) return [];
+  const k = 2 / (period + 1);
+  const ema: number[] = [];
+  // Seed with simple average of first `period` values
+  let prev = prices.slice(0, period).reduce((s, p) => s + p, 0) / period;
+  ema.push(prev);
+  for (let i = period; i < prices.length; i++) {
+    prev = prices[i] * k + prev * (1 - k);
+    ema.push(prev);
+  }
+  return ema;
+}
+
+export interface MACDResult {
+  macdLine: number[];     // EMA(12) - EMA(26)
+  signalLine: number[];   // EMA(9) of macdLine
+  histogram: number[];    // macdLine - signalLine
+  latestMACD: number;
+  latestSignal: number;
+  latestHistogram: number;
+  /** true if histogram just flipped from negative to positive (bullish crossover) */
+  bullishCrossover: boolean;
+  /** true if histogram just flipped from positive to negative (bearish crossover) */
+  bearishCrossover: boolean;
+}
+
+export function computeMACD(prices: number[]): MACDResult | null {
+  if (prices.length < 35) return null; // need at least EMA26 + EMA9 warmup
+  const ema12 = computeEMA(prices, 12);
+  const ema26 = computeEMA(prices, 26);
+  // Align: ema12 has more values than ema26 by 14; trim ema12 to match ema26
+  const offset = ema12.length - ema26.length;
+  const macdLine = ema26.map((v, i) => ema12[i + offset] - v);
+  const signalLine = computeEMA(macdLine, 9);
+  // Align signal to macdLine end
+  const sigOffset = macdLine.length - signalLine.length;
+  const histogram = signalLine.map((v, i) => macdLine[i + sigOffset] - v);
+
+  const len = histogram.length;
+  if (len < 2) return null;
+
+  const latestHistogram  = histogram[len - 1];
+  const prevHistogram    = histogram[len - 2];
+  const latestMACD       = macdLine[macdLine.length - 1];
+  const latestSignal     = signalLine[len - 1];
+
+  return {
+    macdLine, signalLine, histogram,
+    latestMACD, latestSignal, latestHistogram,
+    bullishCrossover: prevHistogram < 0 && latestHistogram >= 0,
+    bearishCrossover: prevHistogram > 0 && latestHistogram <= 0,
+  };
+}
+
+export interface EMACrossoverResult {
+  ema20: number;
+  ema50: number;
+  goldenCross: boolean;  // EMA20 just crossed above EMA50 (bullish)
+  deathCross: boolean;   // EMA20 just crossed below EMA50 (bearish)
+  ema20AboveEma50: boolean; // current state: trend is up
+}
+
+export function computeEMACrossover(prices: number[]): EMACrossoverResult | null {
+  if (prices.length < 52) return null; // need 50 + 2 warmup points
+  const ema20arr = computeEMA(prices, 20);
+  const ema50arr = computeEMA(prices, 50);
+  if (ema20arr.length < 2 || ema50arr.length < 2) return null;
+
+  // Align to same length (ema20 is longer — trim from front)
+  const off = ema20arr.length - ema50arr.length;
+  const lastIdx20 = ema20arr.length - 1;
+  const lastIdx50 = ema50arr.length - 1;
+  const ema20Now  = ema20arr[lastIdx20];
+  const ema50Now  = ema50arr[lastIdx50];
+  const ema20Prev = ema20arr[lastIdx20 - 1];
+  const ema50Prev = ema50arr[lastIdx50 - 1];
+
+  return {
+    ema20: ema20Now,
+    ema50: ema50Now,
+    goldenCross: ema20Prev <= ema50Prev && ema20Now > ema50Now,
+    deathCross:  ema20Prev >= ema50Prev && ema20Now < ema50Now,
+    ema20AboveEma50: ema20Now > ema50Now,
+  };
+}
+
+export interface TrendIndicators {
+  macd: MACDResult | null;
+  emaCrossover: EMACrossoverResult | null;
+}
+
+/** Compute MACD + EMA crossover from historical prices for a symbol */
+export async function computeTrendIndicators(symbol: string): Promise<TrendIndicators> {
+  try {
+    // Fetch 90-day history for enough EMA warmup (need 52+ prices)
+    const sym = symbol.endsWith('.NS') ? symbol : `${symbol}.NS`;
+    const json = await yahooGet(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=6mo`
+    );
+    const closes: number[] = (json.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [])
+      .filter((c: any) => c !== null);
+
+    if (closes.length < 35) return { macd: null, emaCrossover: null };
+    return {
+      macd: computeMACD(closes),
+      emaCrossover: closes.length >= 52 ? computeEMACrossover(closes) : null,
+    };
+  } catch {
+    return { macd: null, emaCrossover: null };
+  }
+}
