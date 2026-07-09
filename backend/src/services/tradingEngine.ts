@@ -102,7 +102,8 @@ export interface PortfolioSignalContext {
   totalNAV: number;
   cashBalance: number;
   holdings: number;
-  sectorExposurePct?: number;  // % NAV in the same sector as this symbol
+  sectorExposurePct?: number;   // % NAV in the same sector as this symbol
+  proposedPositionPct?: number; // actual position as % of NAV (computed by caller)
 }
 
 export async function generateSignal(
@@ -213,9 +214,9 @@ export async function generateSignal(
         voteScore: topScore,
         portfolioContext: {
           sectorExposurePct: portfolioCtx.sectorExposurePct,
-          positionSizePct: portfolioCtx.totalNAV > 0
-            ? (portfolioCtx.cashBalance * 0.05 / portfolioCtx.totalNAV) * 100
-            : 5,
+          // Use caller-supplied actual position size; fall back to 5% if not provided
+          positionSizePct: portfolioCtx.proposedPositionPct ??
+            (portfolioCtx.totalNAV > 0 ? (portfolioCtx.cashBalance * 0.05 / portfolioCtx.totalNAV) * 100 : 5),
           totalHoldings: portfolioCtx.holdings,
           cashBalancePct: portfolioCtx.totalNAV > 0
             ? (portfolioCtx.cashBalance / portfolioCtx.totalNAV) * 100

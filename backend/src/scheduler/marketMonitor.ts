@@ -163,14 +163,15 @@ async function runPortfolioTradingCycle(
       .filter(x => getSymbolSector(x.symbol) === buySector)
       .reduce((sum, x) => sum + x.quantity * x.currentPrice, 0);
     const buySectorPct = refreshed.totalValue > 0 ? (buySectorNAV / refreshed.totalValue) * 100 : 0;
+    const invest = Math.min(refreshed.totalValue * maxPosPct, refreshed.cashBalance * 0.3);
+    const proposedPositionPct = refreshed.totalValue > 0 ? (invest / refreshed.totalValue) * 100 : maxPosPct * 100;
     const signal = await generateSignal(symbol, riskTolerance, volatilityPref, investmentGoal,
       { totalNAV: refreshed.totalValue, cashBalance: refreshed.cashBalance,
-        holdings: refreshed.holdings.length, sectorExposurePct: buySectorPct });
+        holdings: refreshed.holdings.length, sectorExposurePct: buySectorPct, proposedPositionPct });
     if (!signal || signal.action !== 'BUY' || signal.strength === 'WEAK') continue;
     signalCount++;
     logger.signal(portfolioId, symbol, signal.action, signal.strength, signal.reason, signal.price);
 
-    const invest = Math.min(refreshed.totalValue * maxPosPct, refreshed.cashBalance * 0.3);
     const qty = Math.floor(invest / signal.price);
     if (qty <= 0) continue;
 

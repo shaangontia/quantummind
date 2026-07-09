@@ -97,6 +97,21 @@ export async function geminiChat(
 
 // ─── Trading intelligence ───────────────────────────────────────────────────
 
+// ─── Daily API budget guard ──────────────────────────────────────────────────
+// Prevents rate-limit exhaustion on heavy signal days.
+// Free tier: 1500 req/day. Reserve 300 for embeddings + chat. Veto budget: 1200.
+const DAILY_VETO_BUDGET = 1200;
+let _vetoCalls = 0;
+let _vetoBudgetDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+function consumeVetoBudget(): boolean {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== _vetoBudgetDate) { _vetoCalls = 0; _vetoBudgetDate = today; } // midnight reset
+  if (_vetoCalls >= DAILY_VETO_BUDGET) return false;
+  _vetoCalls++;
+  return true;
+}
+
 export interface TradeVetoContext {
   symbol: string;
   action: 'BUY' | 'SELL';
@@ -124,6 +139,7 @@ export async function geminiTradeVeto(ctx: TradeVetoContext): Promise<{
 }> {
   const model = getChatModel();
   if (!model) return { verdict: 'EXECUTE', reason: 'Gemini unavailable — proceeding' };
+  if (!consumeVetoBudget()) return { verdict: 'EXECUTE', reason: 'Gemini daily budget exhausted — proceeding' };
 
   const prompt = `You are a senior NSE equity trader reviewing an algorithmic trade proposal.
 
