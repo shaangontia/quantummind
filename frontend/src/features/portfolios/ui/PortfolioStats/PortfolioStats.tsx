@@ -45,7 +45,7 @@ export const PortfolioStats = memo(({ portfolioId }: PortfolioStatsProps) => {
   if (isLoading || !stats) {
     return (
       <div className="stats-grid">
-        {Array.from({ length: 7 }).map((_, i) => (
+        {Array.from({ length: 6 }).map((_, i) => (
           <SkeletonBlock key={i} height={80} borderRadius={8} />
         ))}
       </div>
@@ -90,12 +90,9 @@ export const PortfolioStats = memo(({ portfolioId }: PortfolioStatsProps) => {
         trend={stats.totalPnl >= 0 ? 'up' : 'down'}
         accent={stats.totalPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}
       />
-      <StatCard
-        label="Brokerage Paid"
-        value={formatINR(stats.totalBrokerage)}
-        sub="transaction costs"
-        trend="neutral"
-      />
+      {/* NOTE: totalBrokerage is tracked and present in stats but intentionally not displayed.
+           TODO: Surface this when CostAdjustedSignalValidator integration is prioritised.
+           Data is already captured per-trade for future cost-aware signal scoring. */}
       <StatCard
         label="Target Return"
         value={`${stats.targetReturnPct}%`}
