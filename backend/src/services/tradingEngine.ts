@@ -52,6 +52,7 @@ export interface PortfolioSummary {
   realizedPnlPct: number;           // realizedPnl / initialCapital
   totalPnl: number;
   totalPnlPct: number;              // totalPnl / initialCapital (same base as returnPct)
+  totalBrokerage: number;           // sum of all brokerage charges paid
   returnPct: number;                // (totalValue - initialCapital) / initialCapital
   targetReturnPct: number;
   riskTolerance: string;
@@ -527,11 +528,12 @@ export async function getPortfolioSummary(portfolioId: number): Promise<Portfoli
   // Realized PnL: only from closed positions (SELL trades minus their cost basis)
   // Approximated as: sum(sell_proceeds) - sum(buy_cost for matching lots)
   // For now: track via explicit pnl column when available, else 0 until sells occur
-  const realizedRows = await query(
-    `SELECT COALESCE(SUM(realized_pnl), 0) as pnl FROM trades WHERE portfolio_id = ? AND action = 'SELL' AND realized_pnl IS NOT NULL`,
-    [portfolioId]
-  );
-  const realizedPnl = Number(realizedRows[0]?.pnl ?? 0);
+  const [realizedRows, brokerageRows] = await Promise.all([
+    query(`SELECT COALESCE(SUM(realized_pnl), 0) as pnl FROM trades WHERE portfolio_id = ? AND action = 'SELL' AND realized_pnl IS NOT NULL`, [portfolioId]),
+    query(`SELECT COALESCE(SUM(brokerage), 0) as total FROM trades WHERE portfolio_id = ? AND price > 0`, [portfolioId]),
+  ]);
+  const realizedPnl    = Number(realizedRows[0]?.pnl ?? 0);
+  const totalBrokerage = Number(brokerageRows[0]?.total ?? 0);
 
   let invested = 0, current = 0;
   const hSummaries: HoldingSummary[] = [];
@@ -568,6 +570,7 @@ export async function getPortfolioSummary(portfolioId: number): Promise<Portfoli
     unrealizedPnl: unrealPnl, unrealizedPnlPct: unrealPnlPct,
     realizedPnl,               realizedPnlPct: realPnlPct,
     totalPnl,                  totalPnlPct,
+    totalBrokerage,
     returnPct, targetReturnPct: Number(portfolio.target_return_pct),
     riskTolerance: portfolio.risk_tolerance as string, investmentHorizonMonths: Number(portfolio.investment_horizon_months),
     holdings: hSummaries,

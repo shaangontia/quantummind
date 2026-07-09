@@ -152,6 +152,8 @@ export interface PortfolioSummary {
   totalPnl: number;
   /** totalPnl / initialCapital × 100 — same denominator as returnPct */
   totalPnlPct: number;
+  /** Sum of all brokerage charges paid across all valid trades */
+  totalBrokerage: number;
   returnPct: number;
   targetReturnPct: number;
   riskTolerance: RiskTolerance;
