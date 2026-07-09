@@ -39,6 +39,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const zod_1 = require("zod");
 const groq_sdk_1 = __importDefault(require("groq-sdk"));
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const ragService_js_1 = require("../services/ragService.js");
+const auth_js_1 = require("../middleware/auth.js");
+const geminiService_js_1 = require("../services/geminiService.js");
 const turso_js_1 = require("../db/turso.js");
 const marketData_js_1 = require("../services/marketData.js");
 const tradingEngine_js_1 = require("../services/tradingEngine.js");
@@ -102,6 +106,51 @@ function requireAdminAuth(req, res, next) {
     next();
 }
 const router = (0, express_1.Router)();
+// cookieParser is mounted at app level in api/index.ts — do not re-mount here
+// ─── Auth routes ───────────────────────────────────────────────────────────────
+const authRegisterSchema = zod_1.z.object({
+    email: zod_1.z.string().email().max(200),
+    password: zod_1.z.string().min(8).max(128),
+});
+router.post('/auth/register', async (req, res) => {
+    const parsed = authRegisterSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
+    const { email, password } = parsed.data;
+    const existing = await (0, turso_js_1.queryOne)('SELECT id FROM users WHERE email = ?', [email]);
+    if (existing)
+        return res.status(409).json({ success: false, error: 'Email already registered' });
+    const passwordHash = await bcryptjs_1.default.hash(password, 12);
+    const result = await (0, turso_js_1.run)('INSERT INTO users (email, password_hash) VALUES (?, ?)', [email, passwordHash]);
+    const userId = result.lastInsertRowid;
+    // Claim all unclaimed portfolios for this registrant (first-user-takes-all migration).
+    // Acceptable for single-user deployment. If multi-user is added, this must be replaced
+    // with an explicit invite/transfer flow — running this as-is in multi-user context is destructive.
+    await (0, turso_js_1.run)('UPDATE portfolios SET owner_id = ? WHERE owner_id IS NULL', [userId]);
+    const token = (0, auth_js_1.signToken)({ id: userId, email });
+    res.cookie('qm_token', token, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.status(201).json({ success: true, data: { id: userId, email } });
+});
+router.post('/auth/login', async (req, res) => {
+    const parsed = authRegisterSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
+    const { email, password } = parsed.data;
+    const user = await (0, turso_js_1.queryOne)('SELECT id, email, password_hash FROM users WHERE email = ?', [email]);
+    if (!user || !(await bcryptjs_1.default.compare(password, String(user.password_hash)))) {
+        return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+    const token = (0, auth_js_1.signToken)({ id: Number(user.id), email: String(user.email) });
+    res.cookie('qm_token', token, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.json({ success: true, data: { id: user.id, email: user.email } });
+});
+router.post('/auth/logout', (_req, res) => {
+    res.clearCookie('qm_token', { httpOnly: true, secure: true, sameSite: 'strict' });
+    res.json({ success: true });
+});
+router.get('/auth/me', auth_js_1.verifyAuth, (req, res) => {
+    res.json({ success: true, data: req.user });
+});
 // ─── Portfolios ──────────────────────────────────────────────────────────────
 router.get('/portfolios', async (_req, res) => {
     try {
@@ -122,12 +171,12 @@ router.get('/portfolios', async (_req, res) => {
         res.status(500).json({ success: false, error: String(err) });
     }
 });
-router.post('/portfolios', async (req, res) => {
+router.post('/portfolios', auth_js_1.verifyAuth, async (req, res) => {
     const parsed = portfolioCreateSchema.safeParse(req.body);
     if (!parsed.success)
         return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
     const { name, description, initialCapital, riskTolerance, investmentHorizonMonths, targetReturnPct, preferredSectors, preferredCaps } = parsed.data;
-    const result = await (0, turso_js_1.run)('INSERT INTO portfolios (name,description,initial_capital,current_cash,risk_tolerance,investment_horizon_months,target_return_pct,preferred_sectors,preferred_caps) VALUES (?,?,?,?,?,?,?,?,?)', [name, description || null, initialCapital, initialCapital, riskTolerance || 'Medium', investmentHorizonMonths || 12, targetReturnPct || 15.0, preferredSectors ? JSON.stringify(preferredSectors) : null, preferredCaps ? JSON.stringify(preferredCaps) : null]);
+    const result = await (0, turso_js_1.run)('INSERT INTO portfolios (name,description,initial_capital,current_cash,risk_tolerance,investment_horizon_months,target_return_pct,preferred_sectors,preferred_caps,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?)', [name, description || null, initialCapital, initialCapital, riskTolerance || 'Medium', investmentHorizonMonths || 12, targetReturnPct || 15.0, preferredSectors ? JSON.stringify(preferredSectors) : null, preferredCaps ? JSON.stringify(preferredCaps) : null, req.user.id]);
     res.status(201).json({ success: true, data: await (0, turso_js_1.queryOne)('SELECT * FROM portfolios WHERE id = ?', [result.lastInsertRowid]) });
 });
 router.get('/portfolios/:id/summary', async (req, res) => {
@@ -143,7 +192,7 @@ router.get('/portfolios/:id/summary', async (req, res) => {
         res.status(500).json({ success: false, error: String(err) });
     }
 });
-router.patch('/portfolios/:id', async (req, res) => {
+router.patch('/portfolios/:id', auth_js_1.verifyAuth, auth_js_1.verifyOwner, async (req, res) => {
     try {
         const parsed = portfolioPatchSchema.safeParse(req.body);
         if (!parsed.success)
@@ -260,7 +309,7 @@ router.patch('/portfolios/:id', async (req, res) => {
         res.status(500).json({ success: false, error: String(err) });
     }
 });
-router.delete('/portfolios/:id', async (req, res) => {
+router.delete('/portfolios/:id', auth_js_1.verifyAuth, auth_js_1.verifyOwner, async (req, res) => {
     const id = parseIntParam(req.params.id);
     if (id === null)
         return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
@@ -634,7 +683,7 @@ router.post('/adaptive/resolve-outcomes', async (_req, res) => {
     }
 });
 // ─── Manual Trade ─────────────────────────────────────────────────────────────
-router.post('/portfolios/:id/trade', async (req, res) => {
+router.post('/portfolios/:id/trade', auth_js_1.verifyAuth, auth_js_1.verifyOwner, async (req, res) => {
     const { symbol, companyName, action, quantity, price, reason } = req.body;
     if (!symbol || !action || !quantity || !price)
         return res.status(400).json({ success: false, error: 'symbol, action, quantity, price required' });
@@ -710,12 +759,23 @@ About QuantumMind:
 - Database: Turso cloud SQLite (Mumbai ap-south-1 region)
 - Universe: ~1800+ NSE EQ-series stocks above ₹30
 
-When [LIVE MARKET DATA] is present in this conversation, cite those exact figures. Keep answers concise and accurate.`;
+When [LIVE MARKET DATA] is present in this conversation, cite those exact figures.
+When [RELEVANT MEMORY CONTEXT] is present, use it to answer questions about recent trades, market cycles, and portfolio activity. Cite it naturally — do not say "according to memory", just answer as if you know it.
+Keep answers concise and accurate.`;
 router.post('/tars/chat', async (req, res) => {
-    const { message, history } = req.body;
+    const { message, history, portfolioId } = req.body;
     if (!message || typeof message !== 'string') {
         return res.status(400).json({ success: false, error: 'message required' });
     }
+    const chatPortfolioId = (() => {
+        if (typeof portfolioId === 'number')
+            return portfolioId;
+        if (typeof portfolioId === 'string') {
+            const n = parseInt(portfolioId, 10);
+            return Number.isNaN(n) ? undefined : n; // explicit NaN check — 0 is valid
+        }
+        return undefined;
+    })();
     try {
         res.set('Cache-Control', 'no-store');
         const messages = [
@@ -728,17 +788,31 @@ router.post('/tars/chat', async (req, res) => {
                 }
             }
         }
+        // RAG: retrieve relevant memories before calling Groq (scoped to portfolio when provided)
+        const memories = await (0, ragService_js_1.retrieveMemories)(message, chatPortfolioId);
+        const ragCtx = memories.length > 0
+            ? `\n\n[RELEVANT MEMORY CONTEXT]\n${memories.map((m, i) => `${i + 1}. ${m}`).join('\n')}`
+            : '';
         // Inject live market data if the message mentions a known stock
         const liveCtx = await tarsLiveContext(message);
-        const userContent = message.slice(0, 500) + liveCtx;
+        const userContent = message.slice(0, 500) + liveCtx + ragCtx;
         messages.push({ role: 'user', content: userContent });
-        const response = await groqClient.chat.completions.create({
-            model: 'llama-3.1-8b-instant',
-            messages,
-            temperature: 0.6,
-            max_tokens: 400,
-        });
-        const reply = response.choices[0]?.message?.content?.trim() ?? 'No response from TARS.';
+        // Try Gemini first (richer reasoning + longer context); fall back to Groq
+        const geminiHistory = messages
+            .filter(m => m.role !== 'system')
+            .map(m => ({ role: m.role === 'user' ? 'user' : 'model', content: m.content }));
+        const geminiUserMsg = geminiHistory.pop()?.content ?? userContent;
+        let reply = await (0, geminiService_js_1.geminiChat)(TARS_SYSTEM_PROMPT, geminiHistory, geminiUserMsg, { temperature: 0.6, maxTokens: 400 });
+        if (!reply) {
+            // Groq fallback
+            const groqResp = await groqClient.chat.completions.create({
+                model: 'llama-3.1-8b-instant',
+                messages,
+                temperature: 0.6,
+                max_tokens: 400,
+            });
+            reply = groqResp.choices[0]?.message?.content?.trim() ?? 'No response from TARS.';
+        }
         res.json({ success: true, reply });
     }
     catch (err) {

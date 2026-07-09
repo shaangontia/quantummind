@@ -79,6 +79,77 @@ async function runMigrations() {
         console.log('[DB] Migration: portfolios.peak_nav added');
     }
     catch (_) { /* already exists */ }
+    // CRITICAL-3: Auth — users table and portfolios.owner_id
+    try {
+        await db.execute(`CREATE TABLE IF NOT EXISTS users (
+      id           INTEGER  PRIMARY KEY AUTOINCREMENT,
+      email        TEXT     NOT NULL UNIQUE,
+      password_hash TEXT    NOT NULL,
+      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+        console.log('[DB] Migration: users table ensured');
+    }
+    catch (err) {
+        console.warn('[DB] users table skipped:', err);
+    }
+    try {
+        await db.execute('ALTER TABLE portfolios ADD COLUMN owner_id INTEGER REFERENCES users(id)');
+        console.log('[DB] Migration: portfolios.owner_id added');
+    }
+    catch (_) { /* already exists */ }
+    // Phase 6: RAG-based TARS memory — FTS5 full-text search (no API key required)
+    try {
+        await db.execute(`CREATE TABLE IF NOT EXISTS tars_memory (
+      id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+      content     TEXT     NOT NULL,
+      embedding   F32_BLOB(768),  -- Gemini text-embedding-004 (768-dim); NULL when Gemini unavailable
+      source_type TEXT     NOT NULL,
+      source_id   TEXT,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+        console.log('[DB] Migration: tars_memory table ensured');
+    }
+    catch (err) {
+        console.warn('[DB] tars_memory table creation skipped:', err);
+    }
+    // Add embedding column to existing tars_memory tables created before Gemini integration
+    try {
+        await db.execute('ALTER TABLE tars_memory ADD COLUMN embedding F32_BLOB(768)');
+        console.log('[DB] Migration: tars_memory.embedding column added');
+    }
+    catch (_) { /* already exists */ }
+    try {
+        await db.execute(`CREATE INDEX IF NOT EXISTS tars_memory_vec_idx ON tars_memory (libsql_vector_idx(embedding))`);
+        console.log('[DB] Migration: tars_memory vector index ensured');
+    }
+    catch (err) {
+        console.warn('[DB] Vector index skipped:', err);
+    }
+    try {
+        // FTS5 virtual table mirrors tars_memory.content for BM25 full-text search
+        await db.execute(`CREATE VIRTUAL TABLE IF NOT EXISTS tars_memory_fts
+       USING fts5(content, content='tars_memory', content_rowid='id')`);
+        console.log('[DB] Migration: tars_memory_fts FTS5 index ensured');
+    }
+    catch (err) {
+        console.warn('[DB] FTS5 index skipped:', err);
+    }
+    // Keep FTS5 shadow table in sync via triggers
+    try {
+        await db.execute(`CREATE TRIGGER IF NOT EXISTS tars_memory_fts_insert
+      AFTER INSERT ON tars_memory BEGIN
+        INSERT INTO tars_memory_fts(rowid, content) VALUES (new.id, new.content);
+      END`);
+        await db.execute(`CREATE TRIGGER IF NOT EXISTS tars_memory_fts_delete
+      AFTER DELETE ON tars_memory BEGIN
+        INSERT INTO tars_memory_fts(tars_memory_fts, rowid, content)
+          VALUES('delete', old.id, old.content);
+      END`);
+        console.log('[DB] Migration: tars_memory FTS5 triggers ensured');
+    }
+    catch (err) {
+        console.warn('[DB] FTS5 triggers skipped:', err);
+    }
 }
 async function query(sql, args = []) {
     const db = getClient();

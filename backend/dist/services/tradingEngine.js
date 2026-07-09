@@ -13,6 +13,7 @@ const newsService_js_1 = require("./newsService.js");
 const mlEngine_js_1 = require("./mlEngine.js");
 const groqService_js_1 = require("./groqService.js");
 const adaptiveEngine_js_1 = require("./adaptiveEngine.js");
+const geminiService_js_1 = require("./geminiService.js");
 function getThresholds(risk) {
     if (risk === 'High')
         return { rsiBuy: 40, rsiSell: 65, stopLoss: 0.12, takeProfit: 0.30, maxPosPct: 0.08 };
@@ -51,7 +52,7 @@ function applyAdvancedRiskProfile(base, volatilityPref, investmentGoal) {
     return { rsiBuy, rsiSell, stopLoss, takeProfit, maxPosPct };
 }
 const MIN_STOCK_PRICE = 30; // ₹30 min — any NSE equity above this is eligible
-async function generateSignal(symbol, risk = 'Medium', volatilityPref = null, investmentGoal = null) {
+async function generateSignal(symbol, risk = 'Medium', volatilityPref = null, investmentGoal = null, portfolioCtx) {
     try {
         // Run all data fetches in parallel
         // getExecutableQuote: always fresh, cross-validated, never cached
@@ -187,11 +188,38 @@ async function generateSignal(symbol, risk = 'Medium', volatilityPref = null, in
             }
         }
         const reason = notes.join('; ') || 'No signal';
-        if (buy > sell && buy >= 2) {
-            return { symbol, action: 'BUY', strength: buy >= 4 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
+        const topScore = Math.max(buy, sell);
+        const topAction = buy > sell && buy >= 2 ? 'BUY' : sell > buy && sell >= 2 ? 'SELL' : null;
+        if (topAction && portfolioCtx && topScore >= 4) {
+            // Gemini pre-trade reasoning gate — only fires on STRONG signals (score ≥ 4)
+            // MODERATE signals (score 2-3) proceed without veto to conserve Gemini quota
+            const veto = await (0, geminiService_js_1.geminiTradeVeto)({
+                symbol, action: topAction, price: q.price,
+                rsiValue: rsiVal, momentumTrend: ml?.reason,
+                groqSentiment,
+                voteScore: topScore,
+                portfolioContext: {
+                    sectorExposurePct: portfolioCtx.sectorExposurePct,
+                    // Use caller-supplied actual position size; fall back to 5% if not provided
+                    positionSizePct: portfolioCtx.proposedPositionPct ??
+                        (portfolioCtx.totalNAV > 0 ? (portfolioCtx.cashBalance * 0.05 / portfolioCtx.totalNAV) * 100 : 5),
+                    totalHoldings: portfolioCtx.holdings,
+                    cashBalancePct: portfolioCtx.totalNAV > 0
+                        ? (portfolioCtx.cashBalance / portfolioCtx.totalNAV) * 100
+                        : 100,
+                },
+            }).catch(() => ({ verdict: 'EXECUTE', reason: '' }));
+            if (veto.verdict === 'SKIP') {
+                return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Gemini veto: ${veto.reason}`, price: q.price };
+            }
+            const strength = veto.verdict === 'REDUCE'
+                ? 'MODERATE' // cap to MODERATE so position sizing stays smaller
+                : topScore >= 4 ? 'STRONG' : 'MODERATE';
+            const finalReason = veto.reason ? `${reason} | Gemini: ${veto.reason}` : reason;
+            return { symbol, action: topAction, strength, reason: finalReason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
         }
-        if (sell > buy && sell >= 2) {
-            return { symbol, action: 'SELL', strength: sell >= 4 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
+        if (topAction) {
+            return { symbol, action: topAction, strength: topScore >= 4 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
         }
         return { symbol, action: 'HOLD', strength: 'WEAK', reason, price: q.price };
     }
@@ -300,11 +328,21 @@ ctx // structured context for explainability
         const results = await (0, turso_js_2.batchWithResults)(statements);
         const tradeId = results[0].lastInsertRowid;
         logger_js_1.logger.trade(portfolioId, symbol, 'SELL', price, quote?.provider ?? 'unknown', true, reason, { qty: quantity, netAmount, realizedPnl: realizedPnlOnTrade });
+        // Record signal for adaptive weight learning (fire-and-forget; non-blocking)
+        const signalSourceSell = ctx?.groqSentiment != null ? 'news_sentiment'
+            : ctx?.momentumScore != null ? 'momentum'
+                : 'technical';
+        (0, adaptiveEngine_js_1.recordSignalForTracking)(portfolioId, symbol, 'SELL', signalSourceSell, price, new Date().toISOString()).catch(e => console.warn('[Adaptive] recordSignalForTracking failed:', e));
         return tradeId;
     }
     const results = await (0, turso_js_2.batchWithResults)(statements);
     const tradeId = results[0].lastInsertRowid;
     logger_js_1.logger.trade(portfolioId, symbol, 'BUY', price, quote?.provider ?? 'unknown', true, reason, { qty: quantity, netAmount });
+    // Record signal for adaptive weight learning (fire-and-forget; non-blocking)
+    const signalSourceBuy = ctx?.groqSentiment != null ? 'news_sentiment'
+        : ctx?.momentumScore != null ? 'momentum'
+            : 'technical';
+    (0, adaptiveEngine_js_1.recordSignalForTracking)(portfolioId, symbol, 'BUY', signalSourceBuy, price, new Date().toISOString()).catch(e => console.warn('[Adaptive] recordSignalForTracking failed:', e));
     return tradeId;
 }
 async function getPortfolioSummary(portfolioId) {

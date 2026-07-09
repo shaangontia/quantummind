@@ -9,6 +9,26 @@ exports.getMarketIntelligence = getMarketIntelligence;
 const groq_sdk_1 = __importDefault(require("groq-sdk"));
 require("dotenv/config");
 const newsService_js_1 = require("./newsService.js");
+const geminiService_js_1 = require("./geminiService.js");
+// ─── In-process sentiment cache (2-hour TTL) ──────────────────────────────────────────
+// NSE announcements update intraday but not every 5 min.
+// 2-hour TTL gives ~3 refreshes during market hours (9:15-15:30 IST) per symbol,
+// shared across ALL portfolios in the same process — no duplicate Gemini calls.
+const SENTIMENT_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const _sentimentCache = new Map();
+function getCachedSentiment(symbol) {
+    const entry = _sentimentCache.get(symbol);
+    if (!entry)
+        return null;
+    if (Date.now() > entry.expiresAt) {
+        _sentimentCache.delete(symbol);
+        return null;
+    }
+    return entry.result;
+}
+function cacheSentiment(symbol, result) {
+    _sentimentCache.set(symbol, { result, expiresAt: Date.now() + SENTIMENT_TTL_MS });
+}
 let _groq = null;
 function getGroq() {
     if (_groq)
@@ -42,13 +62,18 @@ Respond in this exact JSON format (no markdown):
   "tradeImplication": "<BUY|SELL|HOLD>: <brief reason>"
 }`;
     try {
-        const response = await groq.chat.completions.create({
-            model: 'llama-3.1-8b-instant',
-            messages: [{ role: 'user', content: prompt }],
-            temperature: 0.1,
-            max_tokens: 300,
-        });
-        const text = response.choices[0]?.message?.content?.trim() ?? '';
+        // Try Gemini first (better reasoning); fall back to Groq on rate-limit or error
+        let text = await (0, geminiService_js_1.geminiGenerate)(prompt, { temperature: 0.1, maxTokens: 300 });
+        if (!text) {
+            const groq = getGroq();
+            const response = await groq.chat.completions.create({
+                model: 'llama-3.1-8b-instant',
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0.1,
+                max_tokens: 300,
+            });
+            text = response.choices[0]?.message?.content?.trim() ?? '';
+        }
         // Extract JSON from response
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch)
@@ -68,15 +93,23 @@ Respond in this exact JSON format (no markdown):
         return null;
     }
 }
-// Full pipeline: fetch NSE announcements → Groq analysis
+// Full pipeline: fetch NSE announcements → LLM analysis (Gemini primary, Groq fallback)
+// Cached per symbol per trading day — drastically reduces Gemini API calls.
 async function getGroqStockSentiment(symbol) {
+    // Serve from cache if same trading day (NSE announcements don't change every 5 min)
+    const cached = getCachedSentiment(symbol);
+    if (cached)
+        return cached;
     try {
         const allAnnouncements = await (0, newsService_js_1.fetchAnnouncements)();
         const nseBase = symbol.replace('.NS', '');
         const stockNews = allAnnouncements.filter(a => a.symbol.replace('.NS', '').toUpperCase() === nseBase.toUpperCase());
         if (stockNews.length === 0)
             return null;
-        return await analyseStockNews(symbol, stockNews);
+        const result = await analyseStockNews(symbol, stockNews);
+        if (result)
+            cacheSentiment(symbol, result);
+        return result;
     }
     catch {
         return null;
