@@ -3,21 +3,22 @@ import 'dotenv/config';
 import { fetchAnnouncements, type CorporateAnnouncement } from './newsService.js';
 import { geminiGenerate } from './geminiService.js';
 
-// ─── In-process sentiment cache (per trading day) ─────────────────────────────────
-// NSE announcements don't change every 5 min — one LLM call per symbol per day is enough.
-// Eliminates ~80% of Gemini calls (8 candidates × 108 cycles = 864 -> 8-20 per day).
-const _sentimentCache = new Map<string, { result: LLMSentimentResult; date: string }>();
+// ─── In-process sentiment cache (2-hour TTL) ──────────────────────────────────────────
+// NSE announcements update intraday but not every 5 min.
+// 2-hour TTL gives ~3 refreshes during market hours (9:15-15:30 IST) per symbol,
+// shared across ALL portfolios in the same process — no duplicate Gemini calls.
+const SENTIMENT_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const _sentimentCache = new Map<string, { result: LLMSentimentResult; expiresAt: number }>();
 
 function getCachedSentiment(symbol: string): LLMSentimentResult | null {
-  const today = new Date().toISOString().slice(0, 10);
   const entry = _sentimentCache.get(symbol);
-  if (entry && entry.date === today) return entry.result;
-  _sentimentCache.delete(symbol); // stale entry from yesterday
-  return null;
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { _sentimentCache.delete(symbol); return null; }
+  return entry.result;
 }
 
 function cacheSentiment(symbol: string, result: LLMSentimentResult): void {
-  _sentimentCache.set(symbol, { result, date: new Date().toISOString().slice(0, 10) });
+  _sentimentCache.set(symbol, { result, expiresAt: Date.now() + SENTIMENT_TTL_MS });
 }
 
 let _groq: Groq | null = null;
