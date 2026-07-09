@@ -156,9 +156,12 @@ const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 function googleCallbackUrl() {
-    const base = process.env.FRONTEND_URL || 'http://localhost:5173';
-    // Callback must go through the backend (Vercel serverless function)
-    return `${base.replace('5173', '3000')}/api/auth/google/callback`;
+    // On Vercel, frontend and backend share the same domain — callback goes to the same origin.
+    // Locally, backend runs on 3001 (or whatever Express port) not the Vite dev server port.
+    const base = process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : (process.env.FRONTEND_URL || 'http://localhost:3001');
+    return `${base}/api/auth/google/callback`;
 }
 // Step 1: redirect to Google consent screen
 router.get('/auth/google', (req, res) => {

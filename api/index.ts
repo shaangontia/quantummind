@@ -6,8 +6,10 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 
-const FRONTEND_ORIGIN = process.env.FRONTEND_URL || '';
-if (!FRONTEND_ORIGIN) console.warn('[CORS] FRONTEND_URL env var is not set — CORS will block all cross-origin requests');
+// FRONTEND_URL must be set in Vercel env vars. Falls back to the known Vercel deployment URL
+// so the app stays functional even if the var is omitted.
+const FRONTEND_ORIGIN = process.env.FRONTEND_URL || 'https://quantummind-shaangontia.vercel.app';
+if (!process.env.FRONTEND_URL) console.warn('[CORS] FRONTEND_URL not set — falling back to default origin');
 
 const app = express();
 app.use(cors({
