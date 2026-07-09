@@ -139,6 +139,16 @@ export async function runMigrations(): Promise<void> {
     console.log('[DB] Migration: tars_memory FTS5 triggers ensured');
   } catch (err) { console.warn('[DB] FTS5 triggers skipped:', err); }
 
+  // Admin flag on users — first registered user (id=1) is admin by default
+  try {
+    await db.execute('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0');
+    console.log('[DB] Migration: users.is_admin column added');
+  } catch (_) { /* already exists */ }
+  // Promote user id=1 to admin (the first registered / Google-login user)
+  try {
+    await db.execute('UPDATE users SET is_admin=1 WHERE id=1');
+  } catch (_) { /* ignore */ }
+
   // Phase 7: Volume integration — volume_ratio per trade
   try {
     await db.execute('ALTER TABLE trades ADD COLUMN volume_ratio REAL DEFAULT NULL');

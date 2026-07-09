@@ -12,7 +12,12 @@ const router = Router();
 router.get('/portfolios', verifyAuth, async (req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'no-store');
-    const portfolios = await query('SELECT * FROM portfolios WHERE owner_id = ? ORDER BY created_at DESC', [req.user!.id]);
+    // Admins see all active portfolios; regular users see only their own
+    const user = await queryOne('SELECT is_admin FROM users WHERE id = ?', [req.user!.id]);
+    const isAdmin = Number(user?.is_admin ?? 0) === 1;
+    const portfolios = isAdmin
+      ? await query('SELECT * FROM portfolios WHERE is_active = 1 ORDER BY owner_id, created_at DESC')
+      : await query('SELECT * FROM portfolios WHERE owner_id = ? AND is_active = 1 ORDER BY created_at DESC', [req.user!.id]);
     const enriched = await Promise.all(portfolios.map(async (p: any) => {
       const holdingsValue = await query(
         'SELECT COALESCE(SUM(quantity * COALESCE(current_price, avg_buy_price)), 0) as nav FROM holdings WHERE portfolio_id = ?',
