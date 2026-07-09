@@ -93,7 +93,7 @@ export const HoldingsTable = memo(({ portfolioId }: HoldingsTableProps) => {
                     className="text-right"
                     style={{ color: h.pnlPct >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}
                   >
-                    {h.pnlPct >= 0 ? '+' : ''}{formatPct(h.pnlPct)}
+                    {formatPct(h.pnlPct)}
                   </td>
                   <td className="text-muted">—</td>
                 </tr>

@@ -77,14 +77,14 @@ export const PortfolioStats = memo(({ portfolioId }: PortfolioStatsProps) => {
       <StatCard
         label="Unrealized P&L"
         value={(stats.unrealizedPnl >= 0 ? '+' : '') + formatINR(stats.unrealizedPnl)}
-        sub={(unrealizedPnlPct >= 0 ? '+' : '') + formatPct(unrealizedPnlPct)}
+        sub={formatPct(unrealizedPnlPct)}
         trend={stats.unrealizedPnl >= 0 ? 'up' : 'down'}
         accent={stats.unrealizedPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}
       />
       <StatCard
         label="Total P&L"
         value={(stats.totalPnl >= 0 ? '+' : '') + formatINR(stats.totalPnl)}
-        sub={(totalPnlPct >= 0 ? '+' : '') + formatPct(totalPnlPct) + ' overall'}
+        sub={formatPct(totalPnlPct) + ' overall'}
         trend={stats.totalPnl >= 0 ? 'up' : 'down'}
         accent={stats.totalPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}
       />
