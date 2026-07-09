@@ -6,6 +6,8 @@ import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, e
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
 import { resolveSignalOutcomes } from '../services/adaptiveEngine.js';
+import { geminiCycleFocus, geminiPortfolioInsight } from '../services/geminiService.js';
+import { fetchAnnouncements } from '../services/newsService.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -57,7 +59,11 @@ async function updateAllPrices(): Promise<void> {
   }
 }
 
-async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: string): Promise<{ trades: number; signals: number }> {
+async function runPortfolioTradingCycle(
+  portfolioId: number,
+  riskTolerance: string,
+  geminiSectorFocus: string[] = [],
+): Promise<{ trades: number; signals: number }> {
   const marketOpen = isNseMarketOpen();
   const summary = await getPortfolioSummary(portfolioId);
   const stopLoss = riskTolerance === 'High' ? 0.12 : riskTolerance === 'Low' ? 0.05 : 0.08;
@@ -68,10 +74,24 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
   const _volPref = portfolioProfile?.volatility_preference as string | null ?? null;
   const _invGoal = portfolioProfile?.investment_goal as string | null ?? null;
 
+  // Build portfolio context for Gemini veto gate
+  const portfolioCtxBase = {
+    totalNAV: summary.totalValue,
+    cashBalance: summary.cashBalance,
+    holdings: summary.holdings.length,
+  };
+
   let sellSignalCount = 0;
   // Sell scan
   for (const h of summary.holdings) {
-    const signal = await generateSignal(h.symbol, riskTolerance, _volPref, _invGoal);
+    const { getSymbolSector } = await import('../services/marketData.js');
+    const sector = getSymbolSector(h.symbol);
+    const sectorNAV = summary.holdings
+      .filter(x => getSymbolSector(x.symbol) === sector)
+      .reduce((sum, x) => sum + x.quantity * x.currentPrice, 0);
+    const sectorExposurePct = summary.totalValue > 0 ? (sectorNAV / summary.totalValue) * 100 : 0;
+    const signal = await generateSignal(h.symbol, riskTolerance, _volPref, _invGoal,
+      { ...portfolioCtxBase, sectorExposurePct });
     if (!signal) continue;
     const lossRatio = (signal.price - h.avgBuyPrice) / h.avgBuyPrice;
     let shouldSell = false, reason = signal.reason;
@@ -118,9 +138,18 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
       if (caps.length > 0) preferredCap = caps[0] as 'small' | 'mid' | 'large';
     } catch { /* malformed JSON — treat as open market */ }
   }
-  const cycleUniverse = preferredCap
+  let cycleUniverse = preferredCap
     ? getBiasedCycleWatchlist(fullUniverse, preferredCap, cycleSlot, 50, 0.5)
     : fullUniverse.slice(0, 50);
+
+  // Gemini sector focus: promote stocks in Gemini-preferred sectors to the front of the scan list
+  if (geminiSectorFocus.length > 0) {
+    const { getSymbolSector: getSector } = await import('../services/marketData.js');
+    const focusSet = new Set(geminiSectorFocus.map(s => s.toLowerCase()));
+    const focusStocks = cycleUniverse.filter(s => focusSet.has(getSector(s).toLowerCase()));
+    const otherStocks = cycleUniverse.filter(s => !focusSet.has(getSector(s).toLowerCase()));
+    cycleUniverse = [...focusStocks, ...otherStocks];
+  }
 
   const candidates = cycleUniverse.filter(s => !held.has(s)).slice(0, 8); // up to 8 new position candidates
 
@@ -128,7 +157,15 @@ async function runPortfolioTradingCycle(portfolioId: number, riskTolerance: stri
   const investmentGoal = portfolio?.investment_goal as string | null ?? null;
 
   for (const symbol of candidates) {
-    const signal = await generateSignal(symbol, riskTolerance, volatilityPref, investmentGoal);
+    const { getSymbolSector } = await import('../services/marketData.js');
+    const buySector = getSymbolSector(symbol);
+    const buySectorNAV = refreshed.holdings
+      .filter(x => getSymbolSector(x.symbol) === buySector)
+      .reduce((sum, x) => sum + x.quantity * x.currentPrice, 0);
+    const buySectorPct = refreshed.totalValue > 0 ? (buySectorNAV / refreshed.totalValue) * 100 : 0;
+    const signal = await generateSignal(symbol, riskTolerance, volatilityPref, investmentGoal,
+      { totalNAV: refreshed.totalValue, cashBalance: refreshed.cashBalance,
+        holdings: refreshed.holdings.length, sectorExposurePct: buySectorPct });
     if (!signal || signal.action !== 'BUY' || signal.strength === 'WEAK') continue;
     signalCount++;
     logger.signal(portfolioId, symbol, signal.action, signal.strength, signal.reason, signal.price);
@@ -201,8 +238,24 @@ export async function runMarketCycle(): Promise<void> {
       await fetchAndStoreIndexHistory().catch(e => logger.warn({ reason: `[IndexData] refresh failed: ${e}` }));
     }
     const portfolios = await query('SELECT * FROM portfolios WHERE is_active = 1');
+
+    // Gemini cycle focus: identify sectors most worth scanning this cycle
+    // Non-blocking; market cycle continues even if Gemini is unavailable
+    let geminiSectorFocus: string[] = [];
+    try {
+      const { getCurrentRegime } = await import('../services/adaptiveEngine.js');
+      const regime = await getCurrentRegime().catch(() => null);
+      const regimeLabel = regime ? `${regime.regime} (RSI buy<${regime.rsiBuy}, sell>${regime.rsiSell})` : 'UNKNOWN';
+      const announcements = await fetchAnnouncements().catch(() => []);
+      const headlines = announcements.slice(0, 20).map(a => `[${a.symbol}] ${a.category}: ${a.headline}`);
+      geminiSectorFocus = await geminiCycleFocus(headlines, regimeLabel);
+      if (geminiSectorFocus.length > 0) {
+        console.log(`[Gemini] Cycle focus sectors: ${geminiSectorFocus.join(', ')}`);
+      }
+    } catch { /* non-critical */ }
+
     for (const p of portfolios) {
-      const { trades, signals } = await runPortfolioTradingCycle(Number(p.id), p.risk_tolerance as string);
+      const { trades, signals } = await runPortfolioTradingCycle(Number(p.id), p.risk_tolerance as string, geminiSectorFocus);
       tradesExecuted += trades;
       signalsGenerated += signals;
     }
@@ -227,9 +280,48 @@ export function startScheduler(): void {
   cron.schedule('0 * * * *', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
   // After-market snapshot
   cron.schedule('0 16 * * 1-5', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
-  // Nightly adaptive learning: resolve signal outcomes + recalibrate weights
+  // Nightly adaptive learning: resolve signal outcomes + recalibrate weights + Gemini portfolio insights
   // Runs at 20:00 IST on weekdays — 5+ hours after market close so exit prices are settled
-  cron.schedule('0 20 * * 1-5', () => { resolveSignalOutcomes().catch(console.error); }, { timezone: 'Asia/Kolkata' });
+  cron.schedule('0 20 * * 1-5', async () => {
+    await resolveSignalOutcomes().catch(console.error);
+    // Gemini portfolio health check for each active portfolio (best-effort, stored in RAG)
+    try {
+      const portfolios = await query('SELECT * FROM portfolios WHERE is_active = 1');
+      for (const p of portfolios) {
+        const summary = await getPortfolioSummary(Number(p.id)).catch(() => null);
+        if (!summary) continue;
+        const sectorBreakdown: Record<string, number> = {};
+        const { getSymbolSector } = await import('../services/marketData.js');
+        for (const h of summary.holdings) {
+          const sec = getSymbolSector(h.symbol) as string;
+          sectorBreakdown[sec] = (sectorBreakdown[sec] ?? 0) + (h.quantity * h.currentPrice / summary.totalValue) * 100;
+        }
+        const topHoldings = summary.holdings
+          .sort((a, b) => (b.quantity * b.currentPrice) - (a.quantity * a.currentPrice))
+          .slice(0, 5)
+          .map(h => ({
+            symbol: h.symbol,
+            weight: summary.totalValue > 0 ? (h.quantity * h.currentPrice / summary.totalValue) * 100 : 0,
+            pnlPct: h.avgBuyPrice > 0 ? ((h.currentPrice - h.avgBuyPrice) / h.avgBuyPrice) * 100 : 0,
+          }));
+        const navChange = Number(p.initial_capital) > 0
+          ? ((summary.totalValue - Number(p.initial_capital)) / Number(p.initial_capital)) * 100 : 0;
+        const winRateRow = await queryOne(
+          `SELECT CAST(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS REAL) / MAX(COUNT(*), 1) as wr
+           FROM signal_outcomes WHERE portfolio_id = ? AND resolved = 1`, [Number(p.id)]
+        ).catch(() => null);
+        const winRate = Number(winRateRow?.wr ?? 0.5);
+        const insight = await geminiPortfolioInsight(
+          String(p.name), navChange, topHoldings, sectorBreakdown, winRate
+        ).catch(() => null);
+        if (insight) {
+          const { rememberFact } = await import('../services/ragService.js');
+          await rememberFact(`Portfolio insight for ${p.name}: ${insight}`, 'news_analysis', String(p.id));
+          console.log(`[Gemini] Portfolio insight stored for ${p.name}`);
+        }
+      }
+    } catch (err) { console.warn('[Gemini] Portfolio insight failed:', err); }
+  }, { timezone: 'Asia/Kolkata' });
 
   console.log('[Scheduler] All cron jobs active (IST)');
 }

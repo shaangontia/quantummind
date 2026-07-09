@@ -13,6 +13,7 @@ import { getStockSentiment } from './newsService.js';
 import { getMLBoost } from './mlEngine.js';
 import { getGroqStockSentiment } from './groqService.js';
 import { getSignalWeights, getCurrentRegime, recordSignalForTracking } from './adaptiveEngine.js';
+import { geminiTradeVeto } from './geminiService.js';
 
 export interface TradeSignal {
   symbol: string;
@@ -97,11 +98,19 @@ export function applyAdvancedRiskProfile(
 
 const MIN_STOCK_PRICE = 30; // ₹30 min — any NSE equity above this is eligible
 
+export interface PortfolioSignalContext {
+  totalNAV: number;
+  cashBalance: number;
+  holdings: number;
+  sectorExposurePct?: number;  // % NAV in the same sector as this symbol
+}
+
 export async function generateSignal(
   symbol: string,
   risk = 'Medium',
   volatilityPref: string | null = null,
-  investmentGoal: string | null = null
+  investmentGoal: string | null = null,
+  portfolioCtx?: PortfolioSignalContext,
 ): Promise<TradeSignal | null> {
   try {
     // Run all data fetches in parallel
@@ -192,11 +201,40 @@ export async function generateSignal(
     }
 
     const reason = notes.join('; ') || 'No signal';
-    if (buy > sell && buy >= 2) {
-      return { symbol, action: 'BUY',  strength: buy  >= 4 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
+    const topScore = Math.max(buy, sell);
+    const topAction: 'BUY' | 'SELL' | null = buy > sell && buy >= 2 ? 'BUY' : sell > buy && sell >= 2 ? 'SELL' : null;
+
+    if (topAction && portfolioCtx) {
+      // Gemini pre-trade reasoning gate — validates signal against portfolio context
+      const veto = await geminiTradeVeto({
+        symbol, action: topAction, price: q.price,
+        rsiValue: rsiVal, momentumTrend: ml?.reason,
+        groqSentiment,
+        voteScore: topScore,
+        portfolioContext: {
+          sectorExposurePct: portfolioCtx.sectorExposurePct,
+          positionSizePct: portfolioCtx.totalNAV > 0
+            ? (portfolioCtx.cashBalance * 0.05 / portfolioCtx.totalNAV) * 100
+            : 5,
+          totalHoldings: portfolioCtx.holdings,
+          cashBalancePct: portfolioCtx.totalNAV > 0
+            ? (portfolioCtx.cashBalance / portfolioCtx.totalNAV) * 100
+            : 100,
+        },
+      }).catch(() => ({ verdict: 'EXECUTE' as const, reason: '' }));
+
+      if (veto.verdict === 'SKIP') {
+        return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Gemini veto: ${veto.reason}`, price: q.price };
+      }
+      const strength = veto.verdict === 'REDUCE'
+        ? 'MODERATE'  // cap to MODERATE so position sizing stays smaller
+        : topScore >= 4 ? 'STRONG' : 'MODERATE';
+      const finalReason = veto.reason ? `${reason} | Gemini: ${veto.reason}` : reason;
+      return { symbol, action: topAction, strength, reason: finalReason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
     }
-    if (sell > buy && sell >= 2) {
-      return { symbol, action: 'SELL', strength: sell >= 4 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
+
+    if (topAction) {
+      return { symbol, action: topAction, strength: topScore >= 4 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
     }
     return { symbol, action: 'HOLD', strength: 'WEAK', reason, price: q.price };
   } catch (err) {
