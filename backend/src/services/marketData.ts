@@ -13,7 +13,7 @@ export interface StockQuote {
   shortName?: string;
   timestamp: Date;
   /** Which provider delivered this quote */
-  provider: 'yahoo_query2' | 'yahoo_query1' | 'groww_unofficial' | 'cached';
+  provider: 'twelve_data' | 'yahoo_query2' | 'yahoo_query1' | 'groww_unofficial' | 'cached';
   /** Whether this quote is fresh enough to trade on */
   isFresh: boolean;
 }
@@ -184,7 +184,87 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<Fe
   });
 }
 
-// ── Yahoo Finance (primary) ───────────────────────────────────────────────────
+// ── Twelve Data (primary — works from cloud IPs, 800 calls/day free) ────────
+// Symbol format: TCS.NS → TCS:NSE
+function toTwelveDataSymbol(nseSymbol: string): string {
+  return nseSymbol.replace(/\.NS$/i, ':NSE');
+}
+
+async function getQuoteTwelveData(nseSymbol: string): Promise<StockQuote | null> {
+  const apiKey = process.env.TWELVE_DATA_API_KEY;
+  if (!apiKey) return null; // not configured — skip silently
+
+  const tdSymbol = toTwelveDataSymbol(nseSymbol);
+  const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(tdSymbol)}&apikey=${apiKey}`;
+  const start = Date.now();
+  try {
+    const { data: d, statusCode, latencyMs } = await httpsGet(url);
+
+    if (d?.status === 'error' || !d?.close) {
+      console.warn(`[MarketData] twelve_data: ${d?.message ?? 'no close price'} for ${nseSymbol} (${latencyMs}ms)`);
+      return null;
+    }
+
+    const price = parseFloat(d.close);
+    validatePrice(price, nseSymbol, 'twelve_data');
+
+    const ts = d.timestamp ? new Date(Number(d.timestamp) * 1000) : new Date();
+    const prevClose = parseFloat(d.previous_close ?? d.close);
+    const quote: StockQuote = {
+      symbol: nseSymbol,
+      price,
+      change: parseFloat(d.change ?? '0'),
+      changePct: parseFloat(d.percent_change ?? '0'),
+      volume: parseInt(d.volume ?? '0', 10),
+      fiftyTwoWeekHigh: d.fifty_two_week?.high ? parseFloat(d.fifty_two_week.high) : undefined,
+      fiftyTwoWeekLow: d.fifty_two_week?.low ? parseFloat(d.fifty_two_week.low) : undefined,
+      shortName: d.name,
+      timestamp: ts,
+      provider: 'twelve_data',
+      isFresh: isQuoteFresh(ts),
+    };
+    console.log(`[MarketData] twelve_data OK ${nseSymbol} ₹${price} (${latencyMs}ms)`);
+    return quote;
+  } catch (err) {
+    console.warn(`[MarketData] twelve_data FAIL ${nseSymbol}: ${String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Batch fetch via Twelve Data — up to 120 symbols per call.
+ * Returns a map of nseSymbol → StockQuote (only successful ones).
+ */
+async function batchQuoteTwelveData(nseSymbols: string[]): Promise<Map<string, StockQuote>> {
+  const apiKey = process.env.TWELVE_DATA_API_KEY;
+  if (!apiKey || nseSymbols.length === 0) return new Map();
+
+  const tdSymbols = nseSymbols.map(toTwelveDataSymbol);
+  const url = `https://api.twelvedata.com/price?symbol=${encodeURIComponent(tdSymbols.join(','))}&apikey=${apiKey}`;
+  const result = new Map<string, StockQuote>();
+  try {
+    const { data, latencyMs } = await httpsGet(url);
+    for (let i = 0; i < nseSymbols.length; i++) {
+      const nse = nseSymbols[i];
+      const td = tdSymbols[i];
+      const entry = data[td] ?? data[td.split(':')[0]];
+      if (!entry?.price) continue;
+      const price = parseFloat(entry.price);
+      if (price <= 0) continue;
+      const ts = new Date();
+      result.set(nse, {
+        symbol: nse, price, change: 0, changePct: 0, volume: 0,
+        timestamp: ts, provider: 'twelve_data', isFresh: isQuoteFresh(ts),
+      });
+    }
+    console.log(`[MarketData] twelve_data batch: ${result.size}/${nseSymbols.length} quotes OK (${latencyMs}ms)`);
+  } catch (err) {
+    console.warn(`[MarketData] twelve_data batch FAIL: ${String(err)}`);
+  }
+  return result;
+}
+
+// ── Yahoo Finance (fallback) ───────────────────────────────────────────────────
 async function getQuoteYahoo(
   nseSymbol: string,
   cdnHost: 'query2' | 'query1'
@@ -307,13 +387,18 @@ export async function getDisplayQuote(symbol: string): Promise<StockQuote> {
 export async function getQuote(symbol: string): Promise<StockQuote> {
   const nseSymbol = toNseSymbol(symbol);
 
+  // Primary: Twelve Data (works from cloud IPs, 800 calls/day free)
+  const td = await getQuoteTwelveData(nseSymbol);
+  if (td) return td;
+
+  // Fallback: Yahoo Finance CDN chain
   const q2 = await getQuoteYahoo(nseSymbol, 'query2');
   if (q2) return q2;
 
   const q1 = await getQuoteYahoo(nseSymbol, 'query1');
   if (q1) return q1;
 
-  console.warn(`[MarketData] Both Yahoo CDNs failed for ${nseSymbol} — trying Groww unofficial fallback`);
+  console.warn(`[MarketData] Yahoo CDNs failed for ${nseSymbol} — trying Groww unofficial fallback`);
   const groww = await getQuoteGrowwUnofficial(nseSymbol);
   if (groww) return groww;
 
@@ -329,45 +414,59 @@ export async function getQuote(symbol: string): Promise<StockQuote> {
 export async function getExecutableQuote(symbol: string): Promise<StockQuote> {
   const nseSymbol = toNseSymbol(symbol);
 
-  // Fetch from both Yahoo CDNs independently
-  const [q2, q1] = await Promise.all([
+  // Primary: Twelve Data — fetch independently from Yahoo for cross-validation
+  const [td, q2, q1] = await Promise.all([
+    getQuoteTwelveData(nseSymbol),
     getQuoteYahoo(nseSymbol, 'query2'),
     getQuoteYahoo(nseSymbol, 'query1'),
   ]);
 
-  // Both succeeded — cross-source agreement check
+  // Best case: Twelve Data + at least one Yahoo — cross-validate
+  const yahooPrimary = q2 ?? q1;
+  if (td && yahooPrimary) {
+    const diff = Math.abs(td.price - yahooPrimary.price) / Math.max(td.price, yahooPrimary.price);
+    if (diff > 0.02) {
+      console.warn(
+        `[ExecutableQuote] twelve_data vs yahoo disagreement for ${nseSymbol}: ` +
+        `₹${td.price} vs ₹${yahooPrimary.price} (${(diff*100).toFixed(2)}%) — using Twelve Data (primary)`
+      );
+    }
+    if (!td.isFresh) throw new Error(`[ExecutableQuote] Stale Twelve Data price for ${nseSymbol} — no trade`);
+    return td;
+  }
+
+  // Twelve Data only (Yahoo blocked)
+  if (td) {
+    if (!td.isFresh) throw new Error(`[ExecutableQuote] Stale Twelve Data price for ${nseSymbol} — no trade`);
+    console.warn(`[ExecutableQuote] Yahoo unavailable for ${nseSymbol} — using Twelve Data only`);
+    return td;
+  }
+
+  // Twelve Data unavailable — fall through to Yahoo
   if (q2 && q1) {
     const diff = Math.abs(q2.price - q1.price) / Math.max(q2.price, q1.price);
     if (diff > 0.02) {
       throw new Error(
-        `[ExecutableQuote] Provider disagreement for ${nseSymbol}: ` +
+        `[ExecutableQuote] Yahoo provider disagreement for ${nseSymbol}: ` +
         `query2=₹${q2.price} vs query1=₹${q1.price} (diff=${(diff * 100).toFixed(2)}%) — no trade`
       );
     }
-    // Agreement within 2% — use query2 (lower latency CDN)
-    if (!q2.isFresh) throw new Error(`[ExecutableQuote] Stale price from query2 for ${nseSymbol} — no trade`);
+    if (!q2.isFresh) throw new Error(`[ExecutableQuote] Stale Yahoo price for ${nseSymbol} — no trade`);
     return q2;
   }
 
-  // Only one Yahoo CDN succeeded
-  const yahooPrimary = q2 ?? q1;
   if (yahooPrimary) {
     if (!yahooPrimary.isFresh) throw new Error(`[ExecutableQuote] Stale Yahoo price for ${nseSymbol} — no trade`);
-    // Single source — no cross-check possible, log warning
-    console.warn(`[ExecutableQuote] Single Yahoo CDN succeeded for ${nseSymbol} — cannot cross-validate`);
+    console.warn(`[ExecutableQuote] Single Yahoo CDN for ${nseSymbol} — cannot cross-validate`);
     return yahooPrimary;
   }
 
-  // Both Yahoo CDNs failed — try Groww unofficial ONLY if market is open
-  // Groww is treated as last resort; cross-validation impossible
-  console.warn(`[ExecutableQuote] Both Yahoo CDNs failed for ${nseSymbol} — falling back to Groww unofficial`);
+  // All cloud sources failed — last resort: Groww unofficial
+  console.warn(`[ExecutableQuote] All primary sources failed for ${nseSymbol} — Groww last resort`);
   const groww = await getQuoteGrowwUnofficial(nseSymbol);
   if (groww) {
     if (!groww.isFresh) throw new Error(`[ExecutableQuote] Stale Groww price for ${nseSymbol} — no trade`);
-    // Log clearly that this trade is executing on unofficial data
-    console.warn(
-      `[ExecutableQuote] ⚠ Executing on Groww unofficial price for ${nseSymbol}: ₹${groww.price} — no cross-validation available`
-    );
+    console.warn(`[ExecutableQuote] ⚠ Executing on Groww unofficial for ${nseSymbol}: ₹${groww.price}`);
     return groww;
   }
 
@@ -375,7 +474,26 @@ export async function getExecutableQuote(symbol: string): Promise<StockQuote> {
 }
 
 export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]> {
-  const results = await Promise.allSettled(symbols.map(getQuote));
+  const nseSymbols = symbols.map(toNseSymbol);
+
+  // Prefer Twelve Data batch (one API call for all symbols — preserves daily quota)
+  if (process.env.TWELVE_DATA_API_KEY) {
+    const batchMap = await batchQuoteTwelveData(nseSymbols);
+    if (batchMap.size > 0) {
+      // Fill in any missing symbols via individual fallback calls
+      const missing = nseSymbols.filter(s => !batchMap.has(s));
+      if (missing.length > 0) {
+        const fallbacks = await Promise.allSettled(missing.map(getQuote));
+        for (const r of fallbacks) {
+          if (r.status === 'fulfilled') batchMap.set(r.value.symbol, r.value);
+        }
+      }
+      return nseSymbols.map(s => batchMap.get(s)).filter(Boolean) as StockQuote[];
+    }
+  }
+
+  // Twelve Data not configured or failed — fall back to individual calls
+  const results = await Promise.allSettled(nseSymbols.map(getQuote));
   const quotes: StockQuote[] = [];
   for (const r of results) {
     if (r.status === 'fulfilled') quotes.push(r.value);
