@@ -92,7 +92,8 @@ async function runPortfolioTradingCycle(
     const sectorExposurePct = summary.totalValue > 0 ? (sectorNAV / summary.totalValue) * 100 : 0;
     const signal = await generateSignal(h.symbol, riskTolerance, _volPref, _invGoal,
       { ...portfolioCtxBase, sectorExposurePct });
-    if (!signal) continue;
+    // Guard: null signal = no valid price data. Zero/invalid price must never reach stop-loss math.
+    if (!signal || signal.price <= 0) continue;
     const lossRatio = (signal.price - h.avgBuyPrice) / h.avgBuyPrice;
     let shouldSell = false, reason = signal.reason;
 

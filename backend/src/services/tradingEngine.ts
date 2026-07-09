@@ -126,12 +126,15 @@ export async function generateSignal(
 
     const q = quote.status === 'fulfilled' ? quote.value : null;
     if (!q || q.price < MIN_STOCK_PRICE) {
-      return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Penny stock or data error (price=${q?.price ?? 0})`, price: q?.price ?? 0 };
+      // Return null — callers already guard `if (!signal) continue`.
+      // Returning a HOLD with price=0 was causing false stop-loss triggers.
+      console.warn(`[Signal] No valid price for ${symbol} (${q?.price ?? 'null'}) — returning null`);
+      return null;
     }
     // Fail-closed: do not act on stale prices during market hours
     if (!q.isFresh) {
       console.warn(`[Signal] Stale price for ${symbol} from ${q.provider} — forcing HOLD`);
-      return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Stale price from ${q.provider} — no trade`, price: q.price };
+      return null;
     }
 
     const rsiVal = rsi.status === 'fulfilled' ? rsi.value : null;
@@ -273,6 +276,14 @@ export async function executeTrade(
   quote?: import('./marketData.js').StockQuote,  // pass executable quote for risk engine
   ctx?: TradeContext                              // structured context for explainability
 ): Promise<number | null> {
+  // Hard guard: never execute a trade at zero or sub-penny price.
+  // Zero price = market data unavailable (Yahoo Finance blocked on cloud IPs).
+  if (!price || price < MIN_STOCK_PRICE) {
+    logger.warn({ job: 'trade-execution', portfolioId, symbol, phase: 'execution',
+      reason: `Aborted: invalid price ${price} — trade would corrupt realized P&L` });
+    return null;
+  }
+
   const portfolio = await queryOne('SELECT * FROM portfolios WHERE id = ?', [portfolioId]);
   if (!portfolio || !portfolio.is_active) return null;
 
