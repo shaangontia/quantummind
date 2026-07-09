@@ -100,15 +100,13 @@ export const PortfolioDashboard = () => {
           <button className="btn btn-ghost" onClick={() => void refetch()} title="Refresh prices">
             ↻ Refresh
           </button>
-          {portfolio && currentUser && (
-            (currentUser.isAdmin || portfolio.user_id === currentUser.id)
-          ) && (
+          {portfolio && currentUser && (currentUser.isAdmin || portfolio.user_id === currentUser.id) && (
             <button
               className="btn btn-ghost"
               onClick={() => setIsEditOpen(true)}
-              title="Edit portfolio settings"
+              title={portfolio.trade_count ? 'Strategy locked — only name & description editable' : 'Edit portfolio settings'}
             >
-              ✏ Edit
+              {portfolio.trade_count ? '🔒' : '✏'} Edit
             </button>
           )}
           <Link to={`/portfolios/${portfolioId}/signals`} className="btn btn-ghost">Signals</Link>

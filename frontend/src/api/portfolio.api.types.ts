@@ -22,6 +22,8 @@ export interface Portfolio {
   is_active: number;
   /** Owner user ID — included in API response for ownership checks */
   user_id?: number;
+  /** Total trades executed — > 0 means strategy is locked */
+  trade_count?: number;
   created_at: string;
   updated_at: string;
 }
