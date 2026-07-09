@@ -4,6 +4,7 @@ export interface AuthUser {
   name?: string;
   avatarUrl?: string;
   createdAt: string;
+  isAdmin?: boolean;
 }
 
 export interface LoginPayload {

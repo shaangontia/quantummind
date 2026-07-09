@@ -12,6 +12,7 @@ import { AdaptivePanel } from '../../../intelligence/ui/AdaptivePanel/AdaptivePa
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
+import { useGetCurrentUserQuery } from '../../../../store/auth/index.ts';
 import { riskColor } from '../../model/portfolios.utils.ts';
 import { isNSEMarketOpen } from '../../model/portfolios.marketHours.ts';
 import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -30,6 +31,7 @@ export const PortfolioDashboard = () => {
   const navigate = useNavigate();
 
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const { data: currentUser } = useGetCurrentUserQuery();
 
   // Pull the full Portfolio object from the list cache — already fetched on the portfolios page.
   // selectFromResult prevents this component re-rendering when OTHER portfolios change.
@@ -98,7 +100,9 @@ export const PortfolioDashboard = () => {
           <button className="btn btn-ghost" onClick={() => void refetch()} title="Refresh prices">
             ↻ Refresh
           </button>
-          {portfolio && (
+          {portfolio && currentUser && (
+            (currentUser.isAdmin || portfolio.user_id === currentUser.id)
+          ) && (
             <button
               className="btn btn-ghost"
               onClick={() => setIsEditOpen(true)}

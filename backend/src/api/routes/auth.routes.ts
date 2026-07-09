@@ -51,8 +51,9 @@ router.post('/auth/logout', (_req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-router.get('/auth/me', verifyAuth, (req: Request, res: Response) => {
-  res.json({ success: true, data: req.user });
+router.get('/auth/me', verifyAuth, async (req: Request, res: Response) => {
+  const user = await queryOne('SELECT is_admin FROM users WHERE id = ?', [req.user!.id]);
+  res.json({ success: true, data: { ...req.user, isAdmin: Number(user?.is_admin ?? 0) === 1 } });
 });
 
 router.get('/auth/google', (req: Request, res: Response) => {

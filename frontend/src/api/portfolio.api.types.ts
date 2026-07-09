@@ -20,6 +20,8 @@ export interface Portfolio {
   investment_goal?: 'growth' | 'income' | 'retirement';
   max_drawdown_pct?: number;
   is_active: number;
+  /** Owner user ID — included in API response for ownership checks */
+  user_id?: number;
   created_at: string;
   updated_at: string;
 }

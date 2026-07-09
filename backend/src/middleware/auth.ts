@@ -87,8 +87,13 @@ export async function verifyOwner(req: Request, res: Response, next: NextFunctio
     return;
   }
   if (Number(portfolio.owner_id) !== req.user!.id) {
-    res.status(403).json({ success: false, error: 'Access denied' });
-    return;
+    // Admin bypass: admins can access any portfolio (TRADING_LOCK still applies independently)
+    const user = await queryOne('SELECT is_admin FROM users WHERE id = ?', [req.user!.id]);
+    const isAdmin = Number(user?.is_admin ?? 0) === 1;
+    if (!isAdmin) {
+      res.status(403).json({ success: false, error: 'Access denied' });
+      return;
+    }
   }
   next();
 }
