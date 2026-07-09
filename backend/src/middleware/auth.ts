@@ -14,6 +14,8 @@ import { queryOne } from '../db/turso.js';
 export interface AuthUser {
   id: number;
   email: string;
+  name?: string;
+  avatarUrl?: string;
 }
 
 // Extend Express Request to carry the authenticated user
@@ -33,7 +35,11 @@ function jwtSecret(): string {
 
 /** Sign a JWT valid for 30 days */
 export function signToken(user: AuthUser): string {
-  return jwt.sign({ id: user.id, email: user.email }, jwtSecret(), { expiresIn: '30d' });
+  return jwt.sign(
+    { id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl },
+    jwtSecret(),
+    { expiresIn: '30d' },
+  );
 }
 
 /** Verify token from `qm_token` cookie; attach user to req or reject 401 */

@@ -115,7 +115,109 @@ router.post('/auth/logout', (_req: Request, res: Response) => {
 });
 
 router.get('/auth/me', verifyAuth, (req: Request, res: Response) => {
-  res.json({ success: true, data: req.user });
+  res.json({ success: true, data: req.user }); // includes id, email, name, avatarUrl
+});
+
+// ─── Google OAuth routes ───────────────────────────────────────────────────────────────
+
+const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
+
+function googleCallbackUrl(): string {
+  const base = process.env.FRONTEND_URL || 'http://localhost:5173';
+  // Callback must go through the backend (Vercel serverless function)
+  return `${base.replace('5173', '3000')}/api/auth/google/callback`;
+}
+
+// Step 1: redirect to Google consent screen
+router.get('/auth/google', (req: Request, res: Response) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) return res.status(503).json({ success: false, error: 'Google OAuth not configured (GOOGLE_CLIENT_ID missing)' });
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: googleCallbackUrl(),
+    response_type: 'code',
+    scope: 'openid email profile',
+    access_type: 'online',
+    prompt: 'select_account',
+  });
+  res.redirect(`${GOOGLE_AUTH_URL}?${params.toString()}`);
+});
+
+// Step 2: Google calls back with ?code=... — exchange for user info, set cookie
+router.get('/auth/google/callback', async (req: Request, res: Response) => {
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const { code, error } = req.query;
+
+  if (error || !code) {
+    return res.redirect(`${frontendUrl}/login?error=google_denied`);
+  }
+
+  try {
+    const clientId     = process.env.GOOGLE_CLIENT_ID!;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
+    if (!clientId || !clientSecret) throw new Error('Google OAuth not configured');
+
+    // Exchange code for tokens
+    const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code: String(code),
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: googleCallbackUrl(),
+        grant_type: 'authorization_code',
+      }),
+    });
+    if (!tokenRes.ok) throw new Error(`Token exchange failed: ${tokenRes.status}`);
+    const tokens = await tokenRes.json() as { access_token: string };
+
+    // Fetch user profile
+    const profileRes = await fetch(GOOGLE_USERINFO_URL, {
+      headers: { 'Authorization': `Bearer ${tokens.access_token}` },
+    });
+    if (!profileRes.ok) throw new Error('Failed to fetch Google profile');
+    const profile = await profileRes.json() as { id: string; email: string; name: string; picture: string };
+
+    // Find or create user
+    let user = await queryOne('SELECT id, email, name, avatar_url FROM users WHERE google_id = ?', [profile.id]);
+    if (!user) {
+      // Check if email already exists (registered with password)
+      const existing = await queryOne('SELECT id, email FROM users WHERE email = ?', [profile.email]);
+      if (existing) {
+        // Link Google ID to existing account
+        await run('UPDATE users SET google_id = ?, name = ?, avatar_url = ? WHERE id = ?',
+          [profile.id, profile.name, profile.picture, Number(existing.id)]);
+        user = await queryOne('SELECT id, email, name, avatar_url FROM users WHERE id = ?', [Number(existing.id)]);
+      } else {
+        // New user via Google
+        const result = await run(
+          'INSERT INTO users (email, google_id, name, avatar_url) VALUES (?, ?, ?, ?)',
+          [profile.email, profile.id, profile.name, profile.picture]
+        );
+        const userId = result.lastInsertRowid;
+        // Claim all unclaimed portfolios for first user (same logic as register)
+        await run('UPDATE portfolios SET owner_id = ? WHERE owner_id IS NULL', [userId]);
+        user = await queryOne('SELECT id, email, name, avatar_url FROM users WHERE id = ?', [userId]);
+      }
+    }
+    if (!user) throw new Error('User record not found after upsert');
+
+    const token = signToken({
+      id: Number(user.id),
+      email: String(user.email),
+      name: user.name ? String(user.name) : undefined,
+      avatarUrl: user.avatar_url ? String(user.avatar_url) : undefined,
+    });
+    res.cookie('qm_token', token, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.redirect(`${frontendUrl}/`);
+  } catch (err) {
+    console.error('[GoogleOAuth] callback error:', err);
+    res.redirect(`${frontendUrl}/login?error=google_failed`);
+  }
 });
 
 // ─── Portfolios ──────────────────────────────────────────────────────────────
