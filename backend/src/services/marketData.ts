@@ -12,6 +12,10 @@ export interface StockQuote {
   fiftyTwoWeekLow?: number;
   shortName?: string;
   timestamp: Date;
+  /** Trailing twelve-month P/E ratio — null if loss-making or unavailable */
+  peRatio?: number | null;
+  /** Trailing twelve-month EPS */
+  eps?: number | null;
   /** Which provider delivered this quote */
   provider: 'twelve_data' | 'yahoo_query2' | 'yahoo_query1' | 'groww_unofficial' | 'cached';
   /** Whether this quote is fresh enough to trade on */
@@ -240,11 +244,13 @@ async function getQuoteTwelveData(nseSymbol: string): Promise<StockQuote | null>
       fiftyTwoWeekHigh: d.fifty_two_week?.high ? parseFloat(d.fifty_two_week.high) : undefined,
       fiftyTwoWeekLow: d.fifty_two_week?.low ? parseFloat(d.fifty_two_week.low) : undefined,
       shortName: d.name,
+      peRatio: d.pe != null && d.pe !== 'N/A' ? parseFloat(d.pe) : null,
+      eps: d.eps != null && d.eps !== 'N/A' ? parseFloat(d.eps) : null,
       timestamp: ts,
       provider: 'twelve_data',
       isFresh: isQuoteFresh(ts),
     };
-    console.log(`[MarketData] twelve_data OK ${nseSymbol} ₹${price} (${latencyMs}ms)`);
+    console.log(`[MarketData] twelve_data OK ${nseSymbol} ₹${price} PE=${quote.peRatio ?? 'N/A'} (${latencyMs}ms)`);
     // Populate cycle cache so repeat lookups within same cycle are free
     memCache.set(`${TWELVE_DATA_CACHE_PREFIX}${nseSymbol}`, quote, TWELVE_DATA_CACHE_TTL);
     return quote;
@@ -314,6 +320,8 @@ async function getQuoteYahoo(
       fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh,
       fiftyTwoWeekLow: meta.fiftyTwoWeekLow,
       shortName: meta.shortName,
+      peRatio: meta.trailingPE ?? null,
+      eps: meta.trailingEps ?? null,
       timestamp: ts,
       provider,
       isFresh: isQuoteFresh(ts),

@@ -180,6 +180,32 @@ export async function generateSignal(
     if (q.changePct < -4) { buy  += 1; notes.push(`Day drop ${q.changePct.toFixed(1)}%`); }
     if (q.changePct >  5) { sell += 1; notes.push(`Day surge ${q.changePct.toFixed(1)}%`); }
 
+    // ── P/E Valuation filter ───────────────────────────────────────────────
+    // Negative / null P/E = loss-making; penalise buys.
+    // Very high P/E (>60) = richly valued; reduce buy enthusiasm.
+    // Low P/E (<15) = cheap; bonus on buy signal.
+    if (q.peRatio !== undefined) {
+      if (q.peRatio === null || q.peRatio < 0) {
+        // Loss-making company — do not penalise sell but dampen buy
+        buy  -= 1;
+        notes.push('P/E: loss-making (EPS negative) — BUY dampened');
+      } else if (q.peRatio > 80) {
+        sell += 1;
+        notes.push(`P/E: extremely overvalued (${q.peRatio.toFixed(0)}x) — SELL pressure`);
+      } else if (q.peRatio > 60) {
+        buy  -= 1;
+        notes.push(`P/E: richly valued (${q.peRatio.toFixed(0)}x) — BUY dampened`);
+      } else if (q.peRatio < 8 && q.peRatio > 0) {
+        buy  += 2;
+        notes.push(`P/E: deeply undervalued (${q.peRatio.toFixed(0)}x) — strong BUY basis`);
+      } else if (q.peRatio < 15) {
+        buy  += 1;
+        notes.push(`P/E: undervalued (${q.peRatio.toFixed(0)}x) — BUY supported`);
+      } else {
+        notes.push(`P/E: ${q.peRatio.toFixed(0)}x (fair value range)`);
+      }
+    }
+
     // ── Rule-based news sentiment ───────────────────────────────────────────
     if (sent && sent.score !== 0) {
       if (sent.score >= 2)       { buy  += 2; notes.push(`NSE: ${sent.label}`); }
