@@ -15,46 +15,37 @@ interface RiskClassification {
 }
 
 /**
- * Calls GET /api/risk/classify with debounce (400ms) and returns the
- * derived risk level + explanation. Falls back to null while loading.
+ * Calls GET /api/risk/classify ONCE and returns the derived risk level + explanation.
+ * Once a classification is received it is frozen — no further API calls are made.
+ * This keeps the risk label stable while the user finishes filling the form.
  */
 export const useRiskClassifier = (params: RiskClassifyParams): RiskClassification | null => {
   const [result, setResult] = useState<RiskClassification | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const classifiedRef = useRef(false);
 
   useEffect(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
+    // Once classified, never recalculate
+    if (classifiedRef.current) return;
 
-    timerRef.current = setTimeout(async () => {
-      const { targetReturnPct, investmentHorizonMonths, maxDrawdownPct, volatilityPreference } = params;
-      const qs = new URLSearchParams({
-        targetReturnPct: String(targetReturnPct),
-        investmentHorizonMonths: String(investmentHorizonMonths),
-        ...(maxDrawdownPct != null ? { maxDrawdownPct: String(maxDrawdownPct) } : {}),
-        ...(volatilityPreference ? { volatilityPreference } : {}),
-      });
+    const { targetReturnPct, investmentHorizonMonths, maxDrawdownPct, volatilityPreference } = params;
+    const qs = new URLSearchParams({
+      targetReturnPct: String(targetReturnPct),
+      investmentHorizonMonths: String(investmentHorizonMonths),
+      ...(maxDrawdownPct != null ? { maxDrawdownPct: String(maxDrawdownPct) } : {}),
+      ...(volatilityPreference ? { volatilityPreference } : {}),
+    });
 
-      try {
-        const res = await fetch(`/api/risk/classify?${qs.toString()}`, { credentials: 'include' });
-        if (res.ok) {
-          const json = await res.json() as { data?: RiskClassification };
-          if (json.data) setResult(json.data);
+    void fetch(`/api/risk/classify?${qs.toString()}`, { credentials: 'include' })
+      .then(res => res.ok ? res.json() as Promise<{ data?: RiskClassification }> : null)
+      .then(json => {
+        if (json?.data) {
+          setResult(json.data);
+          classifiedRef.current = true; // lock — no further calls
         }
-      } catch {
-        // silently ignore — fallback is no classification shown
-      }
-    }, 400);
-
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
+      })
+      .catch(() => { /* silently ignore */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    params.targetReturnPct,
-    params.investmentHorizonMonths,
-    params.maxDrawdownPct,
-    params.volatilityPreference,
-  ]);
+  }, []);
 
   return result;
 };

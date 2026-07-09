@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useCreatePortfolioMutation } from '../../../../store/portfolios/index.ts';
-import type { CreatePortfolioPayload, RiskTolerance, RebalanceFrequency } from '../../../../api/portfolio.api.types.ts';
+import type { CreatePortfolioPayload, RebalanceFrequency } from '../../../../api/portfolio.api.types.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { useRiskClassifier } from '../../hooks/useRiskClassifier.ts';
 import './CreatePortfolioModal.css';
@@ -39,8 +39,6 @@ const DEFAULT_FORM: CreatePortfolioPayload = {
 
 export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModalProps) => {
   const [form, setForm] = useState<CreatePortfolioPayload>(DEFAULT_FORM);
-  const [riskOverride, setRiskOverride] = useState<RiskTolerance | null>(null);
-  const [showOverride, setShowOverride] = useState(false);
   const [createPortfolio, { isLoading }] = useCreatePortfolioMutation();
   const [error, setError] = useState<string | null>(null);
 
@@ -52,7 +50,7 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
     volatilityPreference:   form.volatilityPreference,
   });
 
-  const effectiveRisk = riskOverride ?? derivedRisk?.level ?? null;
+  const effectiveRisk = derivedRisk?.level ?? null;
 
   const toggleCap = (cap: string) => {
     setForm(f => ({
@@ -77,7 +75,7 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
     if (!form.name.trim()) { setError('Portfolio name is required'); return; }
     setError(null);
     try {
-      await createPortfolio({ ...form, riskTolerance: effectiveRisk ?? undefined }).unwrap();
+      await createPortfolio({ ...form, ...(effectiveRisk ? { riskTolerance: effectiveRisk } : {}) }).unwrap();
       onCreated();
     } catch (err: unknown) {
       setError((err as { error?: string })?.error ?? (err instanceof Error ? err.message : 'Failed to create portfolio'));
@@ -165,51 +163,13 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
                   fontSize: '0.85rem',
                   color: RISK_COLORS[effectiveRisk ?? derivedRisk.level],
                 }}>
-                  {riskOverride ? `${riskOverride} (override)` : derivedRisk.level}
+                  {derivedRisk.level}
                 </span>
               </div>
               <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '4px 0 6px' }}>
                 {derivedRisk.explanation}
               </p>
-              <button
-                type="button"
-                style={{ fontSize: '0.72rem', color: 'var(--accent-blue)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                onClick={() => setShowOverride(v => !v)}
-              >
-                {showOverride ? 'Hide override' : 'Override classification'}
-              </button>
-              {showOverride && (
-                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {(['Low', 'Medium', 'High', 'Very High'] as RiskTolerance[]).map(level => (
-                    <button
-                      key={level}
-                      type="button"
-                      onClick={() => setRiskOverride(riskOverride === level ? null : level)}
-                      style={{
-                        padding: '3px 10px',
-                        borderRadius: 20,
-                        border: `1px solid ${RISK_COLORS[level]}`,
-                        background: riskOverride === level ? RISK_COLORS[level] + '33' : 'transparent',
-                        color: RISK_COLORS[level],
-                        fontSize: '0.75rem',
-                        cursor: 'pointer',
-                        fontWeight: riskOverride === level ? 700 : 400,
-                      }}
-                    >
-                      {level}
-                    </button>
-                  ))}
-                  {riskOverride && (
-                    <button
-                      type="button"
-                      onClick={() => setRiskOverride(null)}
-                      style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}
-                    >
-                      ✕ Clear override
-                    </button>
-                  )}
-                </div>
-              )}
+
             </div>
           )}
 

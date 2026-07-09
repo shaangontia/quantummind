@@ -210,6 +210,27 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
             <input id="ep-desc" type="text" value={form.description ?? ''} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Optional" className="form-input" />
           </div>
 
+          {/* Strategy fields — locked once any trade has executed */}
+          {editState && editState.meta.tradeCount > 0 ? (
+            <div style={{
+              padding: '12px 16px',
+              borderRadius: 8,
+              background: 'rgba(239,68,68,0.06)',
+              border: '1px solid rgba(239,68,68,0.25)',
+              fontSize: '0.82rem',
+              color: '#ef4444',
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+            }}>
+              <span>🔒</span>
+              <span>
+                Strategy locked — trading has begun ({editState.meta.tradeCount} trade{editState.meta.tradeCount !== 1 ? 's' : ''} executed).
+                Only name and description can be changed.
+              </span>
+            </div>
+          ) : (
+          <>
           {/* Capital & Target Return */}
           <div className="form-row">
             <div className="form-group">
@@ -447,6 +468,9 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
               </p>
             </div>
           </div>
+
+          </>
+          )}
 
           {error && <div className="form-error">⚠ {error}</div>}
 

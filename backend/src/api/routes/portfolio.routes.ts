@@ -96,11 +96,9 @@ router.patch('/portfolios/:id', verifyAuth, verifyOwner, async (req: Request, re
     const STRATEGY_FIELDS = [riskTolerance, preferredSectors, preferredCaps, volatilityPreference, investmentGoal, investmentHorizonMonths, targetReturnPct, rebalanceFrequency];
     const strategyChangeRequested = STRATEGY_FIELDS.some(f => f != null);
 
-    if (!isVirgin && inDrawdown && strategyChangeRequested) {
-      return res.status(423).json({ success: false, error: `Portfolio is in active drawdown (${drawdownPct.toFixed(1)}% ≥ ${drawdownLimit}% limit). Strategy fields locked.`, code: 'DRAWDOWN_LOCK', meta: { drawdownPct: Math.round(drawdownPct * 10) / 10, drawdownLimit, holdingsCount, tradeCount } });
-    }
-    if (isMature && riskTolerance != null) {
-      return res.status(423).json({ success: false, error: `Risk tolerance locked after ${tradeCount} cycles.`, code: 'MATURE_LOCK', meta: { tradeCount, currentRiskTolerance: existing.risk_tolerance } });
+    // Once any trade has been executed, all strategy fields are locked
+    if (!isVirgin && strategyChangeRequested) {
+      return res.status(423).json({ success: false, error: 'Portfolio strategy is locked once trading has begun. No edits permitted.', code: 'TRADING_LOCK', meta: { tradeCount, holdingsCount } });
     }
 
     const cashDelta = initialCapital != null ? Number(initialCapital) - Number(existing.initial_capital ?? 0) : 0;
