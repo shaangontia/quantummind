@@ -158,9 +158,10 @@ const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 function googleCallbackUrl() {
     // On Vercel, frontend and backend share the same domain — callback goes to the same origin.
     // Locally, backend runs on 3001 (or whatever Express port) not the Vite dev server port.
-    const base = process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : (process.env.FRONTEND_URL || 'http://localhost:3001');
+    // FRONTEND_URL is the stable canonical origin (set in Vercel env vars).
+    // VERCEL_URL is deployment-specific (preview URLs) — must NOT be used for OAuth callbacks.
+    const base = process.env.FRONTEND_URL
+        || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3001');
     return `${base}/api/auth/google/callback`;
 }
 // Step 1: redirect to Google consent screen
