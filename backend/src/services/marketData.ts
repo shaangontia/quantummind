@@ -190,9 +190,30 @@ function toTwelveDataSymbol(nseSymbol: string): string {
   return nseSymbol.replace(/\.NS$/i, ':NSE');
 }
 
+const TWELVE_DATA_CACHE_PREFIX = 'td_quote:';
+const TWELVE_DATA_CACHE_TTL = 270; // 4.5 min — slightly under the 5-min cron cycle
+
+/**
+ * Warm the per-cycle Twelve Data cache by batch-fetching all symbols up front.
+ * Call once per cron cycle before signal generation begins.
+ * Reduces individual /quote calls to zero for cache-hit symbols.
+ */
+export async function warmTwelveDataCache(nseSymbols: string[]): Promise<void> {
+  if (!process.env.TWELVE_DATA_API_KEY || nseSymbols.length === 0) return;
+  const batchMap = await batchQuoteTwelveData(nseSymbols);
+  for (const [symbol, quote] of batchMap) {
+    memCache.set(`${TWELVE_DATA_CACHE_PREFIX}${symbol}`, quote, TWELVE_DATA_CACHE_TTL);
+  }
+  console.log(`[MarketData] twelve_data cache warmed: ${batchMap.size}/${nseSymbols.length} symbols`);
+}
+
 async function getQuoteTwelveData(nseSymbol: string): Promise<StockQuote | null> {
   const apiKey = process.env.TWELVE_DATA_API_KEY;
   if (!apiKey) return null; // not configured — skip silently
+
+  // Check cycle cache first — avoids individual API call if warmTwelveDataCache() was called
+  const cached = memCache.get<StockQuote>(`${TWELVE_DATA_CACHE_PREFIX}${nseSymbol}`);
+  if (cached) return cached;
 
   const tdSymbol = toTwelveDataSymbol(nseSymbol);
   const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(tdSymbol)}&apikey=${apiKey}`;
@@ -224,6 +245,8 @@ async function getQuoteTwelveData(nseSymbol: string): Promise<StockQuote | null>
       isFresh: isQuoteFresh(ts),
     };
     console.log(`[MarketData] twelve_data OK ${nseSymbol} ₹${price} (${latencyMs}ms)`);
+    // Populate cycle cache so repeat lookups within same cycle are free
+    memCache.set(`${TWELVE_DATA_CACHE_PREFIX}${nseSymbol}`, quote, TWELVE_DATA_CACHE_TTL);
     return quote;
   } catch (err) {
     console.warn(`[MarketData] twelve_data FAIL ${nseSymbol}: ${String(err)}`);

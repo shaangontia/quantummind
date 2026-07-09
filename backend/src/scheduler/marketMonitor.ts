@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { query, queryOne, run } from '../db/turso.js';
 import { generateSignal, executeTrade, getPortfolioSummary } from '../services/tradingEngine.js';
-import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen } from '../services/marketData.js';
+import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen, warmTwelveDataCache } from '../services/marketData.js';
 import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
@@ -240,6 +240,23 @@ export async function runMarketCycle(): Promise<void> {
       await fetchAndStoreIndexHistory().catch(e => logger.warn({ reason: `[IndexData] refresh failed: ${e}` }));
     }
     const portfolios = await query('SELECT * FROM portfolios WHERE is_active = 1');
+
+    // Pre-warm Twelve Data cache for ALL symbols we'll scan this cycle.
+    // One batch API call covers holdings + candidate watchlist — reduces per-symbol
+    // calls to zero (cache hits) for the remainder of this cycle.
+    // Without this, 50 signals × 84 cycles = 4,200 calls/day (over free 800 limit).
+    try {
+      const allHoldings = await query('SELECT DISTINCT symbol FROM holdings h JOIN portfolios p ON p.id=h.portfolio_id WHERE p.is_active=1');
+      const cycleSlot = Math.floor(Date.now() / (5 * 60 * 1000));
+      const watchlist = await getDynamicCycleWatchlist(cycleSlot, 50).catch(() => []);
+      const allSymbols = [...new Set([
+        ...allHoldings.map((h: any) => String(h.symbol)),
+        ...watchlist,
+      ])];
+      await warmTwelveDataCache(allSymbols);
+    } catch (e) {
+      console.warn('[MarketCycle] Twelve Data cache warm failed (non-critical):', String(e));
+    }
 
     // Gemini cycle focus: identify sectors most worth scanning this cycle
     // Non-blocking; market cycle continues even if Gemini is unavailable
