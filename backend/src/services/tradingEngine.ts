@@ -1,5 +1,5 @@
 import { query, queryOne, run } from '../db/turso.js';
-import { getQuote, getExecutableQuote, getRsi, isNseMarketOpen } from './marketData.js';
+import { getQuote, getExecutableQuote, getRsi, isNseMarketOpen, getSymbolSector } from './marketData.js';
 import {
   isTradingEnabled,
   isUnderDailyTradeLimit,
@@ -180,29 +180,64 @@ export async function generateSignal(
     if (q.changePct < -4) { buy  += 1; notes.push(`Day drop ${q.changePct.toFixed(1)}%`); }
     if (q.changePct >  5) { sell += 1; notes.push(`Day surge ${q.changePct.toFixed(1)}%`); }
 
-    // ── P/E Valuation filter ───────────────────────────────────────────────
-    // Negative / null P/E = loss-making; penalise buys.
-    // Very high P/E (>60) = richly valued; reduce buy enthusiasm.
-    // Low P/E (<15) = cheap; bonus on buy signal.
+    // ── P/E Valuation filter (sector-relative) ─────────────────────────────────
+    // P/E norms vary wildly by sector — FMCG trades at 50-70x normally;
+    // Financials are better assessed by P/B (not implemented yet — skipped here);
+    // IT trades at 25-35x; Pharma 30-45x. Absolute thresholds produce false signals.
+    // Reference: NSE sector median P/E ranges (5-year historical averages).
+    interface SectorPeNorm { cheap: number; fair: number; expensive: number; veryExpensive: number; skipPe: boolean }
+    const SECTOR_PE_NORMS: Record<string, SectorPeNorm> = {
+      // FMCG brands command structural premium — P/E > 60 is normal
+      'FMCG':        { cheap: 35, fair: 60, expensive: 90,  veryExpensive: 120, skipPe: false },
+      // Financials: P/E unreliable due to provisioning; use P/B — skip P/E scoring
+      'Financials':  { cheap: 0,  fair: 0,  expensive: 0,   veryExpensive: 0,   skipPe: true  },
+      // IT services: steady earnings, moderate multiples
+      'IT':          { cheap: 18, fair: 35, expensive: 50,  veryExpensive: 70,  skipPe: false },
+      // Pharma: R&D cycles inflate multiples temporarily
+      'Healthcare':  { cheap: 20, fair: 40, expensive: 60,  veryExpensive: 90,  skipPe: false },
+      // Industrials / Infra: project-based lumpy earnings
+      'Industrials': { cheap: 15, fair: 35, expensive: 55,  veryExpensive: 80,  skipPe: false },
+      // Energy / Utilities: regulated, lower growth = lower multiples
+      'Energy':      { cheap: 8,  fair: 18, expensive: 28,  veryExpensive: 40,  skipPe: false },
+      'Utilities':   { cheap: 8,  fair: 18, expensive: 28,  veryExpensive: 40,  skipPe: false },
+      // Metals / Materials: cyclical, low base multiples
+      'Materials':   { cheap: 5,  fair: 12, expensive: 20,  veryExpensive: 35,  skipPe: false },
+      // Auto: capex-heavy, mid multiples
+      'Auto':        { cheap: 12, fair: 25, expensive: 40,  veryExpensive: 60,  skipPe: false },
+      // Real estate: asset-based; P/E less relevant but kept as rough guide
+      'Realty':      { cheap: 15, fair: 30, expensive: 50,  veryExpensive: 75,  skipPe: false },
+      // Default for unmapped / Other
+      'Other':       { cheap: 12, fair: 25, expensive: 45,  veryExpensive: 70,  skipPe: false },
+    };
+
     if (q.peRatio !== undefined) {
-      if (q.peRatio === null || q.peRatio < 0) {
-        // Loss-making company — do not penalise sell but dampen buy
+      const sector = getSymbolSector(symbol);
+      const norm: SectorPeNorm = SECTOR_PE_NORMS[sector] ?? SECTOR_PE_NORMS['Other'];
+
+      if (norm.skipPe) {
+        // Financials: skip P/E, note P/B would be more appropriate
+        notes.push(`P/E: ${q.peRatio?.toFixed(0) ?? 'N/A'}x (${sector} — P/B more relevant, not scored)`);
+      } else if (q.peRatio === null || q.peRatio < 0) {
+        // Loss-making: dampen BUY regardless of sector
         buy  -= 1;
-        notes.push('P/E: loss-making (EPS negative) — BUY dampened');
-      } else if (q.peRatio > 80) {
-        sell += 1;
-        notes.push(`P/E: extremely overvalued (${q.peRatio.toFixed(0)}x) — SELL pressure`);
-      } else if (q.peRatio > 60) {
-        buy  -= 1;
-        notes.push(`P/E: richly valued (${q.peRatio.toFixed(0)}x) — BUY dampened`);
-      } else if (q.peRatio < 8 && q.peRatio > 0) {
-        buy  += 2;
-        notes.push(`P/E: deeply undervalued (${q.peRatio.toFixed(0)}x) — strong BUY basis`);
-      } else if (q.peRatio < 15) {
-        buy  += 1;
-        notes.push(`P/E: undervalued (${q.peRatio.toFixed(0)}x) — BUY supported`);
+        notes.push('P/E: loss-making (EPS ≤0) — BUY dampened');
       } else {
-        notes.push(`P/E: ${q.peRatio.toFixed(0)}x (fair value range)`);
+        const pe = q.peRatio;
+        if (pe > norm.veryExpensive) {
+          sell += 1;
+          notes.push(`P/E: ${pe.toFixed(0)}x vs ${sector} norm ~${norm.fair}x — severely overvalued`);
+        } else if (pe > norm.expensive) {
+          buy  -= 1;
+          notes.push(`P/E: ${pe.toFixed(0)}x vs ${sector} norm ~${norm.fair}x — BUY dampened`);
+        } else if (pe < norm.cheap / 2 && pe > 0) {
+          buy  += 2;
+          notes.push(`P/E: ${pe.toFixed(0)}x vs ${sector} norm ~${norm.fair}x — deeply undervalued`);
+        } else if (pe < norm.cheap) {
+          buy  += 1;
+          notes.push(`P/E: ${pe.toFixed(0)}x vs ${sector} norm ~${norm.fair}x — undervalued`);
+        } else {
+          notes.push(`P/E: ${pe.toFixed(0)}x (${sector} fair value ~${norm.fair}x)`);
+        }
       }
     }
 
