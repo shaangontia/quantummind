@@ -226,11 +226,11 @@ router.get('/auth/google/callback', async (req: Request, res: Response) => {
 
 // ─── Portfolios ──────────────────────────────────────────────────────────────
 
-router.get('/portfolios', async (_req: Request, res: Response) => {
+router.get('/portfolios', verifyAuth, async (req: Request, res: Response) => {
   try {
     res.set('Cache-Control', 'no-store');
-    // Enrich each portfolio with live return_pct computed from holdings + cash vs initial_capital
-    const portfolios = await query('SELECT * FROM portfolios ORDER BY created_at DESC');
+    // Return only portfolios owned by the authenticated user
+    const portfolios = await query('SELECT * FROM portfolios WHERE owner_id = ? ORDER BY created_at DESC', [req.user!.id]);
     const enriched = await Promise.all(portfolios.map(async (p: any) => {
       const holdingsValue = await query(
         'SELECT COALESCE(SUM(quantity * COALESCE(current_price, avg_buy_price)), 0) as nav FROM holdings WHERE portfolio_id = ?',
