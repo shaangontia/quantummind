@@ -48,7 +48,7 @@ export async function rememberFact(
       });
     }
   } catch (err) {
-    console.warn('[RAG] rememberFact failed:', err);
+    console.warn('[RAG] rememberFact INSERT failed:', err);
   }
 }
 
@@ -67,22 +67,26 @@ export async function retrieveMemories(
     : '';
   const portfolioArgs = portfolioId != null ? [String(portfolioId)] : [];
 
-  // ── Semantic path (Gemini embeddings available) ────────────────────────────
+  // ── Semantic path (Gemini embeddings available) ───────────────────────────────────
   const queryVec = await geminiEmbed(userQuery.slice(0, 500));
   if (queryVec) {
     try {
-      const result = await db.execute({
-        sql: `SELECT m.content
-              FROM tars_memory m
-              WHERE m.embedding IS NOT NULL
-              ${portfolioFilter}
-              ORDER BY vector_distance_cos(m.embedding, vector(?))
-              LIMIT ?`,
-        args: [...portfolioArgs, toVectorLiteral(queryVec), TOP_K],
-      });
+      // vector_top_k() uses the libsql_vector_idx ANN index — avoids full table scan
+      const sql = portfolioId != null
+        ? `SELECT m.content
+           FROM vector_top_k('tars_memory_vec_idx', vector(?), ?)
+           JOIN tars_memory m ON m.id = vector_top_k.id
+           WHERE (m.source_id = ? OR m.source_id IS NULL)`
+        : `SELECT m.content
+           FROM vector_top_k('tars_memory_vec_idx', vector(?), ?)
+           JOIN tars_memory m ON m.id = vector_top_k.id`;
+      const args = portfolioId != null
+        ? [toVectorLiteral(queryVec), TOP_K, String(portfolioId)]
+        : [toVectorLiteral(queryVec), TOP_K];
+      const result = await db.execute({ sql, args });
       if (result.rows.length > 0) return result.rows.map(r => String(r.content));
     } catch {
-      // Vector functions not available — fall through to FTS5
+      // vector_top_k not available (index not yet created or table empty) — fall through to FTS5
     }
   }
 
