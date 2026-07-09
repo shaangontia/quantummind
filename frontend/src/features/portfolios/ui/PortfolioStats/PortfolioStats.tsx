@@ -32,6 +32,7 @@ export const PortfolioStats = memo(({ portfolioId }: PortfolioStatsProps) => {
             unrealizedPnlPct:        data.unrealizedPnlPct,  // already uses initialCapital denominator
             totalPnl:                data.totalPnl,
             totalPnlPct:             data.totalPnlPct,       // already uses initialCapital denominator
+            totalBrokerage:          data.totalBrokerage,
             returnPct:               data.returnPct,
             targetReturnPct:         data.targetReturnPct,
             investmentHorizonMonths: data.investmentHorizonMonths,
@@ -88,6 +89,12 @@ export const PortfolioStats = memo(({ portfolioId }: PortfolioStatsProps) => {
         sub={formatPct(totalPnlPct) + ' of capital'}
         trend={stats.totalPnl >= 0 ? 'up' : 'down'}
         accent={stats.totalPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}
+      />
+      <StatCard
+        label="Brokerage Paid"
+        value={formatINR(stats.totalBrokerage)}
+        sub="transaction costs"
+        trend="neutral"
       />
       <StatCard
         label="Target Return"
