@@ -16,6 +16,7 @@ export interface AuthUser {
   email: string;
   name?: string;
   avatarUrl?: string;
+  isAdmin?: boolean;
 }
 
 // Extend Express Request to carry the authenticated user
@@ -36,7 +37,7 @@ function jwtSecret(): string {
 /** Sign a JWT valid for 30 days */
 export function signToken(user: AuthUser): string {
   return jwt.sign(
-    { id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl },
+    { id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl, isAdmin: user.isAdmin ?? false },
     jwtSecret(),
     { expiresIn: '30d' },
   );
@@ -51,7 +52,7 @@ export function verifyAuth(req: Request, res: Response, next: NextFunction): voi
   }
   try {
     const payload = jwt.verify(token, jwtSecret()) as AuthUser;
-    req.user = { id: payload.id, email: payload.email };
+    req.user = { id: payload.id, email: payload.email, isAdmin: payload.isAdmin ?? false };
     next();
   } catch {
     res.status(401).json({ success: false, error: 'Invalid or expired token' });
@@ -60,8 +61,10 @@ export function verifyAuth(req: Request, res: Response, next: NextFunction): voi
 
 /**
  * Verify authenticated user owns the portfolio at req.params.id.
- * Must be used after verifyAuth.
- * Portfolios with owner_id IS NULL are accessible to any authenticated user (migration grace period).
+ * Must be used after verifyAuth (req.user is guaranteed populated).
+ *
+ * Admin bypass: admins (isAdmin from JWT) may access any portfolio.
+ * TRADING_LOCK is a separate gate checked downstream in the route handler.
  */
 export async function verifyOwner(req: Request, res: Response, next: NextFunction): Promise<void> {
   const portfolioId = parseInt(req.params.id, 10);
@@ -77,23 +80,19 @@ export async function verifyOwner(req: Request, res: Response, next: NextFunctio
     res.status(404).json({ success: false, error: 'Portfolio not found' });
     return;
   }
-  // Unclaimed portfolio (owner_id IS NULL): claim it for the requesting user
   if (portfolio.owner_id == null) {
-    await queryOne(
-      'UPDATE portfolios SET owner_id = ? WHERE id = ?',
-      [req.user!.id, portfolioId],
-    );
-    next();
-    return;
-  }
-  if (Number(portfolio.owner_id) !== req.user!.id) {
-    // Admin bypass: admins can access any portfolio (TRADING_LOCK still applies independently)
-    const user = await queryOne('SELECT is_admin FROM users WHERE id = ?', [req.user!.id]);
-    const isAdmin = Number(user?.is_admin ?? 0) === 1;
-    if (!isAdmin) {
+    // Unclaimed portfolio: no auto-claim — requires admin to assign ownership explicitly
+    if (!req.user!.isAdmin) {
       res.status(403).json({ success: false, error: 'Access denied' });
       return;
     }
+    // Admin accessing unclaimed portfolio: allow, do NOT auto-assign
+    next();
+    return;
+  }
+  if (Number(portfolio.owner_id) !== req.user!.id && !req.user!.isAdmin) {
+    res.status(403).json({ success: false, error: 'Access denied' });
+    return;
   }
   next();
 }

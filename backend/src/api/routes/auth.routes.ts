@@ -37,13 +37,13 @@ router.post('/auth/login', async (req: Request, res: Response) => {
   const parsed = authRegisterSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
   const { email, password } = parsed.data;
-  const user = await queryOne('SELECT id, email, password_hash FROM users WHERE email = ?', [email]);
+  const user = await queryOne('SELECT id, email, password_hash, is_admin FROM users WHERE email = ?', [email]);
   if (!user || !(await bcrypt.compare(password, String(user.password_hash)))) {
     return res.status(401).json({ success: false, error: 'Invalid email or password' });
   }
-  const token = signToken({ id: Number(user.id), email: String(user.email) });
+  const token = signToken({ id: Number(user.id), email: String(user.email), isAdmin: Number(user.is_admin ?? 0) === 1 });
   res.cookie('qm_token', token, COOKIE_OPTS);
-  res.json({ success: true, data: { id: user.id, email: user.email } });
+  res.json({ success: true, data: { id: user.id, email: user.email, isAdmin: Number(user.is_admin ?? 0) === 1 } });
 });
 
 router.post('/auth/logout', (_req: Request, res: Response) => {
@@ -85,20 +85,19 @@ router.get('/auth/google/callback', async (req: Request, res: Response) => {
     const profileRes = await fetch(GOOGLE_USERINFO_URL, { headers: { Authorization: `Bearer ${tokens.access_token}` } });
     if (!profileRes.ok) throw new Error('Failed to fetch Google profile');
     const profile = await profileRes.json() as { id: string; email: string; name: string; picture: string };
-    let user = await queryOne('SELECT id, email, name, avatar_url FROM users WHERE google_id = ?', [profile.id]);
+    let user = await queryOne('SELECT id, email, name, avatar_url, is_admin FROM users WHERE google_id = ?', [profile.id]);
     if (!user) {
-      const existingEmail = await queryOne('SELECT id, email FROM users WHERE email = ?', [profile.email]);
+      const existingEmail = await queryOne('SELECT id, email, is_admin FROM users WHERE email = ?', [profile.email]);
       if (existingEmail) {
         await run('UPDATE users SET google_id = ?, name = ?, avatar_url = ? WHERE id = ?', [profile.id, profile.name, profile.picture, Number(existingEmail.id)]);
-        user = await queryOne('SELECT id, email, name, avatar_url FROM users WHERE id = ?', [Number(existingEmail.id)]);
+        user = await queryOne('SELECT id, email, name, avatar_url, is_admin FROM users WHERE id = ?', [Number(existingEmail.id)]);
       } else {
         const result = await run('INSERT INTO users (email, google_id, name, avatar_url) VALUES (?, ?, ?, ?)', [profile.email, profile.id, profile.name, profile.picture]);
-        await run('UPDATE portfolios SET owner_id = ? WHERE owner_id IS NULL', [result.lastInsertRowid]);
-        user = await queryOne('SELECT id, email, name, avatar_url FROM users WHERE id = ?', [result.lastInsertRowid]);
+        user = await queryOne('SELECT id, email, name, avatar_url, is_admin FROM users WHERE id = ?', [result.lastInsertRowid]);
       }
     }
     if (!user) throw new Error('User record not found after upsert');
-    const token = signToken({ id: Number(user.id), email: String(user.email), name: user.name ? String(user.name) : undefined, avatarUrl: user.avatar_url ? String(user.avatar_url) : undefined });
+    const token = signToken({ id: Number(user.id), email: String(user.email), name: user.name ? String(user.name) : undefined, avatarUrl: user.avatar_url ? String(user.avatar_url) : undefined, isAdmin: Number(user.is_admin ?? 0) === 1 });
     res.cookie('qm_token', token, COOKIE_OPTS);
     res.redirect(`${frontendUrl}/`);
   } catch (err) {
