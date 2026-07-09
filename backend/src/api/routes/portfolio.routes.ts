@@ -20,14 +20,15 @@ router.get('/portfolios', verifyAuth, async (req: Request, res: Response) => {
       ? await query('SELECT * FROM portfolios WHERE is_active = 1 ORDER BY owner_id, created_at DESC')
       : await query('SELECT * FROM portfolios WHERE owner_id = ? AND is_active = 1 ORDER BY created_at DESC', [req.user!.id]);
     const enriched = await Promise.all(portfolios.map(async (p: any) => {
-      const holdingsValue = await query(
-        'SELECT COALESCE(SUM(quantity * COALESCE(current_price, avg_buy_price)), 0) as nav FROM holdings WHERE portfolio_id = ?',
-        [p.id]
-      );
+      const [holdingsValue, tradeRow] = await Promise.all([
+        query('SELECT COALESCE(SUM(quantity * COALESCE(current_price, avg_buy_price)), 0) as nav FROM holdings WHERE portfolio_id = ?', [p.id]),
+        queryOne('SELECT COUNT(*) as cnt FROM trades WHERE portfolio_id = ? AND price > 0', [p.id]),
+      ]);
       const nav = Number(holdingsValue[0]?.nav ?? 0) + Number(p.current_cash);
       const returnPct = Number(p.initial_capital) > 0
         ? ((nav - Number(p.initial_capital)) / Number(p.initial_capital)) * 100 : 0;
-      return { ...p, current_nav: nav, return_pct: returnPct };
+      const tradeCount = Number(tradeRow?.cnt ?? 0);
+      return { ...p, current_nav: nav, return_pct: returnPct, trade_count: tradeCount };
     }));
     res.json({ success: true, data: enriched });
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }

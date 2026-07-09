@@ -100,7 +100,7 @@ export const PortfolioDashboard = () => {
           <button className="btn btn-ghost" onClick={() => void refetch()} title="Refresh prices">
             ↻ Refresh
           </button>
-          {portfolio && currentUser && (currentUser.isAdmin || portfolio.user_id === currentUser.id) && (
+          {portfolio && currentUser && (currentUser.isAdmin || portfolio.owner_id === currentUser.id) && (
             <button
               className="btn btn-ghost"
               onClick={() => setIsEditOpen(true)}
