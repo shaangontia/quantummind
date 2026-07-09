@@ -254,7 +254,7 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
                 id="ep-target"
                 type="number"
                 min={1}
-                max={100}
+                max={200}
                 step={0.5}
                 value={form.targetReturnPct}
                 onChange={e => setForm(f => ({ ...f, targetReturnPct: Number(e.target.value) }))}
@@ -284,6 +284,7 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
                 <option value="Low">Low (Conservative)</option>
                 <option value="Medium">Medium (Balanced)</option>
                 <option value="High">High (Aggressive)</option>
+                <option value="Very High">Very High (Speculative)</option>
               </select>
             </div>
 
