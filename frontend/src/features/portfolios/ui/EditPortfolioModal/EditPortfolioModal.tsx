@@ -254,7 +254,7 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
                 id="ep-target"
                 type="number"
                 min={1}
-                max={200}
+                // No max cap — user sets their own ambition; model will adjust signal thresholds accordingly
                 step={0.5}
                 value={form.targetReturnPct}
                 onChange={e => setForm(f => ({ ...f, targetReturnPct: Number(e.target.value) }))}

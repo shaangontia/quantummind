@@ -121,7 +121,6 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
                 id="targetReturn"
                 type="number"
                 min={1}
-                max={200}
                 step={0.5}
                 value={form.targetReturnPct}
                 onChange={e => setForm(f => ({ ...f, targetReturnPct: Number(e.target.value) }))}
