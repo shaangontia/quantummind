@@ -182,15 +182,21 @@ Rules:
   }
 }
 
+// Cycle focus cached 30 min — market themes don't flip every 5 minutes
+let _cycleFocusCache: { sectors: string[]; expiresAt: number } | null = null;
+
 /**
  * Gemini-curated sector focus for the current market cycle.
+ * Cached 30 minutes — called at most ~16 times/day instead of 108.
  * Returns up to 3 sector names to over-weight in watchlist scanning.
- * Returns empty array if Gemini unavailable (caller uses full universe).
  */
 export async function geminiCycleFocus(
   recentNewsHeadlines: string[],
   currentRegime: string,
 ): Promise<string[]> {
+  // Serve from 30-min cache
+  if (_cycleFocusCache && Date.now() < _cycleFocusCache.expiresAt) return _cycleFocusCache.sectors;
+
   const model = getChatModel();
   if (!model) return [];
 
@@ -213,7 +219,9 @@ Reply in this exact JSON format only, no markdown:
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return [];
     const parsed = JSON.parse(jsonMatch[0]);
-    return Array.isArray(parsed.sectors) ? parsed.sectors.slice(0, 3) : [];
+    const sectors = Array.isArray(parsed.sectors) ? parsed.sectors.slice(0, 3) : [];
+    _cycleFocusCache = { sectors, expiresAt: Date.now() + 30 * 60 * 1000 };
+    return sectors;
   } catch (err) {
     console.warn('[Gemini] cycleFocus failed:', err);
     return [];

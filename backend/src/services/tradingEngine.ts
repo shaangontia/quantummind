@@ -205,8 +205,9 @@ export async function generateSignal(
     const topScore = Math.max(buy, sell);
     const topAction: 'BUY' | 'SELL' | null = buy > sell && buy >= 2 ? 'BUY' : sell > buy && sell >= 2 ? 'SELL' : null;
 
-    if (topAction && portfolioCtx) {
-      // Gemini pre-trade reasoning gate — validates signal against portfolio context
+    if (topAction && portfolioCtx && topScore >= 4) {
+      // Gemini pre-trade reasoning gate — only fires on STRONG signals (score ≥ 4)
+      // MODERATE signals (score 2-3) proceed without veto to conserve Gemini quota
       const veto = await geminiTradeVeto({
         symbol, action: topAction, price: q.price,
         rsiValue: rsiVal, momentumTrend: ml?.reason,

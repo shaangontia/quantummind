@@ -3,6 +3,23 @@ import 'dotenv/config';
 import { fetchAnnouncements, type CorporateAnnouncement } from './newsService.js';
 import { geminiGenerate } from './geminiService.js';
 
+// ─── In-process sentiment cache (per trading day) ─────────────────────────────────
+// NSE announcements don't change every 5 min — one LLM call per symbol per day is enough.
+// Eliminates ~80% of Gemini calls (8 candidates × 108 cycles = 864 -> 8-20 per day).
+const _sentimentCache = new Map<string, { result: LLMSentimentResult; date: string }>();
+
+function getCachedSentiment(symbol: string): LLMSentimentResult | null {
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = _sentimentCache.get(symbol);
+  if (entry && entry.date === today) return entry.result;
+  _sentimentCache.delete(symbol); // stale entry from yesterday
+  return null;
+}
+
+function cacheSentiment(symbol: string, result: LLMSentimentResult): void {
+  _sentimentCache.set(symbol, { result, date: new Date().toISOString().slice(0, 10) });
+}
+
 let _groq: Groq | null = null;
 
 function getGroq(): Groq {
@@ -81,8 +98,13 @@ Respond in this exact JSON format (no markdown):
   }
 }
 
-// Full pipeline: fetch NSE announcements → Groq analysis
+// Full pipeline: fetch NSE announcements → LLM analysis (Gemini primary, Groq fallback)
+// Cached per symbol per trading day — drastically reduces Gemini API calls.
 export async function getGroqStockSentiment(symbol: string): Promise<LLMSentimentResult | null> {
+  // Serve from cache if same trading day (NSE announcements don't change every 5 min)
+  const cached = getCachedSentiment(symbol);
+  if (cached) return cached;
+
   try {
     const allAnnouncements = await fetchAnnouncements();
     const nseBase = symbol.replace('.NS', '');
@@ -91,7 +113,9 @@ export async function getGroqStockSentiment(symbol: string): Promise<LLMSentimen
     );
 
     if (stockNews.length === 0) return null;
-    return await analyseStockNews(symbol, stockNews);
+    const result = await analyseStockNews(symbol, stockNews);
+    if (result) cacheSentiment(symbol, result);
+    return result;
   } catch {
     return null;
   }
