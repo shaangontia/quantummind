@@ -96,7 +96,7 @@ export const PortfoliosPage = () => {
                   <div className="portfolio-stat">
                     <span className="stat-l">Current Return</span>
                     <span className={`stat-v ${isPositive ? 'tag-positive' : 'tag-negative'}`} style={{ fontWeight: 700 }}>
-                      {isPositive ? '+' : ''}{formatPct(returnPct)}
+                      {formatPct(returnPct)}
                     </span>
                   </div>
                   <div className="portfolio-stat">
