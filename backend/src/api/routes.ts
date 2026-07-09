@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs';
 import cookieParser from 'cookie-parser';
 import { retrieveMemories } from '../services/ragService.js';
 import { signToken, verifyAuth, verifyOwner } from '../middleware/auth.js';
+import { geminiChat } from '../services/geminiService.js';
 import { query, queryOne, run } from '../db/turso.js';
 import { getQuote } from '../services/marketData.js';
 import { getPortfolioSummary, executeTrade } from '../services/tradingEngine.js';
@@ -793,14 +794,24 @@ router.post('/tars/chat', async (req: Request, res: Response) => {
     const userContent = message.slice(0, 500) + liveCtx + ragCtx;
     messages.push({ role: 'user', content: userContent });
 
-    const response = await groqClient.chat.completions.create({
-      model: 'llama-3.1-8b-instant',
-      messages,
-      temperature: 0.6,
-      max_tokens: 400,
-    });
+    // Try Gemini first (richer reasoning + longer context); fall back to Groq
+    const geminiHistory = messages
+      .filter(m => m.role !== 'system')
+      .map(m => ({ role: m.role === 'user' ? 'user' as const : 'model' as const, content: m.content }));
+    const geminiUserMsg = geminiHistory.pop()?.content ?? userContent;
 
-    const reply = response.choices[0]?.message?.content?.trim() ?? 'No response from TARS.';
+    let reply = await geminiChat(TARS_SYSTEM_PROMPT, geminiHistory, geminiUserMsg, { temperature: 0.6, maxTokens: 400 });
+
+    if (!reply) {
+      // Groq fallback
+      const groqResp = await groqClient.chat.completions.create({
+        model: 'llama-3.1-8b-instant',
+        messages,
+        temperature: 0.6,
+        max_tokens: 400,
+      });
+      reply = groqResp.choices[0]?.message?.content?.trim() ?? 'No response from TARS.';
+    }
     res.json({ success: true, reply });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });

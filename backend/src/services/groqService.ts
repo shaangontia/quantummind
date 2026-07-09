@@ -1,6 +1,7 @@
 import Groq from 'groq-sdk';
 import 'dotenv/config';
 import { fetchAnnouncements, type CorporateAnnouncement } from './newsService.js';
+import { geminiGenerate } from './geminiService.js';
 
 let _groq: Groq | null = null;
 
@@ -49,14 +50,18 @@ Respond in this exact JSON format (no markdown):
 }`;
 
   try {
-    const response = await groq.chat.completions.create({
-      model: 'llama-3.1-8b-instant',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.1,
-      max_tokens: 300,
-    });
-
-    const text = response.choices[0]?.message?.content?.trim() ?? '';
+    // Try Gemini first (better reasoning); fall back to Groq on rate-limit or error
+    let text = await geminiGenerate(prompt, { temperature: 0.1, maxTokens: 300 });
+    if (!text) {
+      const groq = getGroq();
+      const response = await groq.chat.completions.create({
+        model: 'llama-3.1-8b-instant',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: 300,
+      });
+      text = response.choices[0]?.message?.content?.trim() ?? '';
+    }
     // Extract JSON from response
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;

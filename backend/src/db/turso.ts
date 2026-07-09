@@ -84,12 +84,26 @@ export async function runMigrations(): Promise<void> {
     await db.execute(`CREATE TABLE IF NOT EXISTS tars_memory (
       id          INTEGER  PRIMARY KEY AUTOINCREMENT,
       content     TEXT     NOT NULL,
+      embedding   F32_BLOB(768),  -- Gemini text-embedding-004 (768-dim); NULL when Gemini unavailable
       source_type TEXT     NOT NULL,
       source_id   TEXT,
       created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
     console.log('[DB] Migration: tars_memory table ensured');
   } catch (err) { console.warn('[DB] tars_memory table creation skipped:', err); }
+
+  // Add embedding column to existing tars_memory tables created before Gemini integration
+  try {
+    await db.execute('ALTER TABLE tars_memory ADD COLUMN embedding F32_BLOB(768)');
+    console.log('[DB] Migration: tars_memory.embedding column added');
+  } catch (_) { /* already exists */ }
+
+  try {
+    await db.execute(
+      `CREATE INDEX IF NOT EXISTS tars_memory_vec_idx ON tars_memory (libsql_vector_idx(embedding))`
+    );
+    console.log('[DB] Migration: tars_memory vector index ensured');
+  } catch (err) { console.warn('[DB] Vector index skipped:', err); }
 
   try {
     // FTS5 virtual table mirrors tars_memory.content for BM25 full-text search

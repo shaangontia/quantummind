@@ -10,6 +10,7 @@
     "db:init": "ts-node src/db/init.ts"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@libsql/client": "^0.17.4",
     "@upstash/redis": "^1.38.0",
     "@vercel/kv": "^3.0.0",
