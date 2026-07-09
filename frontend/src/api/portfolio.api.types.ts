@@ -140,12 +140,18 @@ export interface SummaryHolding {
 export interface PortfolioSummary {
   id: number;
   name: string;
+  initialCapital: number;
   totalValue: number;
   investedValue: number;
   cashBalance: number;
   unrealizedPnl: number;
+  /** unrealizedPnl / initialCapital × 100 — same denominator as returnPct */
+  unrealizedPnlPct: number;
   realizedPnl: number;
+  realizedPnlPct: number;
   totalPnl: number;
+  /** totalPnl / initialCapital × 100 — same denominator as returnPct */
+  totalPnlPct: number;
   returnPct: number;
   targetReturnPct: number;
   riskTolerance: RiskTolerance;

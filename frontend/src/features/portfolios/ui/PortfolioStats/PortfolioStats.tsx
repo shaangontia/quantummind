@@ -25,15 +25,17 @@ export const PortfolioStats = memo(({ portfolioId }: PortfolioStatsProps) => {
       isLoading: loading,
       data: data
         ? {
-            totalValue:             data.totalValue,
-            investedValue:          data.investedValue,
-            cashBalance:            data.cashBalance,
-            unrealizedPnl:          data.unrealizedPnl,
-            totalPnl:               data.totalPnl,
-            returnPct:              data.returnPct,
-            targetReturnPct:        data.targetReturnPct,
+            totalValue:              data.totalValue,
+            investedValue:           data.investedValue,
+            cashBalance:             data.cashBalance,
+            unrealizedPnl:           data.unrealizedPnl,
+            unrealizedPnlPct:        data.unrealizedPnlPct,  // already uses initialCapital denominator
+            totalPnl:                data.totalPnl,
+            totalPnlPct:             data.totalPnlPct,       // already uses initialCapital denominator
+            returnPct:               data.returnPct,
+            targetReturnPct:         data.targetReturnPct,
             investmentHorizonMonths: data.investmentHorizonMonths,
-            holdingsCount:          data.holdings.length,
+            holdingsCount:           data.holdings.length,
           }
         : undefined,
     }),
@@ -51,10 +53,9 @@ export const PortfolioStats = memo(({ portfolioId }: PortfolioStatsProps) => {
 
   const isPositive     = stats.returnPct >= 0;
   const targetGapPct   = stats.targetReturnPct - stats.returnPct;
-  const unrealizedPnlPct =
-    stats.investedValue > 0 ? (stats.unrealizedPnl / stats.investedValue) * 100 : 0;
-  const totalPnlPct =
-    stats.investedValue > 0 ? (stats.totalPnl / stats.investedValue) * 100 : 0;
+  // Use backend-computed pcts (initialCapital denominator) for consistency with returnPct
+  const unrealizedPnlPct = stats.unrealizedPnlPct;
+  const totalPnlPct      = stats.totalPnlPct;
 
   return (
     <div className="stats-grid">

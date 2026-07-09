@@ -42,13 +42,17 @@ export interface HoldingSummary {
 export interface PortfolioSummary {
   id: number;
   name: string;
+  initialCapital: number;           // common denominator for all % calculations
   totalValue: number;
   investedValue: number;
   cashBalance: number;
   unrealizedPnl: number;
+  unrealizedPnlPct: number;         // unrealizedPnl / initialCapital
   realizedPnl: number;
+  realizedPnlPct: number;           // realizedPnl / initialCapital
   totalPnl: number;
-  returnPct: number;
+  totalPnlPct: number;              // totalPnl / initialCapital (same base as returnPct)
+  returnPct: number;                // (totalValue - initialCapital) / initialCapital
   targetReturnPct: number;
   riskTolerance: string;
   investmentHorizonMonths: number;
@@ -548,12 +552,22 @@ export async function getPortfolioSummary(portfolioId: number): Promise<Portfoli
   }
 
   const totalValue = current + Number(portfolio.current_cash);
-  const returnPct = ((totalValue - Number(portfolio.initial_capital)) / Number(portfolio.initial_capital)) * 100;
+  const initCap      = Number(portfolio.initial_capital);
+  const unrealPnl    = current - invested;
+  const totalPnl     = unrealPnl + realizedPnl;
+  const returnPct    = initCap > 0 ? ((totalValue - initCap) / initCap) * 100 : 0;
+  // All % use initialCapital as denominator — consistent with returnPct
+  const unrealPnlPct = initCap > 0 ? (unrealPnl  / initCap) * 100 : 0;
+  const realPnlPct   = initCap > 0 ? (realizedPnl / initCap) * 100 : 0;
+  const totalPnlPct  = initCap > 0 ? (totalPnl    / initCap) * 100 : 0;
 
   return {
     id: Number(portfolio.id), name: portfolio.name as string,
+    initialCapital: initCap,
     totalValue, investedValue: invested, cashBalance: Number(portfolio.current_cash),
-    unrealizedPnl: current - invested, realizedPnl, totalPnl: (current - invested) + realizedPnl,
+    unrealizedPnl: unrealPnl, unrealizedPnlPct: unrealPnlPct,
+    realizedPnl,               realizedPnlPct: realPnlPct,
+    totalPnl,                  totalPnlPct,
     returnPct, targetReturnPct: Number(portfolio.target_return_pct),
     riskTolerance: portfolio.risk_tolerance as string, investmentHorizonMonths: Number(portfolio.investment_horizon_months),
     holdings: hSummaries,
