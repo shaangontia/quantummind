@@ -4,7 +4,8 @@ import type { z } from 'zod';
 
 export const apiBaseUrl = '/api';
 
-const rawBaseQuery = fetchBaseQuery({ baseUrl: apiBaseUrl });
+// credentials: 'include' is required for HttpOnly auth cookies to be sent
+const rawBaseQuery = fetchBaseQuery({ baseUrl: apiBaseUrl, credentials: 'include' });
 
 /** Unwraps `{ success, data, error }` envelope + optional Zod schema validation */
 export const zodBaseQuery: BaseQueryFn<

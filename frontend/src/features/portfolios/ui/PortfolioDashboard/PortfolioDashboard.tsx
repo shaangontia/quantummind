@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useAppDispatch, useAppSelector } from '../../../../store/hooks.ts';
-import { openEditModal, closeEditModal, selectPortfolioById } from '../../../../store/portfolios/index.ts';
-import { useGetPortfolioSummaryQuery } from '../../../../store/portfolios/index.ts';
+import { useGetPortfolioSummaryQuery, useGetPortfoliosQuery } from '../../../../store/portfolios/index.ts';
 import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx';
 import { PortfolioStats } from '../PortfolioStats/index.ts';
 import { HoldingsTable } from '../HoldingsTable/index.ts';
@@ -31,10 +29,13 @@ export const PortfolioDashboard = () => {
   const portfolioId = Number(id);
   const navigate = useNavigate();
 
-  const dispatch = useAppDispatch();
-  const portfolio = useAppSelector(selectPortfolioById(portfolioId));
-  const editingId = useAppSelector(state => state.portfolios.editingId);
-  const isEditOpen = editingId === portfolioId;
+  const [isEditOpen, setIsEditOpen] = useState(false);
+
+  // Pull the full Portfolio object from the list cache — already fetched on the portfolios page.
+  // selectFromResult prevents this component re-rendering when OTHER portfolios change.
+  const { data: portfolio } = useGetPortfoliosQuery(undefined, {
+    selectFromResult: ({ data }) => ({ data: data?.find(p => p.id === portfolioId) }),
+  });
 
   // Header-level subscription — drives initial loading/error states, provides refetch for the
   // manual refresh button, and shares the cache entry with PortfolioStats + HoldingsTable
@@ -100,7 +101,7 @@ export const PortfolioDashboard = () => {
           {portfolio && (
             <button
               className="btn btn-ghost"
-              onClick={() => dispatch(openEditModal(portfolioId))}
+              onClick={() => setIsEditOpen(true)}
               title="Edit portfolio settings"
             >
               ✏ Edit
@@ -150,8 +151,8 @@ export const PortfolioDashboard = () => {
       {portfolio && isEditOpen && (
         <EditPortfolioModal
           portfolio={portfolio}
-          onClose={() => dispatch(closeEditModal())}
-          onSaved={() => dispatch(closeEditModal())}
+          onClose={() => setIsEditOpen(false)}
+          onSaved={() => setIsEditOpen(false)}
         />
       )}
     </div>
