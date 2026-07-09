@@ -82,6 +82,15 @@
   gap: 8px;
 }
 
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
 .user-email {
   font-size: 12px;
   color: var(--text-muted);

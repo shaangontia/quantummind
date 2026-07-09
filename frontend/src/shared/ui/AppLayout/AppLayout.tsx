@@ -40,7 +40,17 @@ export const AppLayout = () => {
           </span>
           {user && (
             <>
-              <span className="user-email">{user.email}</span>
+              {user.avatarUrl ? (
+                <img
+                  src={user.avatarUrl}
+                  alt={user.name ?? user.email}
+                  className="user-avatar"
+                  title={user.name ?? user.email}
+                />
+              ) : null}
+              <span className="user-email" title={user.email}>
+                {user.name ?? user.email}
+              </span>
               <button
                 className="btn btn-ghost btn-sm"
                 onClick={() => void handleLogout()}

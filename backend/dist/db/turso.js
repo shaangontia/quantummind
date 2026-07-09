@@ -82,15 +82,29 @@ async function runMigrations() {
     // CRITICAL-3: Auth — users table and portfolios.owner_id
     try {
         await db.execute(`CREATE TABLE IF NOT EXISTS users (
-      id           INTEGER  PRIMARY KEY AUTOINCREMENT,
-      email        TEXT     NOT NULL UNIQUE,
-      password_hash TEXT    NOT NULL,
-      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+      id            INTEGER  PRIMARY KEY AUTOINCREMENT,
+      email         TEXT     NOT NULL UNIQUE,
+      password_hash TEXT,           -- nullable for OAuth-only users
+      google_id     TEXT UNIQUE,
+      name          TEXT,
+      avatar_url    TEXT,
+      created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
         console.log('[DB] Migration: users table ensured');
     }
     catch (err) {
         console.warn('[DB] users table skipped:', err);
+    }
+    // Add OAuth columns to existing users tables
+    for (const col of [
+        'ALTER TABLE users ADD COLUMN google_id TEXT UNIQUE',
+        'ALTER TABLE users ADD COLUMN name TEXT',
+        'ALTER TABLE users ADD COLUMN avatar_url TEXT',
+    ]) {
+        try {
+            await db.execute(col);
+        }
+        catch (_) { /* already exists */ }
     }
     try {
         await db.execute('ALTER TABLE portfolios ADD COLUMN owner_id INTEGER REFERENCES users(id)');

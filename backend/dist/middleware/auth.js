@@ -16,7 +16,7 @@ function jwtSecret() {
 }
 /** Sign a JWT valid for 30 days */
 function signToken(user) {
-    return jsonwebtoken_1.default.sign({ id: user.id, email: user.email }, jwtSecret(), { expiresIn: '30d' });
+    return jsonwebtoken_1.default.sign({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl }, jwtSecret(), { expiresIn: '30d' });
 }
 /** Verify token from `qm_token` cookie; attach user to req or reject 401 */
 function verifyAuth(req, res, next) {
