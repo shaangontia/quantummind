@@ -7,6 +7,20 @@
       "includeFiles": "backend/dist/**"
     }
   },
+  "headers": [
+    {
+      "source": "/index.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate" }
+      ]
+    }
+  ],
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/index" },
     { "source": "/health",     "destination": "/api/index" },
