@@ -12,7 +12,7 @@ import { logger } from '../lib/logger.js';
 import { getStockSentiment } from './newsService.js';
 import { getMLBoost, computeTrendIndicators } from './mlEngine.js';
 import { getGroqStockSentiment } from './groqService.js';
-import { getSignalWeights, getCurrentRegime, recordSignalForTracking } from './adaptiveEngine.js';
+import { getSignalWeights, getCurrentRegime, recordSignalForTracking, resolveGeminiSellDecisions } from './adaptiveEngine.js';
 import { geminiTradeVeto, geminiFundamentalAnalysis } from './geminiService.js';
 import { getFundamentalSnapshot, computeFundamentalVerdict } from './fundamentalService.js';
 
@@ -64,27 +64,26 @@ export interface PortfolioSummary {
 }
 
 function getThresholds(risk: string, targetReturnPct?: number) {
-  // Base thresholds by risk tier
+  // Base thresholds by risk tier — takeProfit is the per-trade exit target.
+  // Do NOT cap takeProfit to the portfolio's annual return target: a 100%-target
+  // portfolio must trade many positions adaptively, not hold each stock until it doubles.
+  // targetReturnPct drives HOW AGGRESSIVELY the engine trades (position size, RSI aggressiveness),
+  // not when each individual trade exits.
   let t =
     risk === 'High'      ? { rsiBuy: 40, rsiSell: 65, stopLoss: 0.12, takeProfit: 0.30, maxPosPct: 0.08 } :
     risk === 'Low'       ? { rsiBuy: 28, rsiSell: 75, stopLoss: 0.05, takeProfit: 0.15, maxPosPct: 0.03 } :
     risk === 'Very High' ? { rsiBuy: 45, rsiSell: 60, stopLoss: 0.15, takeProfit: 0.40, maxPosPct: 0.10 } :
                            { rsiBuy: 35, rsiSell: 70, stopLoss: 0.08, takeProfit: 0.25, maxPosPct: 0.05 };
 
-  // If the portfolio has an explicit return target, cap takeProfit and tighten position size.
-  // This ensures a 1%-target portfolio sells at ~1% gain rather than holding for 25%+.
+  // Use targetReturnPct to adjust aggressiveness — higher target = larger positions + tighter stops
+  // to generate more frequent compounding trades toward the goal.
   if (targetReturnPct !== undefined && targetReturnPct > 0) {
-    const targetDecimal = targetReturnPct / 100;
-    // Annual target → approximate per-trade target (assume ~12 trades/year per stock)
-    // Cap takeProfit at the portfolio's per-trade implied target, with a minimum of 3%
-    // (below 3% the friction from brokerage makes it uneconomic to trade)
-    const impliedTradeTarget = Math.max(targetDecimal, 0.03);
-    if (impliedTradeTarget < t.takeProfit) {
-      t = { ...t, takeProfit: impliedTradeTarget };
-    }
-    // Conservative targets also reduce max position concentration
-    if (targetReturnPct < 5) {
-      t = { ...t, maxPosPct: Math.min(t.maxPosPct, 0.03) };
+    if (targetReturnPct >= 50) {
+      // Very aggressive target: maximise position sizes to compound quickly
+      t = { ...t, maxPosPct: Math.min(t.maxPosPct * 1.25, 0.12) };
+    } else if (targetReturnPct <= 5) {
+      // Very conservative target: smaller positions, preserve capital
+      t = { ...t, maxPosPct: Math.min(t.maxPosPct, 0.03), stopLoss: Math.min(t.stopLoss, 0.05) };
     }
   }
 
@@ -582,6 +581,12 @@ export async function executeTrade(
     recordSignalForTracking(portfolioId, symbol, 'SELL', signalSourceSell, price, new Date().toISOString()).catch(
       e => console.warn('[Adaptive] recordSignalForTracking failed:', e)
     );
+    // Resolve Gemini sell decisions for this symbol — mark win/loss for learning (fire-and-forget)
+    if (realizedPnlOnTrade !== null) {
+      const avgBuyPrice = holdingsForNAV.find((h: any) => h.symbol === symbol)?.avg_buy_price;
+      const realizedPnlPct = avgBuyPrice ? (realizedPnlOnTrade / (Number(avgBuyPrice) * quantity)) * 100 : 0;
+      resolveGeminiSellDecisions(portfolioId, symbol, realizedPnlPct).catch(() => null);
+    }
     return tradeId;
   }
 

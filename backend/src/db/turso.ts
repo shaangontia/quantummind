@@ -168,6 +168,30 @@ export async function runMigrations(): Promise<void> {
     )`);
     console.log('[DB] Migration: earnings_calendar table ensured');
   } catch (err) { console.warn('[DB] earnings_calendar table skipped:', err); }
+
+  // Phase 11: Gemini decision tracking + adaptive learning
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS gemini_decisions (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id     INTEGER NOT NULL,
+      symbol           TEXT    NOT NULL,
+      decision_type    TEXT    NOT NULL,  -- 'buy_veto' | 'buy_score' | 'sell_review'
+      verdict          TEXT    NOT NULL,  -- Gemini's verdict string
+      score            REAL    DEFAULT 0, -- Gemini's numeric score
+      trade_id         INTEGER,           -- linked trade (if executed)
+      outcome          TEXT,              -- 'win' | 'loss' | NULL (pending)
+      realized_pnl_pct REAL,             -- filled when position closes
+      created_at       TEXT    DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+    )`);
+    console.log('[DB] Migration: gemini_decisions table ensured');
+  } catch (err) { console.warn('[DB] gemini_decisions table skipped:', err); }
+
+  try {
+    // gemini_hold_count on holdings: tracks consecutive HOLD verdicts so we enforce the 2-cycle max
+    await db.execute('ALTER TABLE holdings ADD COLUMN gemini_hold_count INTEGER DEFAULT 0');
+    console.log('[DB] Migration: holdings.gemini_hold_count column added');
+  } catch (_) { /* already exists */ }
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

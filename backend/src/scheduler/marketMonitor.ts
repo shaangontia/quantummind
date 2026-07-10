@@ -6,7 +6,7 @@ import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, e
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
 import { resolveSignalOutcomes } from '../services/adaptiveEngine.js';
-import { geminiCycleFocus, geminiPortfolioInsight } from '../services/geminiService.js';
+import { geminiCycleFocus, geminiPortfolioInsight, geminiSellReview } from '../services/geminiService.js';
 import { fetchAnnouncements } from '../services/newsService.js';
 
 /**
@@ -98,9 +98,62 @@ async function runPortfolioTradingCycle(
     const lossRatio = (signal.price - h.avgBuyPrice) / h.avgBuyPrice;
     let shouldSell = false, reason = signal.reason;
 
-    if (lossRatio < -stopLoss) { shouldSell = true; reason = `Stop-loss: ${(lossRatio*100).toFixed(1)}%`; }
-    else if (lossRatio > takeProfit && signal.action === 'SELL') { shouldSell = true; reason = `Take-profit +${(lossRatio*100).toFixed(1)}%. ${reason}`; }
-    else if (signal.action === 'SELL' && signal.strength !== 'WEAK') { shouldSell = true; }
+    const isStopLoss = lossRatio < -stopLoss;
+
+    if (isStopLoss) {
+      // Hard rule — no LLM involvement ever on stop-loss
+      shouldSell = true;
+      reason = `Stop-loss: ${(lossRatio*100).toFixed(1)}%`;
+    } else if (lossRatio > takeProfit && signal.action === 'SELL') {
+      shouldSell = true;
+      reason = `Take-profit +${(lossRatio*100).toFixed(1)}%. ${reason}`;
+    } else if (signal.action === 'SELL' && signal.strength !== 'WEAK') {
+      // Non-stop-loss SELL: run through Gemini sell review
+      const holdingRecord = await import('../db/turso.js').then(m =>
+        m.queryOne('SELECT gemini_hold_count FROM holdings WHERE portfolio_id=? AND symbol=?', [portfolioId, h.symbol])
+      );
+      const holdCount = Number(holdingRecord?.gemini_hold_count ?? 0);
+
+      // Gemini sell review — non-blocking on failure
+      const sellReview = await geminiSellReview({
+        symbol: h.symbol,
+        unrealizedPnlPct: lossRatio * 100,
+        daysHeld: 0, // HoldingSummary doesn't expose buy date; 0 = unknown
+        rsiValue: undefined, // populated by signal context if available
+        momentumTrend: signal.reason?.includes('bearish') ? 'bearish' : signal.reason?.includes('bullish') ? 'bullish' : 'neutral',
+        groqSentiment: signal.groqSentiment,
+        stopLossTriggered: false,
+      }).catch(() => null);
+
+      if (sellReview?.verdict === 'HOLD' && holdCount < 2) {
+        // Delay this sell — increment hold count and skip
+        await import('../db/turso.js').then(m =>
+          m.run('UPDATE holdings SET gemini_hold_count=? WHERE portfolio_id=? AND symbol=?',
+            [holdCount + 1, portfolioId, h.symbol])
+        );
+        logger.info({ job: 'market-cycle', portfolioId, symbol: h.symbol, phase: 'signal',
+          action: 'HOLD', sellReason: sellReview.reason, holdCount: holdCount + 1 });
+        // Record Gemini decision for learning
+        await import('../db/turso.js').then(m =>
+          m.run('INSERT INTO gemini_decisions (portfolio_id,symbol,decision_type,verdict,score) VALUES (?,?,?,?,?)',
+            [portfolioId, h.symbol, 'sell_review', 'HOLD', sellReview.score])
+        );
+        reason = `Gemini HOLD (${holdCount + 1}/2): ${sellReview.reason}`;
+        shouldSell = false;
+      } else {
+        // EXECUTE or ACCELERATE or hold limit reached
+        shouldSell = true;
+        if (sellReview) {
+          reason = sellReview.verdict === 'ACCELERATE'
+            ? `Gemini ACCELERATE: ${sellReview.reason} | ${reason}`
+            : `${reason} | Gemini: ${sellReview.reason}`;
+          // Reset hold count on execution
+          await import('../db/turso.js').then(m =>
+            m.run('UPDATE holdings SET gemini_hold_count=0 WHERE portfolio_id=? AND symbol=?', [portfolioId, h.symbol])
+          );
+        }
+      }
+    }
 
     // Log every signal (including HOLDs) for audit trail
     logger.signal(portfolioId, h.symbol, signal.action, signal.strength, signal.reason, signal.price);

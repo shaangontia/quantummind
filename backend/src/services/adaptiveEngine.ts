@@ -241,3 +241,82 @@ export async function getAdaptiveLearningReport(): Promise<AdaptiveLearningRepor
 
   return { regime, signalWeights: weights, recentOutcomes, bestPerformingSource: best, worstPerformingSource: worst };
 }
+
+// ─── Gemini Accuracy Tracking ─────────────────────────────────────────────────
+
+export interface GeminiAccuracy {
+  decisionType: string;
+  totalDecisions: number;
+  resolvedDecisions: number;
+  winRate: number;         // % of Gemini-influenced trades that were profitable
+  currentWeight: number;  // 0.5–2.0, adjusts Gemini's influence on signal scores
+}
+
+/**
+ * Compute Gemini's accuracy per decision type from the gemini_decisions table.
+ * Called during the weekly adaptive weight bootstrap.
+ *
+ * Weight formula:
+ *   winRate > 0.70 → weight 1.5 (increase influence)
+ *   winRate 0.50–0.70 → weight 1.0 (neutral)
+ *   winRate < 0.40 → weight 0.6 (reduce influence)
+ *   < 10 resolved decisions → weight 1.0 (not enough data)
+ */
+export async function computeGeminiAccuracy(): Promise<GeminiAccuracy[]> {
+  const rows = await query(`
+    SELECT
+      decision_type,
+      COUNT(*) as total,
+      SUM(CASE WHEN outcome IS NOT NULL THEN 1 ELSE 0 END) as resolved,
+      SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) as wins
+    FROM gemini_decisions
+    GROUP BY decision_type
+  `);
+
+  const results: GeminiAccuracy[] = [];
+
+  for (const row of rows) {
+    const total = Number(row.total ?? 0);
+    const resolved = Number(row.resolved ?? 0);
+    const wins = Number(row.wins ?? 0);
+    const winRate = resolved > 0 ? wins / resolved : 0.5;
+
+    let weight = 1.0;
+    if (resolved >= 10) {
+      if (winRate > 0.70) weight = 1.5;
+      else if (winRate < 0.40) weight = 0.6;
+    }
+
+    results.push({
+      decisionType: String(row.decision_type),
+      totalDecisions: total,
+      resolvedDecisions: resolved,
+      winRate,
+      currentWeight: weight,
+    });
+
+    // Persist weight into signal_weights so generateSignal() can read it
+    const weightKey = `gemini_${row.decision_type}_weight`;
+    await queryOne('INSERT OR REPLACE INTO signal_weights (source, weight) VALUES (?, ?)', [weightKey, weight])
+      .catch(() => null); // silent if table schema doesn't support it yet
+  }
+
+  return results;
+}
+
+/**
+ * Mark Gemini sell decisions as 'win' or 'loss' based on trade outcome.
+ * Called after every SELL trade executes.
+ */
+export async function resolveGeminiSellDecisions(
+  portfolioId: number,
+  symbol: string,
+  realizedPnlPct: number,
+): Promise<void> {
+  const outcome = realizedPnlPct > 0 ? 'win' : 'loss';
+  await queryOne(
+    `UPDATE gemini_decisions SET outcome = ?, realized_pnl_pct = ?
+     WHERE portfolio_id = ? AND symbol = ? AND decision_type = 'sell_review' AND outcome IS NULL`,
+    [outcome, realizedPnlPct, portfolioId, symbol],
+  ).catch(() => null);
+}

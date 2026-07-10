@@ -315,3 +315,79 @@ Write ONE concise sentence (max 120 chars) explaining what the fundamentals tell
 
   return geminiGenerate(prompt, { temperature: 0.3, maxTokens: 80 });
 }
+
+// ─── Sell Review ──────────────────────────────────────────────────────────────
+
+export interface SellReviewContext {
+  symbol: string;
+  unrealizedPnlPct: number;   // current unrealized P&L as %
+  daysHeld: number;            // how long we've held this position
+  rsiValue?: number;           // current RSI (high = overbought = sell pressure)
+  momentumTrend?: string;      // e.g. 'bearish' | 'neutral' | 'bullish'
+  groqSentiment?: string;      // latest news sentiment string
+  stopLossTriggered: boolean;  // if true, this function is never called (hard rule)
+}
+
+export interface SellReviewResult {
+  verdict: 'EXECUTE' | 'HOLD' | 'ACCELERATE';
+  /** -1 = sell urgently, 0 = neutral, +1 = hold and let it run */
+  score: number;
+  reason: string;
+}
+
+/**
+ * Ask Gemini whether to execute, delay, or accelerate a pending SELL signal.
+ *
+ * Decision contract:
+ *   ACCELERATE → sell now even if technical score is marginal (Gemini sees urgency)
+ *   EXECUTE    → technical signal is correct, proceed
+ *   HOLD       → delay one cycle; recheck (max 2 consecutive holds enforced upstream)
+ *
+ * Stop-loss NEVER passes through this function — hard rule, no LLM involvement.
+ * Returns null on Gemini unavailability; caller proceeds with technical signal.
+ */
+export async function geminiSellReview(ctx: SellReviewContext): Promise<SellReviewResult | null> {
+  if (!consumeVetoBudget()) return null;
+
+  const prompt = `You are a portfolio manager reviewing whether to sell an equity position.
+
+Position context:
+- Symbol: ${ctx.symbol}
+- Unrealized P&L: ${ctx.unrealizedPnlPct.toFixed(1)}%
+- Days held: ${ctx.daysHeld}
+- RSI: ${ctx.rsiValue !== undefined ? ctx.rsiValue.toFixed(0) : 'unavailable'} (above 65 = overbought signal)
+- Momentum trend: ${ctx.momentumTrend ?? 'unknown'}
+- Latest news sentiment: ${ctx.groqSentiment ?? 'no recent news'}
+
+The technical system has flagged this position as a SELL candidate based on RSI/momentum.
+Your task is to decide whether to:
+- ACCELERATE: sell immediately — the position has peaked or fundamentals are deteriorating fast
+- EXECUTE: confirm the technical signal — sell is correct
+- HOLD: delay one cycle (24h) — the signal may be premature, momentum could recover
+
+Key principle: HOLD is not indefinite. It delays by one trading cycle only.
+Do not HOLD if the position is already profitable and news is negative — book the profit.
+Do not ACCELERATE just because RSI is high if the trend is still bullish.
+
+Respond with JSON only (no markdown):
+{"verdict":"EXECUTE"|"HOLD"|"ACCELERATE","score":<-1 to 1>,"reason":"<one sentence max 120 chars>"}
+
+score: -1 = sell urgently, 0 = neutral, +1 = hold and let it run`;
+
+  const raw = await geminiGenerate(prompt, { temperature: 0.2, maxTokens: 120 });
+  if (!raw) return null;
+
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const parsed = JSON.parse(match[0]) as Partial<SellReviewResult>;
+    if (!['EXECUTE', 'HOLD', 'ACCELERATE'].includes(parsed.verdict ?? '')) return null;
+    return {
+      verdict: parsed.verdict!,
+      score: Math.max(-1, Math.min(1, Number(parsed.score ?? 0))),
+      reason: parsed.reason ?? '',
+    };
+  } catch {
+    return null;
+  }
+}
