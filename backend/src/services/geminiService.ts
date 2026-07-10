@@ -276,3 +276,42 @@ export async function geminiEmbed(text: string): Promise<number[] | null> {
     return null;
   }
 }
+
+// ─── Fundamental Analysis ─────────────────────────────────────────────────────
+
+import type { FundamentalSnapshot, FundamentalVerdict } from './fundamentalService.js';
+
+/**
+ * Ask Gemini to explain a pre-computed fundamental verdict in plain English.
+ * Gemini receives the ratios AND the deterministic verdict (score, vetoed, vetoReasons)
+ * but makes ZERO decisions — it only provides a human-readable reasoning string.
+ *
+ * Veto and score are computed by computeFundamentalVerdict() in fundamentalService.ts.
+ * Gemini = explanation layer only. Deterministic, auditable, unit-testable.
+ *
+ * Returns null if Gemini is unavailable — callers fall back to vetoReasons string.
+ */
+export async function geminiFundamentalAnalysis(
+  snapshot: FundamentalSnapshot,
+  verdict: FundamentalVerdict,
+): Promise<string | null> {
+  const statusLine = verdict.vetoed
+    ? `VETOED (${verdict.vetoReasons.join('; ')})`
+    : `Score ${verdict.score}/100 — ${verdict.score >= 70 ? 'strong' : verdict.score >= 40 ? 'neutral' : 'weak'} fundamentals`;
+
+  const prompt = `You are a senior equity analyst. A rules engine has already assessed an NSE-listed company's latest quarterly financials and produced this verdict:
+
+Verdict: ${statusLine}
+
+Key ratios:
+- Revenue Growth YoY: ${snapshot.revenueGrowthYoY.toFixed(1)}%
+- PAT Growth YoY: ${snapshot.patGrowthYoY.toFixed(1)}%
+- PAT Margin: ${snapshot.patMarginPct.toFixed(1)}%
+- CFO/Net Income: ${snapshot.cfoToNetIncome.toFixed(2)}
+- Debt-to-Equity: ${snapshot.debtToEquity.toFixed(2)}
+- ROE: ${snapshot.roe.toFixed(1)}%
+
+Write ONE concise sentence (max 120 chars) explaining what the fundamentals tell us about this company's financial health. Do not restate the verdict. No JSON, no markdown.`;
+
+  return geminiGenerate(prompt, { temperature: 0.3, maxTokens: 80 });
+}

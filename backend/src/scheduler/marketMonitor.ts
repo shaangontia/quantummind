@@ -79,6 +79,7 @@ async function runPortfolioTradingCycle(
     totalNAV: summary.totalValue,
     cashBalance: summary.cashBalance,
     holdings: summary.holdings.length,
+    targetReturnPct: summary.targetReturnPct,
   };
 
   let sellSignalCount = 0;
@@ -185,7 +186,8 @@ async function runPortfolioTradingCycle(
     const tradeId = await executeTrade(
       portfolioId, symbol, symbol.replace('.NS', ''), 'BUY', qty, signal.price, signal.reason,
       undefined,
-      { groqSentiment: signal.groqSentiment, momentumScore: signal.mlBoost, regime: refreshed.riskTolerance }
+      { groqSentiment: signal.groqSentiment, momentumScore: signal.mlBoost, regime: refreshed.riskTolerance,
+        fundamentalScore: signal.fundamentalScore, fundamentalReasoning: signal.fundamentalReasoning }
     );
     if (tradeId && sigRes.lastInsertRowid) {
       await run('UPDATE market_signals SET acted_upon=1, trade_id=? WHERE id=?', [tradeId, sigRes.lastInsertRowid]);

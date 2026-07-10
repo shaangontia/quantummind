@@ -6,8 +6,13 @@
  *
  *   Target Return %       — 45 pts  (primary intent signal — dominant weight)
  *   Investment Horizon    — 20 pts  (shorter = higher risk)
- *   Max Drawdown %        — 20 pts  (pain tolerance)
- *   Volatility Preference — 15 pts  (stated comfort level)
+ *   Max Drawdown %        — 20 pts  (pain tolerance — capped for conservative targets)
+ *   Volatility Preference — 15 pts  (stated comfort level — capped for conservative targets)
+ *
+ * Consistency guard: very conservative return targets (<5%, <15%) cap the
+ * effective drawdown and volatility contributions so that a 1%-return
+ * portfolio accepting 20% drawdown is not mis-classified as Medium simply
+ * because of an internally inconsistent drawdown setting.
  *
  * Score → Band:
  *   0–19  → Low
@@ -76,26 +81,43 @@ export function deriveRiskLevel(inputs: RiskClassifierInput): { level: RiskLevel
     factors.push(`short horizon (${investmentHorizonMonths}m)`);
   }
 
-  // ── Max Drawdown Tolerance (20 pts max) ───────────────────────────────────
-  if (maxDrawdownPct < 10) {
+  // ── Max Drawdown Tolerance (20 pts max — with consistency guard) ──────────
+  // A portfolio targeting <5% return accepting 20% drawdown is internally
+  // inconsistent. Cap the effective drawdown so the classification reflects
+  // the return intent, not an accidental mismatch in settings.
+  const effectiveDrawdown =
+    targetReturnPct < 5  ? Math.min(maxDrawdownPct, 10) :   // very conservative: max 10%
+    targetReturnPct < 15 ? Math.min(maxDrawdownPct, 20) :   // moderate: max 20%
+    maxDrawdownPct;                                           // aggressive: use as stated
+
+  if (effectiveDrawdown < 10) {
     score += 2;
-    factors.push(`low drawdown tolerance (${maxDrawdownPct}%)`);
-  } else if (maxDrawdownPct < 20) {
+    factors.push(`low drawdown tolerance (${effectiveDrawdown}%)`);
+  } else if (effectiveDrawdown < 20) {
     score += 6;
-    factors.push(`moderate drawdown tolerance (${maxDrawdownPct}%)`);
-  } else if (maxDrawdownPct < 35) {
+    factors.push(`moderate drawdown tolerance (${effectiveDrawdown}%)`);
+  } else if (effectiveDrawdown < 35) {
     score += 12;
-    factors.push(`high drawdown tolerance (${maxDrawdownPct}%)`);
+    factors.push(`high drawdown tolerance (${effectiveDrawdown}%)`);
   } else {
     score += 20;
-    factors.push(`very high drawdown tolerance (${maxDrawdownPct}%)`);
+    factors.push(`very high drawdown tolerance (${effectiveDrawdown}%)`);
   }
 
-  // ── Volatility Preference (15 pts max) ───────────────────────────────────
+  // ── Volatility Preference (15 pts max — with consistency guard) ───────────
+  const vpRaw = (volatilityPreference ?? 'medium').toLowerCase();
   const vpMap: Record<string, number> = { low: 2, medium: 5, high: 10, 'very high': 15 };
-  const vpScore = vpMap[(volatilityPreference ?? 'medium').toLowerCase()] ?? 5;
+  let vpScore = vpMap[vpRaw] ?? 5;
+
+  // Consistency guard: a sub-5% return target should not be penalised for
+  // a stated preference that is higher than medium (inconsistent intent).
+  if (targetReturnPct < 5 && vpScore > 5) {
+    vpScore = 5;
+    factors.push(`${volatilityPreference} volatility preference (capped — target <5%)`);
+  } else if (volatilityPreference) {
+    factors.push(`${volatilityPreference} volatility preference`);
+  }
   score += vpScore;
-  if (volatilityPreference) factors.push(`${volatilityPreference} volatility preference`);
 
   // ── Band ──────────────────────────────────────────────────────────────────
   let level: RiskLevel;

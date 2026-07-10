@@ -13,7 +13,8 @@ import { getStockSentiment } from './newsService.js';
 import { getMLBoost, computeTrendIndicators } from './mlEngine.js';
 import { getGroqStockSentiment } from './groqService.js';
 import { getSignalWeights, getCurrentRegime, recordSignalForTracking } from './adaptiveEngine.js';
-import { geminiTradeVeto } from './geminiService.js';
+import { geminiTradeVeto, geminiFundamentalAnalysis } from './geminiService.js';
+import { getFundamentalSnapshot, computeFundamentalVerdict } from './fundamentalService.js';
 
 export interface TradeSignal {
   symbol: string;
@@ -23,6 +24,8 @@ export interface TradeSignal {
   price: number;
   mlBoost?: number;
   groqSentiment?: string;
+  fundamentalScore?: number;
+  fundamentalReasoning?: string;
 }
 
 export interface HoldingSummary {
@@ -60,10 +63,32 @@ export interface PortfolioSummary {
   holdings: HoldingSummary[];
 }
 
-function getThresholds(risk: string) {
-  if (risk === 'High') return { rsiBuy: 40, rsiSell: 65, stopLoss: 0.12, takeProfit: 0.30, maxPosPct: 0.08 };
-  if (risk === 'Low')  return { rsiBuy: 28, rsiSell: 75, stopLoss: 0.05, takeProfit: 0.15, maxPosPct: 0.03 };
-  return                       { rsiBuy: 35, rsiSell: 70, stopLoss: 0.08, takeProfit: 0.25, maxPosPct: 0.05 };
+function getThresholds(risk: string, targetReturnPct?: number) {
+  // Base thresholds by risk tier
+  let t =
+    risk === 'High'      ? { rsiBuy: 40, rsiSell: 65, stopLoss: 0.12, takeProfit: 0.30, maxPosPct: 0.08 } :
+    risk === 'Low'       ? { rsiBuy: 28, rsiSell: 75, stopLoss: 0.05, takeProfit: 0.15, maxPosPct: 0.03 } :
+    risk === 'Very High' ? { rsiBuy: 45, rsiSell: 60, stopLoss: 0.15, takeProfit: 0.40, maxPosPct: 0.10 } :
+                           { rsiBuy: 35, rsiSell: 70, stopLoss: 0.08, takeProfit: 0.25, maxPosPct: 0.05 };
+
+  // If the portfolio has an explicit return target, cap takeProfit and tighten position size.
+  // This ensures a 1%-target portfolio sells at ~1% gain rather than holding for 25%+.
+  if (targetReturnPct !== undefined && targetReturnPct > 0) {
+    const targetDecimal = targetReturnPct / 100;
+    // Annual target → approximate per-trade target (assume ~12 trades/year per stock)
+    // Cap takeProfit at the portfolio's per-trade implied target, with a minimum of 3%
+    // (below 3% the friction from brokerage makes it uneconomic to trade)
+    const impliedTradeTarget = Math.max(targetDecimal, 0.03);
+    if (impliedTradeTarget < t.takeProfit) {
+      t = { ...t, takeProfit: impliedTradeTarget };
+    }
+    // Conservative targets also reduce max position concentration
+    if (targetReturnPct < 5) {
+      t = { ...t, maxPosPct: Math.min(t.maxPosPct, 0.03) };
+    }
+  }
+
+  return t;
 }
 
 /**
@@ -107,8 +132,9 @@ export interface PortfolioSignalContext {
   totalNAV: number;
   cashBalance: number;
   holdings: number;
-  sectorExposurePct?: number;   // % NAV in the same sector as this symbol
-  proposedPositionPct?: number; // actual position as % of NAV (computed by caller)
+  sectorExposurePct?: number;    // % NAV in the same sector as this symbol
+  proposedPositionPct?: number;  // actual position as % of NAV (computed by caller)
+  targetReturnPct?: number;      // portfolio's annual return target (drives takeProfit cap)
 }
 
 export async function generateSignal(
@@ -150,7 +176,7 @@ export async function generateSignal(
     const trend = trendResult.status === 'fulfilled' ? trendResult.value : null;
 
     // Use regime-calibrated thresholds if available, else fall back to risk tier
-    let t = getThresholds(risk);
+    let t = getThresholds(risk, portfolioCtx?.targetReturnPct);
     const [regime, weights] = await Promise.all([
       getCurrentRegime().catch(() => null),
       getSignalWeights().catch(() => new Map()),
@@ -316,6 +342,53 @@ export async function generateSignal(
     const topScore = Math.max(buy, sell);
     const topAction: 'BUY' | 'SELL' | null = buy > sell && buy >= 2 ? 'BUY' : sell > buy && sell >= 2 ? 'SELL' : null;
 
+    // ── Fundamental Analysis Gate ────────────────────────────────────────────
+    // Runs on all BUY candidates (not SELL — we never block closing a position).
+    // Veto = hard block. Weak score = weight down by 0.5. Strong score = weight up by 0.5.
+    let fundamentalScore: number | null = null;
+    let fundamentalVetoed = false;
+    let fundamentalReasoning = '';
+    if (topAction === 'BUY') {
+      try {
+        const snapshot = await getFundamentalSnapshot(symbol);
+        if (snapshot) {
+          // ─ Deterministic veto + score — rules only, no LLM involvement ─
+          const verdict = computeFundamentalVerdict(snapshot);
+          fundamentalScore = verdict.score;
+          fundamentalVetoed = verdict.vetoed;
+
+          if (verdict.vetoed) {
+            // Gate fires immediately — Gemini explanation is fire-and-forget
+            // Fallback: vetoReasons string used if Gemini doesn't respond in time
+            fundamentalReasoning = verdict.vetoReasons.join('; ');
+            notes.push(`Fundamental VETO: ${fundamentalReasoning}`);
+            // Non-blocking: attempt to enrich the reasoning but never wait on it
+            void geminiFundamentalAnalysis(snapshot, verdict)
+              .then(r => { if (r) fundamentalReasoning = r; })
+              .catch(() => { /* Gemini down — vetoReasons fallback already set */ });
+          } else if (verdict.score >= 70) {
+            buy += 0.5;
+            notes.push(`Fundamentals strong (score:${verdict.score}) — BUY weighted up`);
+            void geminiFundamentalAnalysis(snapshot, verdict)
+              .then(r => { if (r) fundamentalReasoning = r; })
+              .catch(() => {});
+          } else if (verdict.score < 40) {
+            buy = Math.max(0, buy - 0.5);
+            notes.push(`Fundamentals weak (score:${verdict.score}) — BUY weighted down`);
+            void geminiFundamentalAnalysis(snapshot, verdict)
+              .then(r => { if (r) fundamentalReasoning = r; })
+              .catch(() => {});
+          }
+        }
+      } catch (err) {
+        logger.warn({ job: 'fundamental-gate', symbol, reason: `[Fundamental] Gate failed — proceeding on technicals: ${err}` });
+      }
+    }
+
+    if (fundamentalVetoed) {
+      return { symbol, action: 'HOLD', strength: 'WEAK', reason: notes.join('; '), price: q.price };
+    }
+
     if (topAction && portfolioCtx && topScore >= 4) {
       // Gemini pre-trade reasoning gate — only fires on STRONG signals (score ≥ 4)
       // MODERATE signals (score 2-3) proceed without veto to conserve Gemini quota
@@ -343,11 +416,13 @@ export async function generateSignal(
         ? 'MODERATE'  // cap to MODERATE so position sizing stays smaller
         : topScore >= 4 ? 'STRONG' : 'MODERATE';
       const finalReason = veto.reason ? `${reason} | Gemini: ${veto.reason}` : reason;
-      return { symbol, action: topAction, strength, reason: finalReason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
+      return { symbol, action: topAction, strength, reason: finalReason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment,
+        fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined };
     }
 
     if (topAction) {
-      return { symbol, action: topAction, strength: topScore >= 4 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment };
+      return { symbol, action: topAction, strength: topScore >= 4 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment,
+        fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined };
     }
     return { symbol, action: 'HOLD', strength: 'WEAK', reason, price: q.price };
   } catch (err) {
@@ -371,6 +446,8 @@ export interface TradeContext {
   buyScore?: number;
   sellScore?: number;
   riskGates?: string[];
+  fundamentalScore?: number;
+  fundamentalReasoning?: string;
 }
 
 export async function executeTrade(
@@ -452,6 +529,8 @@ export async function executeTrade(
     buyScore: ctx.buyScore,
     sellScore: ctx.sellScore,
     riskGates: ctx.riskGates,
+    fundamentalScore: ctx.fundamentalScore,
+    fundamentalReasoning: ctx.fundamentalReasoning,
     price,
     action,
     timestamp: new Date().toISOString(),

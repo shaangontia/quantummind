@@ -10,6 +10,7 @@
 
 import { loadSymbolHistory, type OHLCVRow } from './backtestData.js';
 import { logger } from '../lib/logger.js';
+import { getFundamentalSnapshot, computeFundamentalVerdict } from './fundamentalService.js';
 
 export type SignalType = 'rsi_oversold' | 'momentum_breakout' | 'range_low' | 'combined';
 
@@ -166,6 +167,24 @@ export async function runBacktest(symbols: string[]): Promise<{
 
   for (const symbol of symbols) {
     try {
+      // ── Fundamental filter (look-ahead caveat: uses latest available report) ──
+      // Note: historical quarterly data per trade-date is not available via Twelve Data free tier.
+      // We use the most recent report as a proxy. Symbols with current fundamental VETO are
+      // excluded from backtest — this is conservative and avoids including structurally weak
+      // companies in the signal weight calibration dataset.
+      try {
+        const snapshot = await getFundamentalSnapshot(symbol);
+        if (snapshot) {
+          const verdict = computeFundamentalVerdict(snapshot);
+          if (verdict.vetoed) {
+            logger.debug({ reason: `[Backtest] ${symbol}: skipped — fundamental VETO (${verdict.vetoReasons.join('; ')})` });
+            continue;
+          }
+        }
+      } catch {
+        // Fundamental gate failure: non-blocking, proceed with OHLCV backtest
+      }
+
       const rows = await loadSymbolHistory(symbol);
       if (rows.length < 60) { logger.debug({ reason: `[Backtest] ${symbol}: not enough data (${rows.length} rows)` }); continue; }
       const signals = detectSignals(rows);

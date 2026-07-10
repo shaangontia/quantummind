@@ -27,7 +27,7 @@ export const PortfoliosPage = () => {
       <div className="page-header">
         <div>
           <h1 className="page-title">Portfolios</h1>
-          <p className="page-subtitle">AI-managed virtual trading portfolios targeting 15%+ returns</p>
+          <p className="page-subtitle">AI-managed portfolios — goal-driven signals, fundamental analysis, and intelligent risk classification</p>
         </div>
         <button className="btn btn-primary" onClick={() => dispatch(openCreateModal())}>
           + New Portfolio
