@@ -33,7 +33,7 @@ export const PortfoliosPage = () => {
       <div className="page-header">
         <div>
           <h1 className="page-title">Portfolios</h1>
-          <p className="page-subtitle">AI-managed portfolios — goal-driven signals, fundamental analysis, and intelligent risk classification</p>
+          <p className="page-subtitle">Fully autonomous AI portfolio manager — adaptive signals, real-time fundamental analysis, and self-learning intelligence that evolves with every trade</p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button
