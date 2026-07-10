@@ -1,11 +1,16 @@
 /**
  * ragService.ts — Phase 6: RAG-Based TARS Memory
  *
- * Primary retrieval  : Gemini text-embedding-004 (768-dim) — semantic vector search via Turso
- * Fallback retrieval : SQLite FTS5 BM25 full-text search (activates when GEMINI_API_KEY absent)
+ * Primary retrieval  : gemini-embedding-001 (3072-dim) — semantic vector search via Turso
+ *                      Column: tars_memory.embedding_3k | Index: tars_memory_vec3k_idx
+ * Fallback retrieval : SQLite FTS5 BM25 full-text search (activates when GEMINI_API_KEY absent
+ *                      or rate-limited)
  *
  * Semantic RAG means "why did you sell last week" retrieves semantically related trade
- * narratives even when the exact words don't match.
+ * narratives even when the exact words don’t match.
+ *
+ * Embedding migration (2026-07-10): text-embedding-004 (768-dim) → gemini-embedding-001 (3072-dim).
+ * Old column (embedding F32_BLOB(768)) retained for audit; new writes use embedding_3k only.
  */
 import { getClient } from '../db/turso.js';
 import { geminiEmbed, EMBED_DIM } from './geminiService.js';
@@ -35,9 +40,9 @@ export async function rememberFact(
 
   try {
     if (embedding) {
-      // Store with vector embedding for semantic search
+      // Store with 3072-dim vector embedding for semantic search
       await db.execute({
-        sql: `INSERT INTO tars_memory (content, embedding, source_type, source_id) VALUES (?, vector(?), ?, ?)`,
+        sql: `INSERT INTO tars_memory (content, embedding_3k, source_type, source_id) VALUES (?, vector(?), ?, ?)`,
         args: [trimmed, toVectorLiteral(embedding), sourceType, sourceId ?? null],
       });
     } else {
@@ -71,14 +76,14 @@ export async function retrieveMemories(
   const queryVec = await geminiEmbed(userQuery.slice(0, 500));
   if (queryVec) {
     try {
-      // vector_top_k() uses the libsql_vector_idx ANN index — avoids full table scan
+      // vector_top_k() uses the 3072-dim ANN index (tars_memory_vec3k_idx) on embedding_3k — avoids full table scan
       const sql = portfolioId != null
         ? `SELECT m.content
-           FROM vector_top_k('tars_memory_vec_idx', vector(?), ?)
+           FROM vector_top_k('tars_memory_vec3k_idx', vector(?), ?)
            JOIN tars_memory m ON m.id = vector_top_k.id
            WHERE (m.source_id = ? OR m.source_id IS NULL)`
         : `SELECT m.content
-           FROM vector_top_k('tars_memory_vec_idx', vector(?), ?)
+           FROM vector_top_k('tars_memory_vec3k_idx', vector(?), ?)
            JOIN tars_memory m ON m.id = vector_top_k.id`;
       const args = portfolioId != null
         ? [toVectorLiteral(queryVec), TOP_K, String(portfolioId)]

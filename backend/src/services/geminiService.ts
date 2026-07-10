@@ -1,19 +1,35 @@
 /**
  * geminiService.ts — Gemini AI integration (primary LLM + embeddings)
  *
- * Primary  : Gemini 1.5 Flash (chat / sentiment) + text-embedding-004 (RAG)
- * Fallback : Groq llama-3.1-8b-instant for chat/sentiment when Gemini rate-limits
+ * Primary  : gemini-2.0-flash (chat/sentiment) + gemini-embedding-001 (RAG, 3072-dim)
+ * Fallback  : gemini-2.0-flash-lite on 429 rate-limit; Groq when Gemini fully unavailable
  *
  * Fails gracefully: if GEMINI_API_KEY is unset, returns null and callers fall back to Groq.
+ *
+ * Model changelog:
+ *   2026-07-10 — gemini-1.5-flash deprecated (404); migrated to gemini-2.0-flash
+ *   2026-07-10 — text-embedding-004 deprecated (404); migrated to gemini-embedding-001 (3072-dim)
+ *   2026-07-10 — added gemini-2.0-flash-lite fallback on 429; exponential-backoff retry
  */
 import 'dotenv/config';
 import { GoogleGenerativeAI, type GenerativeModel } from '@google/generative-ai';
 
-export const EMBED_DIM = 768;  // text-embedding-004 output dimension
+/**
+ * gemini-embedding-001 output dimension.
+ * Changed from 768 (text-embedding-004) to 3072 on 2026-07-10.
+ * DB migration in turso.ts drops old 768-dim vector index and creates embedding_3k column.
+ */
+export const EMBED_DIM = 3072;
+
+/** Model constants — update here if Google deprecates again */
+const CHAT_PRIMARY  = 'gemini-2.0-flash';
+const CHAT_FALLBACK = 'gemini-2.0-flash-lite';
+const EMBED_MODEL   = 'gemini-embedding-001';
 
 let _genAI: GoogleGenerativeAI | null = null;
-let _chatModel: GenerativeModel | null = null;
-let _embedModel: GenerativeModel | null = null;
+let _chatPrimary:  GenerativeModel | null = null;
+let _chatFallback: GenerativeModel | null = null;
+let _embedModel:   GenerativeModel | null = null;
 
 function getGenAI(): GoogleGenerativeAI | null {
   const key = process.env.GEMINI_API_KEY;
@@ -22,33 +38,66 @@ function getGenAI(): GoogleGenerativeAI | null {
   return _genAI;
 }
 
-function getChatModel(): GenerativeModel | null {
+function getChatModel(useFallback = false): GenerativeModel | null {
   const ai = getGenAI();
   if (!ai) return null;
-  if (!_chatModel) _chatModel = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
-  return _chatModel;
+  if (useFallback) {
+    if (!_chatFallback) _chatFallback = ai.getGenerativeModel({ model: CHAT_FALLBACK });
+    return _chatFallback;
+  }
+  if (!_chatPrimary) _chatPrimary = ai.getGenerativeModel({ model: CHAT_PRIMARY });
+  return _chatPrimary;
 }
 
 function getEmbedModel(): GenerativeModel | null {
   const ai = getGenAI();
   if (!ai) return null;
-  if (!_embedModel) _embedModel = ai.getGenerativeModel({ model: 'text-embedding-004' });
+  if (!_embedModel) _embedModel = ai.getGenerativeModel({ model: EMBED_MODEL });
   return _embedModel;
+}
+
+/**
+ * Retry wrapper with exponential backoff for 429 rate-limit errors.
+ * On first 429: waits 1s and retries with the lite fallback model.
+ * On second 429: returns null so callers fall back to Groq.
+ */
+async function withRetry<T>(
+  fn: (useFallback: boolean) => Promise<T | null>,
+  label: string,
+  maxRetries = 1,
+): Promise<T | null> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn(attempt > 0);
+    } catch (err: any) {
+      const status: number | undefined = err?.status ?? err?.statusCode;
+      if (status === 429 && attempt < maxRetries) {
+        const delayMs = Math.pow(2, attempt) * 1000;
+        console.warn(`[Gemini] 429 on ${label} — retry in ${delayMs}ms with fallback model`);
+        await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+      if (status !== 429) console.warn(`[Gemini] ${label} failed:`, err?.message ?? err);
+      return null;
+    }
+  }
+  return null;
 }
 
 // ─── Chat / Text generation ───────────────────────────────────────────────────
 
 /**
- * Generate a text response from Gemini 1.5 Flash.
- * Returns null if GEMINI_API_KEY is unset or on rate-limit/error.
+ * Generate a text response from Gemini 2.0 Flash (primary) or Flash-Lite (429 fallback).
+ * Returns null if GEMINI_API_KEY is unset or all retries exhausted.
  */
 export async function geminiGenerate(
   prompt: string,
   opts: { temperature?: number; maxTokens?: number } = {},
 ): Promise<string | null> {
-  const model = getChatModel();
-  if (!model) return null;
-  try {
+  if (!getGenAI()) return null;
+  return withRetry(async (useFallback) => {
+    const model = getChatModel(useFallback);
+    if (!model) return null;
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
@@ -57,10 +106,7 @@ export async function geminiGenerate(
       },
     });
     return result.response.text().trim() || null;
-  } catch (err) {
-    console.warn('[Gemini] generateContent failed:', err);
-    return null;  // caller falls back to Groq
-  }
+  }, 'generateContent');
 }
 
 /**
@@ -73,9 +119,10 @@ export async function geminiChat(
   userMessage: string,
   opts: { temperature?: number; maxTokens?: number } = {},
 ): Promise<string | null> {
-  const model = getChatModel();
-  if (!model) return null;
-  try {
+  if (!getGenAI()) return null;
+  return withRetry(async (useFallback) => {
+    const model = getChatModel(useFallback);
+    if (!model) return null;
     const chat = model.startChat({
       systemInstruction: { role: 'system', parts: [{ text: systemPrompt }] },
       history: history.map(h => ({
@@ -89,18 +136,15 @@ export async function geminiChat(
     });
     const result = await chat.sendMessage(userMessage);
     return result.response.text().trim() || null;
-  } catch (err) {
-    console.warn('[Gemini] chat failed:', err);
-    return null;  // caller falls back to Groq
-  }
+  }, 'chat');
 }
 
 // ─── Trading intelligence ───────────────────────────────────────────────────
 
 // ─── Daily API budget guard ──────────────────────────────────────────────────
 // Prevents rate-limit exhaustion on heavy signal days.
-// Free tier: 1500 req/day. Reserve 300 for embeddings + chat. Veto budget: 1200.
-const DAILY_VETO_BUDGET = 1200;
+// gemini-2.0-flash free tier: 200 RPD. Reserve 50 for embeddings. Veto budget: 150.
+const DAILY_VETO_BUDGET = 150;
 let _vetoCalls = 0;
 let _vetoBudgetDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
@@ -137,9 +181,12 @@ export async function geminiTradeVeto(ctx: TradeVetoContext): Promise<{
   verdict: 'EXECUTE' | 'SKIP' | 'REDUCE';
   reason: string;
 }> {
-  const model = getChatModel();
-  if (!model) return { verdict: 'EXECUTE', reason: 'Gemini unavailable — proceeding' };
+  if (!getChatModel()) return { verdict: 'EXECUTE', reason: 'Gemini unavailable — proceeding' };
   if (!consumeVetoBudget()) return { verdict: 'EXECUTE', reason: 'Gemini daily budget exhausted — proceeding' };
+
+  // Inject pattern history so Gemini reasons from this symbol's actual trade record
+  const { buildPatternContext } = await import('./patternEngine.js');
+  const patternCtx = await buildPatternContext(ctx.symbol).catch(() => '');
 
   const prompt = `You are a senior NSE equity trader reviewing an algorithmic trade proposal.
 
@@ -149,7 +196,7 @@ TRADE PROPOSAL:
 - Rule engine vote score: ${ctx.voteScore} (higher = stronger signal)
 - RSI: ${ctx.rsiValue?.toFixed(1) ?? 'unknown'}
 - Momentum: ${ctx.momentumTrend ?? 'unknown'}
-- News sentiment: ${ctx.groqSentiment ?? 'none'}
+- News sentiment: ${ctx.groqSentiment ?? 'none'}${patternCtx}
 
 PORTFOLIO CONTEXT:
 - Sector exposure: ${ctx.portfolioContext.sectorExposurePct?.toFixed(1) ?? '?'}% of NAV
@@ -157,7 +204,8 @@ PORTFOLIO CONTEXT:
 - Cash available: ${ctx.portfolioContext.cashBalancePct.toFixed(1)}% of NAV
 - Total holdings: ${ctx.portfolioContext.totalHoldings}
 
-Assess this trade. Reply in this exact JSON format only, no markdown:
+Assess this trade. Use the historical pattern if available — if current conditions match past winning entries, lean EXECUTE; if they match past losing entries, lean SKIP.
+Reply in this exact JSON format only, no markdown:
 {
   "verdict": "EXECUTE" | "SKIP" | "REDUCE",
   "reason": "<1-2 sentence rationale>"
@@ -168,17 +216,16 @@ Rules:
 - SKIP: signals are conflicting, sector already over-exposed, or risk/reward poor
 - REDUCE: direction is right but position size should be halved (over-extension risk)`;
 
+  const text = await geminiGenerate(prompt, { temperature: 0.1, maxTokens: 150 });
+  if (!text) return { verdict: 'EXECUTE', reason: 'Gemini timeout — proceeding' };
   try {
-    const text = await geminiGenerate(prompt, { temperature: 0.1, maxTokens: 150 });
-    if (!text) return { verdict: 'EXECUTE', reason: 'Gemini timeout — proceeding' };
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return { verdict: 'EXECUTE', reason: 'Gemini parse error — proceeding' };
     const parsed = JSON.parse(jsonMatch[0]);
     const verdict = ['EXECUTE', 'SKIP', 'REDUCE'].includes(parsed.verdict) ? parsed.verdict : 'EXECUTE';
     return { verdict, reason: String(parsed.reason ?? '') };
-  } catch (err) {
-    console.warn('[Gemini] tradeVeto failed:', err);
-    return { verdict: 'EXECUTE', reason: 'Gemini error — proceeding' };
+  } catch {
+    return { verdict: 'EXECUTE', reason: 'Gemini JSON parse error — proceeding' };
   }
 }
 
@@ -262,17 +309,28 @@ Provide a 2-3 sentence portfolio health assessment covering: risk concentration,
 // ─── Embeddings ───────────────────────────────────────────────────────────────
 
 /**
- * Embed text using Gemini text-embedding-004 (768-dim).
- * Returns null if GEMINI_API_KEY is unset or embedding fails.
+ * Embed text using gemini-embedding-001 (3072-dim).
+ * Returns null if GEMINI_API_KEY is unset, rate-limited, or embedding fails.
+ * Callers (ragService) fall back to FTS5 keyword search when null.
  */
 export async function geminiEmbed(text: string): Promise<number[] | null> {
   const model = getEmbedModel();
   if (!model) return null;
   try {
     const result = await model.embedContent(text.slice(0, 2000));
-    return result.embedding.values ?? null;
-  } catch (err) {
-    console.warn('[Gemini] embedContent failed:', err);
+    const values = result.embedding.values ?? null;
+    if (values && values.length !== EMBED_DIM) {
+      console.warn(`[Gemini] Unexpected embed dim: got ${values.length}, expected ${EMBED_DIM} — discarding`);
+      return null;
+    }
+    return values;
+  } catch (err: any) {
+    const status: number | undefined = err?.status ?? err?.statusCode;
+    if (status === 429) {
+      console.warn('[Gemini] embed 429 — FTS5 fallback active');
+    } else {
+      console.warn('[Gemini] embedContent failed:', err?.message ?? err);
+    }
     return null;
   }
 }
@@ -347,7 +405,12 @@ export interface SellReviewResult {
  * Returns null on Gemini unavailability; caller proceeds with technical signal.
  */
 export async function geminiSellReview(ctx: SellReviewContext): Promise<SellReviewResult | null> {
+  if (!getChatModel()) return null;  // guard: don't consume budget if Gemini unavailable
   if (!consumeVetoBudget()) return null;
+
+  // Inject sell pattern history — Gemini learns when HOLDs vs EXECUTEs succeeded for this symbol
+  const { buildPatternContext } = await import('./patternEngine.js');
+  const patternCtx = await buildPatternContext(ctx.symbol).catch(() => '');
 
   const prompt = `You are a portfolio manager reviewing whether to sell an equity position.
 
@@ -357,7 +420,7 @@ Position context:
 - Days held: ${ctx.daysHeld}
 - RSI: ${ctx.rsiValue !== undefined ? ctx.rsiValue.toFixed(0) : 'unavailable'} (above 65 = overbought signal)
 - Momentum trend: ${ctx.momentumTrend ?? 'unknown'}
-- Latest news sentiment: ${ctx.groqSentiment ?? 'no recent news'}
+- Latest news sentiment: ${ctx.groqSentiment ?? 'no recent news'}${patternCtx}
 
 The technical system has flagged this position as a SELL candidate based on RSI/momentum.
 Your task is to decide whether to:
@@ -368,6 +431,7 @@ Your task is to decide whether to:
 Key principle: HOLD is not indefinite. It delays by one trading cycle only.
 Do not HOLD if the position is already profitable and news is negative — book the profit.
 Do not ACCELERATE just because RSI is high if the trend is still bullish.
+Use the historical pattern above to guide your verdict when available.
 
 Respond with JSON only (no markdown):
 {"verdict":"EXECUTE"|"HOLD"|"ACCELERATE","score":<-1 to 1>,"reason":"<one sentence max 120 chars>"}

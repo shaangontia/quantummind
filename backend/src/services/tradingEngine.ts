@@ -15,6 +15,7 @@ import { getGroqStockSentiment } from './groqService.js';
 import { getSignalWeights, getCurrentRegime, recordSignalForTracking, resolveGeminiSellDecisions } from './adaptiveEngine.js';
 import { geminiTradeVeto, geminiFundamentalAnalysis } from './geminiService.js';
 import { getFundamentalSnapshot, computeFundamentalVerdict } from './fundamentalService.js';
+import { getAdaptiveRSIBuy, getPatternConfidence } from './patternEngine.js';
 
 export interface TradeSignal {
   symbol: string;
@@ -134,6 +135,7 @@ export interface PortfolioSignalContext {
   sectorExposurePct?: number;    // % NAV in the same sector as this symbol
   proposedPositionPct?: number;  // actual position as % of NAV (computed by caller)
   targetReturnPct?: number;      // portfolio's annual return target (drives takeProfit cap)
+  portfolioId?: number;          // used to record Gemini BUY veto decisions for learning
 }
 
 export async function generateSignal(
@@ -187,6 +189,10 @@ export async function generateSignal(
     if (volatilityPref || investmentGoal) {
       t = applyAdvancedRiskProfile(t, volatilityPref, investmentGoal);
     }
+
+    // Phase 12: Adaptive RSI — per-symbol learned buy threshold from pattern history
+    const adaptiveRsi = await getAdaptiveRSIBuy(symbol, t.rsiBuy).catch(() => t.rsiBuy);
+    if (adaptiveRsi !== t.rsiBuy) t = { ...t, rsiBuy: adaptiveRsi };
 
     const w = (src: string) => weights.get(src)?.weight ?? 1.0;
     const notes: string[] = [];
@@ -337,6 +343,19 @@ export async function generateSignal(
       else if (groq.score === -1){ sell += 1; notes.push(`Groq: ${groq.tradeImplication}`); }
     }
 
+    // Phase 12: Pattern confidence boost — multiply buy/sell scores by learned confidence
+    const momentumForPattern = notes.some(n => n.includes('bullish') || n.includes('Momentum UP')) ? 'bullish'
+      : notes.some(n => n.includes('bearish') || n.includes('Momentum DOWN')) ? 'bearish' : 'neutral';
+    const patternConf = await getPatternConfidence(
+      symbol, rsiVal ?? 50, momentumForPattern, regime?.regime ?? 'SIDEWAYS'
+    ).catch(() => 1.0);
+    if (patternConf !== 1.0) {
+      buy  = buy  * patternConf;
+      sell = sell * patternConf;
+      if (patternConf > 1.1)  notes.push(`Pattern confidence boost: ${patternConf.toFixed(2)}×`);
+      if (patternConf < 0.95) notes.push(`Pattern confidence penalty: ${patternConf.toFixed(2)}×`);
+    }
+
     const reason = notes.join('; ') || 'No signal';
     const topScore = Math.max(buy, sell);
     const topAction: 'BUY' | 'SELL' | null = buy > sell && buy >= 2 ? 'BUY' : sell > buy && sell >= 2 ? 'SELL' : null;
@@ -407,6 +426,16 @@ export async function generateSignal(
             : 100,
         },
       }).catch(() => ({ verdict: 'EXECUTE' as const, reason: '' }));
+
+      // Record BUY veto decision for Gemini accuracy learning
+      if (portfolioCtx?.portfolioId) {
+        const { run: dbRun } = await import('../db/turso.js');
+        await dbRun(
+          'INSERT INTO gemini_decisions (portfolio_id,symbol,decision_type,verdict,score) VALUES (?,?,?,?,?)',
+          [portfolioCtx.portfolioId, symbol, 'buy_veto', veto.verdict,
+           veto.verdict === 'EXECUTE' ? 1 : veto.verdict === 'REDUCE' ? 0 : -1]
+        ).catch(() => null);
+      }
 
       if (veto.verdict === 'SKIP') {
         return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Gemini veto: ${veto.reason}`, price: q.price };

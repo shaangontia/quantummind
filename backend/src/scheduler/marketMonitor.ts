@@ -7,6 +7,7 @@ import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
 import { resolveSignalOutcomes } from '../services/adaptiveEngine.js';
 import { geminiCycleFocus, geminiPortfolioInsight, geminiSellReview } from '../services/geminiService.js';
+import { recordSignalPattern, resolvePatternOutcome } from '../services/patternEngine.js';
 import { fetchAnnouncements } from '../services/newsService.js';
 
 /**
@@ -80,6 +81,7 @@ async function runPortfolioTradingCycle(
     cashBalance: summary.cashBalance,
     holdings: summary.holdings.length,
     targetReturnPct: summary.targetReturnPct,
+    portfolioId,  // enables BUY veto recording in generateSignal for Gemini learning
   };
 
   let sellSignalCount = 0;
@@ -114,16 +116,31 @@ async function runPortfolioTradingCycle(
       );
       const holdCount = Number(holdingRecord?.gemini_hold_count ?? 0);
 
+      // Resolve days held from holdings.created_at for richer Gemini context
+      const holdingRecord2 = await import('../db/turso.js').then(m =>
+        m.queryOne('SELECT created_at FROM holdings WHERE portfolio_id=? AND symbol=?', [portfolioId, h.symbol])
+      );
+      const buyDate = holdingRecord2?.created_at ? new Date(String(holdingRecord2.created_at)) : null;
+      const daysHeld = buyDate ? Math.floor((Date.now() - buyDate.getTime()) / 86_400_000) : 0;
+
       // Gemini sell review — non-blocking on failure
       const sellReview = await geminiSellReview({
         symbol: h.symbol,
         unrealizedPnlPct: lossRatio * 100,
-        daysHeld: 0, // HoldingSummary doesn't expose buy date; 0 = unknown
+        daysHeld,
         rsiValue: undefined, // populated by signal context if available
         momentumTrend: signal.reason?.includes('bearish') ? 'bearish' : signal.reason?.includes('bullish') ? 'bullish' : 'neutral',
         groqSentiment: signal.groqSentiment,
         stopLossTriggered: false,
       }).catch(() => null);
+
+      // Record ALL Gemini sell verdicts for learning (not just HOLDs)
+      const recordSellDecision = async (verdict: string, score: number) => {
+        await import('../db/turso.js').then(m =>
+          m.run('INSERT INTO gemini_decisions (portfolio_id,symbol,decision_type,verdict,score) VALUES (?,?,?,?,?)',
+            [portfolioId, h.symbol, 'sell_review', verdict, score])
+        ).catch(() => null);
+      };
 
       if (sellReview?.verdict === 'HOLD' && holdCount < 2) {
         // Delay this sell — increment hold count and skip
@@ -133,17 +150,14 @@ async function runPortfolioTradingCycle(
         );
         logger.info({ job: 'market-cycle', portfolioId, symbol: h.symbol, phase: 'signal',
           action: 'HOLD', sellReason: sellReview.reason, holdCount: holdCount + 1 });
-        // Record Gemini decision for learning
-        await import('../db/turso.js').then(m =>
-          m.run('INSERT INTO gemini_decisions (portfolio_id,symbol,decision_type,verdict,score) VALUES (?,?,?,?,?)',
-            [portfolioId, h.symbol, 'sell_review', 'HOLD', sellReview.score])
-        );
+        await recordSellDecision('HOLD', sellReview.score);
         reason = `Gemini HOLD (${holdCount + 1}/2): ${sellReview.reason}`;
         shouldSell = false;
       } else {
-        // EXECUTE or ACCELERATE or hold limit reached
+        // EXECUTE or ACCELERATE or hold limit reached — record whichever verdict fired
         shouldSell = true;
         if (sellReview) {
+          await recordSellDecision(sellReview.verdict, sellReview.score);
           reason = sellReview.verdict === 'ACCELERATE'
             ? `Gemini ACCELERATE: ${sellReview.reason} | ${reason}`
             : `${reason} | Gemini: ${sellReview.reason}`;
@@ -166,7 +180,10 @@ async function runPortfolioTradingCycle(
         logger.info({ job: 'market-cycle', portfolioId, symbol: h.symbol, phase: 'execution', action: 'SKIP', reason: 'Market closed' });
         continue;
       }
-      await executeTrade(portfolioId, h.symbol, h.companyName, 'SELL', h.quantity, signal.price, reason);
+      const sellTradeId = await executeTrade(portfolioId, h.symbol, h.companyName, 'SELL', h.quantity, signal.price, reason);
+      // Resolve pattern outcome: mark the corresponding BUY pattern WIN/LOSS
+      const sellPnlPct = ((signal.price - h.avgBuyPrice) / h.avgBuyPrice) * 100;
+      void resolvePatternOutcome(portfolioId, h.symbol, sellPnlPct).catch(() => null);
     }
   }
 
@@ -245,6 +262,19 @@ async function runPortfolioTradingCycle(
     if (tradeId && sigRes.lastInsertRowid) {
       await run('UPDATE market_signals SET acted_upon=1, trade_id=? WHERE id=?', [tradeId, sigRes.lastInsertRowid]);
       tradeCount++;
+      // Record BUY pattern for learning
+      const regime2 = await import('../services/adaptiveEngine.js').then(m => m.getCurrentRegime()).catch(() => null);
+      void recordSignalPattern({
+        portfolioId, symbol, action: 'BUY',
+        rsiValue: signal.mlBoost ?? 50,
+        momentumTrend: signal.reason?.includes('bullish') ? 'bullish' : signal.reason?.includes('bearish') ? 'bearish' : 'neutral',
+        groqSentiment: signal.groqSentiment ?? 'NEUTRAL',
+        fundamentalScore: signal.fundamentalScore ?? 50,
+        marketRegime: regime2?.regime ?? 'SIDEWAYS',
+        sector: symbol.replace('.NS', ''),
+        voteScore: 0,
+        tradeId: Number(tradeId),
+      }).catch(() => null);
     }
   }
   return { trades: tradeCount, signals: signalCount };

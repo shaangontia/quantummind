@@ -95,7 +95,7 @@ export async function runMigrations(): Promise<void> {
     await db.execute(`CREATE TABLE IF NOT EXISTS tars_memory (
       id          INTEGER  PRIMARY KEY AUTOINCREMENT,
       content     TEXT     NOT NULL,
-      embedding   F32_BLOB(768),  -- Gemini text-embedding-004 (768-dim); NULL when Gemini unavailable
+      embedding   F32_BLOB(768),  -- legacy 768-dim column (text-embedding-004); superseded by embedding_3k
       source_type TEXT     NOT NULL,
       source_id   TEXT,
       created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -103,18 +103,39 @@ export async function runMigrations(): Promise<void> {
     console.log('[DB] Migration: tars_memory table ensured');
   } catch (err) { console.warn('[DB] tars_memory table creation skipped:', err); }
 
-  // Add embedding column to existing tars_memory tables created before Gemini integration
+  // Add legacy embedding column for existing tables that predate Gemini integration
   try {
     await db.execute('ALTER TABLE tars_memory ADD COLUMN embedding F32_BLOB(768)');
-    console.log('[DB] Migration: tars_memory.embedding column added');
+    console.log('[DB] Migration: tars_memory.embedding (legacy 768) column added');
+  } catch (_) { /* already exists — expected */ }
+
+  // Phase 12: gemini-embedding-001 migration (3072-dim, replaces text-embedding-004 768-dim)
+  // SQLite cannot change column types, so we add a new column embedding_3k F32_BLOB(3072).
+  // ragService.ts writes to embedding_3k exclusively. Old 768-dim column is left for audit.
+  try {
+    await db.execute('ALTER TABLE tars_memory ADD COLUMN embedding_3k F32_BLOB(3072)');
+    console.log('[DB] Migration: tars_memory.embedding_3k (3072-dim) column added');
   } catch (_) { /* already exists */ }
 
+  // Drop old 768-dim vector index (incompatible with 3072-dim vectors); FTS5 fallback active
+  try {
+    await db.execute('DROP INDEX IF EXISTS tars_memory_vec_idx');
+    console.log('[DB] Migration: old 768-dim vector index dropped');
+  } catch (_) { /* ignore */ }
+
+  // Nullify old 768-dim embeddings so they don’t confuse any residual index reads
+  try {
+    await db.execute('UPDATE tars_memory SET embedding = NULL WHERE embedding IS NOT NULL');
+    console.log('[DB] Migration: old 768-dim embeddings cleared');
+  } catch (_) { /* ignore */ }
+
+  // Create new vector index on the 3072-dim column
   try {
     await db.execute(
-      `CREATE INDEX IF NOT EXISTS tars_memory_vec_idx ON tars_memory (libsql_vector_idx(embedding))`
+      `CREATE INDEX IF NOT EXISTS tars_memory_vec3k_idx ON tars_memory (libsql_vector_idx(embedding_3k))`
     );
-    console.log('[DB] Migration: tars_memory vector index ensured');
-  } catch (err) { console.warn('[DB] Vector index skipped:', err); }
+    console.log('[DB] Migration: tars_memory 3072-dim vector index ensured');
+  } catch (err) { console.warn('[DB] 3072-dim vector index skipped (FTS5 fallback active):', err); }
 
   try {
     // FTS5 virtual table mirrors tars_memory.content for BM25 full-text search
@@ -192,6 +213,11 @@ export async function runMigrations(): Promise<void> {
     await db.execute('ALTER TABLE holdings ADD COLUMN gemini_hold_count INTEGER DEFAULT 0');
     console.log('[DB] Migration: holdings.gemini_hold_count column added');
   } catch (_) { /* already exists */ }
+
+  // Phase 12: Signal pattern memory for adaptive learning
+  const { ensurePatternTables } = await import('../services/patternEngine.js');
+  await ensurePatternTables();
+  console.log('[DB] Migration: signal_patterns tables ensured');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {
