@@ -15,17 +15,16 @@ import type {
 // ─── Local types (benchmark + sector) ─────────────────────────────────────────
 
 interface BenchmarkSeriesPoint { date: string; value: number; }
+interface BenchmarkChartPoint  { date: string; portfolioValue: number; }
 
 export interface BenchmarkApiData {
   alpha: number | null;
   portfolioReturnPct: number;
   nifty50ReturnPct: number | null;
   nifty500ReturnPct: number | null;
-  series: {
-    portfolio: BenchmarkSeriesPoint[];
-    nifty50:   BenchmarkSeriesPoint[];
-    nifty500:  BenchmarkSeriesPoint[];
-  };
+  chart:          BenchmarkChartPoint[];
+  nifty50History: BenchmarkSeriesPoint[];
+  nifty500History: BenchmarkSeriesPoint[];
 }
 
 export interface BenchmarkData {
@@ -145,12 +144,12 @@ export const portfoliosApi = baseApi.injectEndpoints({
       query: id => ({ url: `/portfolios/${id}/benchmark`, method: 'GET' }),
       providesTags: (_result, _err, id) => [{ type: 'Benchmark', id }],
       transformResponse: (raw: BenchmarkApiData): BenchmarkData => {
-        const portfolioMap = new Map(raw.series.portfolio.map(p => [p.date, p.value]));
-        const nifty50Map   = new Map(raw.series.nifty50.map(p  => [p.date, p.value]));
-        const nifty500Map  = new Map(raw.series.nifty500.map(p => [p.date, p.value]));
+        const portfolioMap = new Map((raw.chart ?? []).map(p => [p.date, p.portfolioValue]));
+        const nifty50Map   = new Map((raw.nifty50History  ?? []).map(p => [p.date, p.value]));
+        const nifty500Map  = new Map((raw.nifty500History ?? []).map(p => [p.date, p.value]));
         const allDates = [...new Set([
-          ...raw.series.nifty50.map(p  => p.date),
-          ...raw.series.nifty500.map(p => p.date),
+          ...(raw.nifty50History  ?? []).map(p => p.date),
+          ...(raw.nifty500History ?? []).map(p => p.date),
         ])].sort();
         return {
           alpha: raw.alpha ?? 0,
