@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePortfolios } from '../../hooks/usePortfolios.ts';
 import { useAppDispatch, useAppSelector } from '../../../../store/hooks.ts';
@@ -10,11 +11,15 @@ import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
+import { OnboardingModal } from '../../../../shared/ui/OnboardingModal/index.ts';
 import { formatINR, formatPct, riskColor } from '../../model/portfolios.utils.ts';
 import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
 import './PortfoliosPage.css';
 
 export const PortfoliosPage = () => {
+  const [showOnboarding, setShowOnboarding] = useState(
+    () => localStorage.getItem('qm_onboarding_seen') !== '1',
+  );
   const { portfolios, isLoading, error, refresh } = usePortfolios();
   const dispatch  = useAppDispatch();
   const navigate  = useNavigate();
@@ -24,14 +29,25 @@ export const PortfoliosPage = () => {
 
   return (
     <div className="portfolios-page">
+      {showOnboarding && <OnboardingModal onClose={() => setShowOnboarding(false)} />}
       <div className="page-header">
         <div>
           <h1 className="page-title">Portfolios</h1>
           <p className="page-subtitle">AI-managed portfolios — goal-driven signals, fundamental analysis, and intelligent risk classification</p>
         </div>
-        <button className="btn btn-primary" onClick={() => dispatch(openCreateModal())}>
-          + New Portfolio
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            className="btn btn-ghost"
+            onClick={() => setShowOnboarding(true)}
+            title="How to use QuantumMind"
+            style={{ fontSize: '1rem', padding: '6px 10px' }}
+          >
+            ?
+          </button>
+          <button className="btn btn-primary" onClick={() => dispatch(openCreateModal())}>
+            + New Portfolio
+          </button>
+        </div>
       </div>
 
       {isLoading && (
