@@ -11,6 +11,7 @@ import type {
 } from '../../../../api/portfolio.api.types.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
+import { editModalStyles as s } from './EditPortfolioModal.styles.ts';
 import '../../ui/CreatePortfolioModal/CreatePortfolioModal.css';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -84,18 +85,13 @@ const useFieldState = (editState: PortfolioEditState | undefined) => {
 // ─── Subcomponents ────────────────────────────────────────────────────────────
 
 const LockBadge = ({ reason }: { reason: string }) => (
-  <span
-    title={reason}
-    style={{ marginLeft: 6, fontSize: '0.75rem', cursor: 'help', verticalAlign: 'middle' }}
-  >
-    🔒
-  </span>
+  <span title={reason} className="field-badge">🔒</span>
 );
 
 const WarnBadge = () => (
   <span
     title="Strategy changes apply at next cron cycle (≤5 min). Existing positions are not force-liquidated."
-    style={{ marginLeft: 6, fontSize: '0.75rem', cursor: 'help', verticalAlign: 'middle' }}
+    className="field-badge"
   >
     ⚠️
   </span>
@@ -187,11 +183,11 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
           {/* State banner */}
           {stateLoading && <SkeletonBlock height={40} borderRadius={8} />}
           {banner && (
-            <div style={{ background: banner.bg, border: `1px solid ${banner.border}`, borderRadius: 8, padding: '10px 14px', fontSize: '0.82rem', color: banner.color, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ ...s.lifecycleBanner, background: banner.bg, border: `1px solid ${banner.border}`, color: banner.color }}>
               <span>{banner.icon}</span>
               <span>{banner.label}</span>
               {editState?.meta.tradeCount !== undefined && editState.meta.tradeCount > 0 && (
-                <span style={{ marginLeft: 'auto', opacity: 0.8, fontSize: '0.78rem' }}>
+                <span style={s.lifecycleBannerMeta}>
                   {editState.meta.holdingsCount} holdings · {editState.meta.tradeCount} trades
                   {editState.meta.drawdownPct > 0 && ` · ${editState.meta.drawdownPct.toFixed(1)}% drawdown`}
                 </span>
@@ -212,17 +208,7 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
 
           {/* Strategy fields — locked once any trade has executed */}
           {editState && editState.meta.tradeCount > 0 ? (
-            <div style={{
-              padding: '12px 16px',
-              borderRadius: 8,
-              background: 'rgba(239,68,68,0.06)',
-              border: '1px solid rgba(239,68,68,0.25)',
-              fontSize: '0.82rem',
-              color: '#ef4444',
-              display: 'flex',
-              gap: 8,
-              alignItems: 'center',
-            }}>
+            <div style={s.tradeLockNotice}>
               <span>🔒</span>
               <span>
                 Strategy locked — trading has begun ({editState.meta.tradeCount} trade{editState.meta.tradeCount !== 1 ? 's' : ''} executed).
@@ -255,14 +241,14 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
                 style={form.initialCapital < capitalFloor ? { borderColor: '#ef4444' } : {}}
               />
               {capitalDelta !== 0 && (
-                <p style={{ fontSize: '0.72rem', color: capitalDelta > 0 ? 'var(--accent-green)' : '#ef4444', marginTop: 4 }}>
+                <p style={capitalDelta > 0 ? s.capitalDeltaPositive : s.capitalDeltaNegative}>
                   {capitalDelta > 0
                     ? `+₹${capitalDelta.toLocaleString('en-IN')} will be added to available cash`
                     : `⚠ Capital reduction — floor is ₹${capitalFloor.toLocaleString('en-IN')}`}
                 </p>
               )}
-              {fieldError.capitalReduction && <p style={{ fontSize: '0.72rem', color: '#ef4444', marginTop: 4 }}>⚠ {fieldError.capitalReduction}</p>}
-              {capitalFloor > 0 && <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2 }}>Min: ₹{capitalFloor.toLocaleString('en-IN')} (invested value)</p>}
+              {fieldError.capitalReduction && <p style={s.capitalFieldError}>⚠ {fieldError.capitalReduction}</p>}
+              {capitalFloor > 0 && <p style={s.capitalFloorHint}>Min: ₹{capitalFloor.toLocaleString('en-IN')} (invested value)</p>}
             </div>
 
             <div className="form-group">
@@ -370,7 +356,7 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
                 </button>
               ))}
             </div>
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
+            <p style={s.capHint}>
               {form.preferredCaps?.length ? `AI will allocate ~50% to ${form.preferredCaps.join(' + ')}` : 'No restriction — AI invests across all market caps freely'}
             </p>
           </div>
@@ -382,7 +368,7 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
               {isWarn('preferredSectors') && <WarnBadge />}
               {isLocked('preferredSectors') && <LockBadge reason={lockReason} />}
             </label>
-            <div className="sectors-grid" style={isLocked('preferredSectors') ? { opacity: 0.45, pointerEvents: 'none' } : {}}>
+            <div className="sectors-grid" style={isLocked('preferredSectors') ? { opacity: 0.45, pointerEvents: 'none' as const } : undefined}>
               {SECTORS.map(sector => (
                 <button
                   key={sector}
@@ -399,9 +385,9 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
 
           {/* Advanced Risk */}
           <div className="form-group">
-            <label style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <label style={s.labelRow}>
               <span>Advanced Risk Settings</span>
-              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>AI uses these to tune signal thresholds</span>
+              <span style={s.labelHint}>AI uses these to tune signal thresholds</span>
             </label>
             <div className="two-col-form">
               <div>
@@ -442,13 +428,13 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
               </div>
             </div>
 
-            <div style={{ marginTop: 10 }}>
+            <div style={s.drawdownSection}>
               <label className="sublabel">
                 Max Drawdown Tolerance (%)
                 {isWarn('maxDrawdownPct') && <WarnBadge />}
                 {isLocked('maxDrawdownPct') && <LockBadge reason={lockReason} />}
               </label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={s.drawdownSliderRow}>
                 <input
                   type="range"
                   min={5}
@@ -457,13 +443,13 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
                   value={form.maxDrawdownPct}
                   onChange={e => setForm(f => ({ ...f, maxDrawdownPct: Number(e.target.value) }))}
                   disabled={isLocked('maxDrawdownPct')}
-                  style={{ flex: 1, ...(isLocked('maxDrawdownPct') ? { opacity: 0.45 } : {}) }}
+                  style={isLocked('maxDrawdownPct') ? s.drawdownSliderDisabled : s.drawdownSlider}
                 />
-                <span style={{ fontWeight: 600, color: (form.maxDrawdownPct ?? 20) > 30 ? '#ef4444' : 'var(--text-primary)', minWidth: 40 }}>
+                <span style={(form.maxDrawdownPct ?? 20) > 30 ? s.drawdownValueDanger : s.drawdownValue}>
                   {form.maxDrawdownPct ?? 20}%
                 </span>
               </div>
-              <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>
+              <p style={s.drawdownHint}>
                 AI pauses trading if portfolio drops more than {form.maxDrawdownPct ?? 20}% from its peak
               </p>
             </div>

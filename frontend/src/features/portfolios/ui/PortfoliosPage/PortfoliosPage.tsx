@@ -13,6 +13,7 @@ import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
 import { OnboardingModal } from '../../../../shared/ui/OnboardingModal/index.ts';
 import { formatINR, formatPct, riskColor } from '../../model/portfolios.utils.ts';
+import { portfoliosPageStyles as s } from './PortfoliosPage.styles.ts';
 import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
 import './PortfoliosPage.css';
 
@@ -35,12 +36,12 @@ export const PortfoliosPage = () => {
           <h1 className="page-title">Portfolios</h1>
           <p className="page-subtitle">Fully autonomous AI portfolio manager — adaptive signals, real-time fundamental analysis, and self-learning intelligence that evolves with every trade</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={s.headerActions}>
           <button
             className="btn btn-ghost"
+            style={s.helpBtn}
             onClick={() => setShowOnboarding(true)}
             title="How to use QuantumMind"
-            style={{ fontSize: '1rem', padding: '6px 10px' }}
           >
             ?
           </button>
@@ -101,7 +102,7 @@ export const PortfoliosPage = () => {
                   </div>
                   <div className="portfolio-stat">
                     <span className="stat-l">Current Value</span>
-                    <span className="stat-v" style={{ fontWeight: 700 }}>
+                    <span className="stat-v" style={s.statValueBold}>
                       {formatINR((p as any).current_nav ?? p.initial_capital)}
                     </span>
                   </div>
@@ -111,7 +112,7 @@ export const PortfoliosPage = () => {
                   </div>
                   <div className="portfolio-stat">
                     <span className="stat-l">Current Return</span>
-                    <span className={`stat-v ${isPositive ? 'tag-positive' : 'tag-negative'}`} style={{ fontWeight: 700 }}>
+                    <span className={`stat-v ${isPositive ? 'tag-positive' : 'tag-negative'}`} style={s.statValueBold}>
                       {formatPct(returnPct)}
                     </span>
                   </div>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { onboardingStyles as s } from './OnboardingModal.styles.ts';
 import './OnboardingModal.css';
 
 interface Step {
@@ -90,7 +91,7 @@ export const OnboardingModal = ({ onClose }: OnboardingModalProps) => {
           >
             Skip
           </button>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={s.footerNav}>
             {step > 0 && (
               <button className="btn btn-ghost" onClick={() => setStep(s => s - 1)}>
                 ← Back

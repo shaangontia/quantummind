@@ -3,6 +3,7 @@ import { useCreatePortfolioMutation } from '../../../../store/portfolios/index.t
 import type { CreatePortfolioPayload, RebalanceFrequency } from '../../../../api/portfolio.api.types.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { useRiskClassifier } from '../../hooks/useRiskClassifier.ts';
+import { createModalStyles as s } from './CreatePortfolioModal.styles.ts';
 import './CreatePortfolioModal.css';
 
 interface CreatePortfolioModalProps {
@@ -149,27 +150,14 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
 
           {/* Derived risk classification banner */}
           {derivedRisk && (
-            <div style={{
-              padding: '10px 14px',
-              borderRadius: 8,
-              background: 'rgba(255,255,255,0.04)',
-              border: `1px solid ${RISK_COLORS[derivedRisk.level] ?? '#666'}44`,
-              marginBottom: 4,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>AI-classified risk</span>
-                <span style={{
-                  fontWeight: 700,
-                  fontSize: '0.85rem',
-                  color: RISK_COLORS[effectiveRisk ?? derivedRisk.level],
-                }}>
+            <div style={{ ...s.riskBanner, borderColor: `${RISK_COLORS[derivedRisk.level] ?? '#666'}44` }}>
+              <div style={s.riskBannerHeader}>
+                <span style={s.riskBannerLabel}>AI-classified risk</span>
+                <span style={{ ...s.riskBannerLabel, fontWeight: 700, color: RISK_COLORS[effectiveRisk ?? derivedRisk.level] }}>
                   {derivedRisk.level}
                 </span>
               </div>
-              <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '4px 0 6px' }}>
-                {derivedRisk.explanation}
-              </p>
-
+              <p style={s.riskBannerExplanation}>{derivedRisk.explanation}</p>
             </div>
           )}
 
@@ -215,7 +203,7 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
                 </button>
               ))}
             </div>
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
+            <p style={s.capHint}>
               {form.preferredCaps && form.preferredCaps.length > 0
                 ? `AI will allocate ~50% to ${form.preferredCaps.join(' + ')}, rest across other caps`
                 : 'No restriction — AI invests across all market caps freely'}
@@ -240,9 +228,9 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
 
           {/* Advanced Risk Profiling */}
           <div className="form-group">
-            <label style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <label style={s.labelRow}>
               <span>Advanced Risk Settings</span>
-              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>AI uses these to tune signal thresholds</span>
+              <span style={s.labelHint}>AI uses these to tune signal thresholds</span>
             </label>
             <div className="two-col-form">
               <div>
@@ -270,9 +258,9 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
                 </select>
               </div>
             </div>
-            <div style={{ marginTop: 10 }}>
+            <div style={s.drawdownSection}>
               <label className="sublabel">Max Drawdown Tolerance (%)</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={s.drawdownSliderRow}>
                 <input
                   type="range"
                   min={5}
@@ -280,13 +268,13 @@ export const CreatePortfolioModal = ({ onClose, onCreated }: CreatePortfolioModa
                   step={5}
                   value={form.maxDrawdownPct}
                   onChange={e => setForm(f => ({ ...f, maxDrawdownPct: Number(e.target.value) }))}
-                  style={{ flex: 1 }}
+                  style={s.drawdownSlider}
                 />
-                <span style={{ fontWeight: 600, color: (form.maxDrawdownPct ?? 20) > 30 ? '#ef4444' : 'var(--text-primary)', minWidth: 40 }}>
+                <span style={(form.maxDrawdownPct ?? 20) > 30 ? s.drawdownValueDanger : s.drawdownValue}>
                   {form.maxDrawdownPct ?? 20}%
                 </span>
               </div>
-              <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>
+              <p style={s.drawdownHint}>
                 AI pauses trading if portfolio drops more than {form.maxDrawdownPct ?? 20}% from its peak
               </p>
             </div>

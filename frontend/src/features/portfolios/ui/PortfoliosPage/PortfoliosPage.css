@@ -140,3 +140,20 @@
 .portfolio-card:hover .portfolio-edit-btn {
   opacity: 1;
 }
+
+/* ─── Page header actions ─────────────────────────────────────────────────── */
+.page-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn-help {
+  font-size: 1rem;
+  padding: 6px 10px;
+}
+
+/* ─── Portfolio stat emphasis ─────────────────────────────────────────────── */
+.stat-v--bold {
+  font-weight: 700;
+}
