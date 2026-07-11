@@ -886,3 +886,18 @@ export async function isInEarningsBlackout(nseSymbol: string): Promise<boolean> 
   );
   return row != null;
 }
+
+/**
+ * Phase 13: Returns average daily traded value (INR) for a symbol.
+ * Computed as averageVolume × current price from cached quote data.
+ * Returns null when quote unavailable (liquidity gate will skip the check).
+ */
+export async function getAvgDailyTradedValue(symbol: string): Promise<number | null> {
+  try {
+    const q = await getQuote(symbol);
+    if (!q.averageVolume || !q.price) return null;
+    return q.averageVolume * q.price;
+  } catch {
+    return null;
+  }
+}

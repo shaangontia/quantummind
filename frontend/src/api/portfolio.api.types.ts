@@ -169,6 +169,7 @@ export interface SummaryHolding {
   riskAmountInr?: number;
   liquidityWarning?: boolean;
   asmGsmFlag?: boolean;
+  thesisInvalidated?: boolean;
 }
 
 export interface PortfolioSummary {

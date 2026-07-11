@@ -4,4 +4,5 @@ export interface HoldingExitRulesProps {
   timeStopDate?: string;
   riskAmountInr?: number;
   currentPrice?: number;
+  thesisInvalidated?: boolean;
 }

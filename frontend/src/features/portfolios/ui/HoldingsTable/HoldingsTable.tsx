@@ -117,6 +117,7 @@ export const HoldingsTable = memo(({ portfolioId }: HoldingsTableProps) => {
                       trailingStopPrice={h.trailingStopPrice}
                       timeStopDate={h.timeStopDate}
                       riskAmountInr={h.riskAmountInr}
+                      thesisInvalidated={h.thesisInvalidated}
                     />
                   </TableCell>
                 </TableRow>

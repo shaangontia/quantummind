@@ -9,8 +9,8 @@ const formatDate = (iso: string) => new Date(iso).toLocaleDateString('en-IN', { 
  * Inline exit-rule chips for a holding row using MUI Chip.
  * Renders nothing if no exit fields are present.
  */
-export const HoldingExitRules = ({ atrStopPrice, trailingStopPrice, timeStopDate, riskAmountInr }: HoldingExitRulesProps) => {
-  const hasAny = atrStopPrice != null || trailingStopPrice != null || timeStopDate != null || riskAmountInr != null;
+export const HoldingExitRules = ({ atrStopPrice, trailingStopPrice, timeStopDate, riskAmountInr, thesisInvalidated }: HoldingExitRulesProps) => {
+  const hasAny = atrStopPrice != null || trailingStopPrice != null || timeStopDate != null || riskAmountInr != null || thesisInvalidated;
   if (!hasAny) return null;
 
   return (
@@ -34,6 +34,11 @@ export const HoldingExitRules = ({ atrStopPrice, trailingStopPrice, timeStopDate
         <Chip label={`⚠ Risk ${formatINR(riskAmountInr)}`} size="small"
           title="Max ₹ at risk on this position"
           sx={{ fontSize: '0.65rem', height: 20, bgcolor: 'rgba(139,92,246,0.12)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.25)', '& .MuiChip-label': { px: 0.75 } }} />
+      )}
+      {thesisInvalidated && (
+        <Chip label="🚫 Thesis invalid" size="small"
+          title="Exit condition met — original trade thesis no longer holds"
+          sx={{ fontSize: '0.65rem', height: 20, bgcolor: 'rgba(239,68,68,0.18)', color: '#fca5a5', border: '1px solid rgba(239,68,68,0.35)', fontWeight: 700, '& .MuiChip-label': { px: 0.75 } }} />
       )}
     </Box>
   );

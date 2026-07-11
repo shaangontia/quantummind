@@ -269,16 +269,34 @@ async function runPortfolioTradingCycle(
       .filter(x => getSymbolSector(x.symbol) === buySector)
       .reduce((sum, x) => sum + x.quantity * x.currentPrice, 0);
     const buySectorPct = refreshed.totalValue > 0 ? (buySectorNAV / refreshed.totalValue) * 100 : 0;
-    const invest = Math.min(refreshed.totalValue * maxPosPct, refreshed.cashBalance * 0.3);
-    const proposedPositionPct = refreshed.totalValue > 0 ? (invest / refreshed.totalValue) * 100 : maxPosPct * 100;
+    const proposedPositionPct = maxPosPct * 100;
     const signal = await generateSignal(symbol, riskTolerance, volatilityPref, investmentGoal,
       { totalNAV: refreshed.totalValue, cashBalance: refreshed.cashBalance,
         holdings: refreshed.holdings.length, sectorExposurePct: buySectorPct, proposedPositionPct });
     if (!signal || signal.action !== 'BUY' || signal.strength === 'WEAK') continue;
+
+    // Phase 13: Liquidity gate — avg daily traded value must be ≥ 20× intended trade size
+    const allocationCapInr = refreshed.totalValue * maxPosPct;
+    const { getAvgDailyTradedValue } = await import('../services/marketData.js').catch(() => ({ getAvgDailyTradedValue: null }));
+    if (getAvgDailyTradedValue) {
+      const avgDTV = await (getAvgDailyTradedValue as (s: string) => Promise<number | null>)(symbol).catch(() => null);
+      if (avgDTV !== null && avgDTV < allocationCapInr * 20) {
+        logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP', reason: `Liquidity gate: avg DTV ₹${(avgDTV/1e7).toFixed(1)}Cr < 20× trade size` });
+        continue;
+      }
+    }
+
     signalCount++;
     logger.signal(portfolioId, symbol, signal.action, signal.strength, signal.reason, signal.price);
 
-    const qty = Math.floor(invest / signal.price);
+    // Phase 13: Risk-based position sizing (ATR/stop-distance model)
+    // risk_per_trade = 0.5% of NAV; stop_distance = 1.5 × ATR (approx 1.5% of price)
+    const riskPerTradeInr = refreshed.totalValue * 0.005;
+    const stopDistanceInr = signal.price * 0.015 * 1.5;  // 1.5 × ATR(~1.5% of price)
+    const riskBasedQty = stopDistanceInr > 0 ? Math.floor(riskPerTradeInr / stopDistanceInr) : 0;
+    const allocBasedQty = Math.floor(allocationCapInr / signal.price);
+    const cashCapQty    = Math.floor(refreshed.cashBalance * 0.3 / signal.price);
+    const qty = Math.min(riskBasedQty, allocBasedQty, cashCapQty);
     if (qty <= 0) continue;
 
     const sigRes = await run('INSERT INTO market_signals (portfolio_id,symbol,signal_type,strength,reason,price_at_signal) VALUES (?,?,?,?,?,?)',
