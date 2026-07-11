@@ -20,6 +20,8 @@ import {
   selectIsCreateOpen, selectEditingPortfolio,
 } from '../../../../store/portfolios/index.ts';
 import { CreatePortfolioModal } from '../CreatePortfolioModal/CreatePortfolioModal.tsx';
+import { PortfolioPolicyBadge } from '../PortfolioPolicyBadge/index.ts';
+import { PortfolioOverlapPanel } from '../PortfolioOverlapPanel/index.ts';
 import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -83,6 +85,14 @@ export const PortfoliosPage = () => {
         />
       )}
 
+      {!isLoading && portfolios.length > 1 && (
+        <Box mb={3}>
+          <PortfolioOverlapPanel
+            portfolios={portfolios.map(p => ({ id: p.id, name: p.name }))}
+          />
+        </Box>
+      )}
+
       {!isLoading && portfolios.length > 0 && (
         <Grid container spacing={2}>
           {portfolios.map(p => {
@@ -103,11 +113,14 @@ export const PortfoliosPage = () => {
                   onKeyDown={e => e.key === 'Enter' && navigate(`/portfolios/${p.id}`)}
                 >
                   {/* Card header */}
-                  <Box display="flex" alignItems="center" justifyContent="space-between" mb={1} gap={1}>
+                  <Box display="flex" alignItems="center" justifyContent="space-between" mb={1} gap={1} flexWrap="wrap">
                     <Typography fontWeight={700} noWrap flex={1}>{p.name}</Typography>
-                    <Badge variant={riskColor(p.risk_tolerance) as BadgeVariant}>
-                      {p.risk_tolerance} Risk
-                    </Badge>
+                    <Box display="flex" gap={0.75} alignItems="center">
+                      <PortfolioPolicyBadge policyType={(p as any).policyType} />
+                      <Badge variant={riskColor(p.risk_tolerance) as BadgeVariant}>
+                        {p.risk_tolerance} Risk
+                      </Badge>
+                    </Box>
                   </Box>
 
                   {p.description && (

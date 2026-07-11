@@ -14,6 +14,11 @@ import { registerExitPlan, evaluateExits, updateTrailingStop } from '../services
 import { classifyMarketRegime } from '../services/regimeEngine.js';
 import { recordCandidate } from '../services/candidateRecorder.js';
 import { getModelGovernanceState } from '../services/modelLifecycle.js';
+// Phase 19: Portfolio-aware ranking
+import { getPortfolioPolicy, snapshotPolicy } from '../services/portfolioPolicy.js';
+import { checkEligibility, computeLiquidityScore, type CandidateEligibilityInput, type PortfolioExposure } from '../services/portfolioEligibilityFilter.js';
+import { computePortfolioUtility, estimateHoldingDays, type CandidateUtilityInput } from '../services/portfolioUtilityScore.js';
+import { storePolicyEvaluation } from '../services/policyEvaluationStore.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -323,6 +328,24 @@ async function runPortfolioTradingCycle(
   const investmentGoal = portfolio?.investment_goal as string | null ?? null;
 
   const coldStartDailyMax = govState?.isColdStart ? (govState.maxTradesPerDayOverride ?? 2) : Infinity;
+
+  // Phase 19: Load portfolio policy + build exposure snapshot (once per cycle, not per symbol)
+  const portfolioPolicy19 = await getPortfolioPolicy(portfolioId).catch(() => null);
+  const policySnapshot19   = portfolioPolicy19 ? snapshotPolicy(portfolioPolicy19) : null;
+  const modelStage19       = (govState?.stage ?? 'CANDIDATE') as import('../services/modelLifecycle.js').ModelStage;
+  // Build sector exposure map from current holdings
+  const { getSymbolSector: getSector19 } = await import('../services/marketData.js');
+  const sectorPctMap19: Record<string, number> = {};
+  for (const h of refreshed.holdings) {
+    const sec = getSector19(h.symbol);
+    sectorPctMap19[sec] = (sectorPctMap19[sec] ?? 0) + (h.currentValue ?? 0) / refreshed.totalValue;
+  }
+  const portfolioExposure19: PortfolioExposure = {
+    sectorPct:            sectorPctMap19,
+    currentPositionCount: refreshed.holdings.length,
+    cashPct:              refreshed.cashBalance / refreshed.totalValue,
+    drawdownPct:          0, // TODO: wire from kill-switch drawdown state
+  };
 
   for (const symbol of candidates) {
     // Phase 16: Cold-start daily trade cap

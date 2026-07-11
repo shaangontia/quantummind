@@ -224,6 +224,32 @@ export interface ExpectancyReport {
   }>;
 }
 
+// ─── Phase 19: Overlap analytics ────────────────────────────────────────────
+
+export type OverlapType = 'GLOBAL_CONSENSUS' | 'POLICY_MATCH' | 'REGIME_DRIVEN' | 'DIVERSIFICATION_BLOCKED';
+
+export interface OverlapEntry {
+  symbol: string;
+  companyName: string | null;
+  sector: string | null;
+  heldByPortfolioIds: number[];
+  portfolioCount: number;
+  overlapType: OverlapType;
+  explanation: string;
+  strategyType: string | null;
+  utilityScores: Record<number, number>;
+}
+
+export interface OverlapReport {
+  totalPortfolios: number;
+  totalHeldSymbols: number;
+  overlappingSymbols: number;
+  overlapRate: number;
+  overlapRateWarning: boolean;
+  overlaps: OverlapEntry[];
+  singlePortfolioSymbols: number;
+}
+
 export const portfoliosApi = baseApi.injectEndpoints({
   endpoints: builder => ({
 
@@ -393,6 +419,11 @@ export const portfoliosApi = baseApi.injectEndpoints({
       keepUnusedDataFor: 300,
     }),
 
+    getPortfolioOverlap: builder.query<OverlapReport, void>({
+      query: () => ({ url: '/portfolios/overlap', method: 'GET' }),
+      keepUnusedDataFor: 120,
+    }),
+
   }),
   overrideExisting: false,
 });
@@ -418,4 +449,5 @@ export const {
   useGetPortfolioModeQuery,
   useGetAuditReportQuery,
   useGetDriftReportQuery,
+  useGetPortfolioOverlapQuery,
 } = portfoliosApi;

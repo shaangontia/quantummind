@@ -53,10 +53,11 @@ export interface CandidateRecord {
 
 /**
  * Record a candidate evaluation result.
- * Fire-and-forget — never block the trading cycle on this.
+ * Returns the inserted row id (0 on failure).
+ * The caller may use the id to link portfolio_policy_evaluations.
  */
-export async function recordCandidate(c: CandidateRecord): Promise<void> {
-  await run(
+export async function recordCandidate(c: CandidateRecord): Promise<number> {
+  const result = await run(
     `INSERT INTO trade_candidates
        (portfolio_id, symbol, strategy_type, signal_score, rsi_value, volume_ratio,
         market_regime, fundamental_score, atr_pct, dma20_pct, dma50_pct, dist_52w_low_pct,
@@ -83,5 +84,6 @@ export async function recordCandidate(c: CandidateRecord): Promise<void> {
       c.strategyClassifierVersion ?? null,
       c.strategySource ?? 'REAL_TIME_CLASSIFIER',
     ],
-  ).catch(() => null); // never throw — candidate recording is best-effort
+  ).catch(() => ({ lastInsertRowid: 0 }));
+  return result.lastInsertRowid;
 }
