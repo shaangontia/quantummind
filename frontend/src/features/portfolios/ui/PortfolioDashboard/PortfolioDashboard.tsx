@@ -150,7 +150,7 @@ export const PortfolioDashboard = () => {
       {showSecondary && (
         <Paper elevation={0} sx={{ p: 2.5, mb: 2 }}>
           <Typography variant="h6" fontWeight={700} mb={2}>AI Intelligence Engine</Typography>
-          <AdaptivePanel />
+          <AdaptivePanel portfolioId={portfolioId} />
         </Paper>
       )}
 

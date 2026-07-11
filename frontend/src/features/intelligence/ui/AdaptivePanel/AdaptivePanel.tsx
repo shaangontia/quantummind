@@ -1,23 +1,35 @@
 import Box from '@mui/material/Box';
 import Grid from '@mui/material/Grid';
+import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
 import LinearProgress from '@mui/material/LinearProgress';
+import Divider from '@mui/material/Divider';
+import Tooltip from '@mui/material/Tooltip';
 import { useAdaptiveReport } from '../../hooks/useAdaptiveReport.ts';
+import { useGetWalkForwardResultsQuery } from '../../../../store/portfolios/portfolios.api.ts';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import type { MarketRegime } from '../../../../api/adaptive.api.types.ts';
 import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
+import type { WalkForwardWindow } from '../../../../store/portfolios/portfolios.api.ts';
 
-const regimeVariant = (r: MarketRegime): BadgeVariant => {
-  if (r === 'BULL') return 'green';
-  if (r === 'BEAR') return 'red';
-  return 'yellow';
-};
+const regimeVariant = (r: MarketRegime): BadgeVariant =>
+  r === 'BULL' ? 'green' : r === 'BEAR' ? 'red' : 'yellow';
 
-const regimeIcon = (r: MarketRegime) => r === 'BULL' ? '🐂' : r === 'BEAR' ? '🐻' : '↔';
+const regimeIcon = (r: MarketRegime) =>
+  r === 'BULL' ? '🐂' : r === 'BEAR' ? '🐻' : '↔';
 
-export const AdaptivePanel = () => {
+const fmtPct   = (v: number) => `${(v * 100).toFixed(1)}%`;
+const fmtDate  = (iso: string) => new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
+const sharpeColor = (s: number) => s >= 1.5 ? '#10b981' : s >= 0.8 ? '#f59e0b' : '#ef4444';
+
+interface AdaptivePanelProps { portfolioId?: number; }
+
+export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
   const { report, isLoading, error } = useAdaptiveReport();
+
+  const { data: wfWindows = [], isLoading: wfLoading } =
+    useGetWalkForwardResultsQuery(portfolioId!, { skip: portfolioId == null });
 
   if (isLoading) return <Box display="flex" justifyContent="center" py={3}><Spinner /></Box>;
   if (error || !report) return null;
@@ -29,27 +41,25 @@ export const AdaptivePanel = () => {
     <Grid container spacing={3}>
       {/* Market Regime */}
       <Grid item xs={12} md={5}>
-        <Box>
-          <Typography variant="subtitle2" fontWeight={700} mb={1.5}>Market Regime</Typography>
-          <Box display="flex" alignItems="center" gap={1} mb={1}>
-            <Typography fontSize="1.25rem">{regimeIcon(regime.regime)}</Typography>
-            <Badge variant={regimeVariant(regime.regime)}>{regime.regime}</Badge>
-          </Box>
-          <Typography variant="body2" color="text.secondary" mb={2}>{regime.notes}</Typography>
-          <Grid container spacing={1}>
-            {[
-              { label: 'RSI Buy',   value: `<${regime.rsiBuy}` },
-              { label: 'RSI Sell',  value: `>${regime.rsiSell}` },
-              { label: 'Stop-Loss', value: `${(regime.stopLoss * 100).toFixed(0)}%`, color: '#ef4444' },
-              { label: 'Nifty RSI', value: String(regime.nifty50Rsi) },
-            ].map(({ label, value, color }) => (
-              <Grid item xs={6} key={label}>
-                <Typography variant="caption" color="text.secondary" display="block">{label}</Typography>
-                <Typography variant="body2" fontWeight={700} sx={{ color: color ?? 'text.primary' }}>{value}</Typography>
-              </Grid>
-            ))}
-          </Grid>
+        <Typography variant="subtitle2" fontWeight={700} mb={1.5}>Market Regime</Typography>
+        <Box display="flex" alignItems="center" gap={1} mb={1}>
+          <Typography fontSize="1.25rem">{regimeIcon(regime.regime)}</Typography>
+          <Badge variant={regimeVariant(regime.regime)}>{regime.regime}</Badge>
         </Box>
+        <Typography variant="body2" color="text.secondary" mb={2}>{regime.notes}</Typography>
+        <Grid container spacing={1}>
+          {[
+            { label: 'RSI Buy',   value: `<${regime.rsiBuy}` },
+            { label: 'RSI Sell',  value: `>${regime.rsiSell}` },
+            { label: 'Stop-Loss', value: `${(regime.stopLoss * 100).toFixed(0)}%`, color: '#ef4444' },
+            { label: 'Nifty RSI', value: String(regime.nifty50Rsi) },
+          ].map(({ label, value, color }) => (
+            <Grid item xs={6} key={label}>
+              <Typography variant="caption" color="text.secondary" display="block">{label}</Typography>
+              <Typography variant="body2" fontWeight={700} sx={{ color: color ?? 'text.primary' }}>{value}</Typography>
+            </Grid>
+          ))}
+        </Grid>
       </Grid>
 
       {/* Signal Weights */}
@@ -60,7 +70,7 @@ export const AdaptivePanel = () => {
         </Typography>
         <Box display="flex" flexDirection="column" gap={1.5}>
           {signalWeights.map(sw => {
-            const barPct  = (sw.weight / maxWeight) * 100;
+            const barPct   = (sw.weight / maxWeight) * 100;
             const isStrong = sw.weight > 1.2;
             const isWeak   = sw.weight < 0.8;
             const barColor = isStrong ? '#10b981' : isWeak ? '#ef4444' : '#3b82f6';
@@ -78,8 +88,7 @@ export const AdaptivePanel = () => {
                   </Box>
                 </Box>
                 <LinearProgress
-                  variant="determinate"
-                  value={barPct}
+                  variant="determinate" value={barPct}
                   sx={{ height: 6, borderRadius: 3, '& .MuiLinearProgress-bar': { bgcolor: barColor } }}
                 />
               </Box>
@@ -92,6 +101,87 @@ export const AdaptivePanel = () => {
           </Typography>
         )}
       </Grid>
+
+      {/* Walk-Forward Validation */}
+      {portfolioId != null && (
+        <Grid item xs={12}>
+          <Divider sx={{ mb: 2 }} />
+          <Typography variant="subtitle2" fontWeight={700} mb={0.5}>Walk-Forward Validation</Typography>
+          <Typography variant="caption" color="text.secondary" display="block" mb={2}>
+            Out-of-sample performance: 12-month train → 3-month test windows. Runs nightly.
+          </Typography>
+          {wfLoading && <Box display="flex" justifyContent="center" py={2}><Spinner /></Box>}
+          {!wfLoading && wfWindows.length === 0 && (
+            <Typography variant="caption" color="text.secondary">
+              ⏳ Walk-forward results appear once ≥30 resolved trades exist (Phase 14)
+            </Typography>
+          )}
+          {!wfLoading && wfWindows.length > 0 && (
+            <Box sx={{ overflowX: 'auto' }}>
+              <Box display="flex" gap={1.5} pb={1} minWidth="max-content">
+                {wfWindows.map((w: WalkForwardWindow) => (
+                  <Paper key={w.windowIndex} elevation={0} sx={{
+                    p: 1.5, minWidth: 160, border: '1px solid', borderColor: 'divider',
+                    borderTop: `3px solid ${sharpeColor(w.sharpeRatio)}`,
+                  }}>
+                    <Typography variant="caption" color="text.secondary" display="block" mb={0.75} noWrap>
+                      {fmtDate(w.testStart)} – {fmtDate(w.testEnd)}
+                    </Typography>
+                    <Box display="grid" gridTemplateColumns="1fr 1fr" gap={0.5}>
+                      <Tooltip title="Win Rate">
+                        <Box>
+                          <Typography variant="caption" color="text.secondary" display="block">Win</Typography>
+                          <Typography variant="body2" fontWeight={700}
+                            sx={{ color: w.winRate >= 0.55 ? '#10b981' : w.winRate >= 0.45 ? '#f59e0b' : '#ef4444' }}>
+                            {fmtPct(w.winRate)}
+                          </Typography>
+                        </Box>
+                      </Tooltip>
+                      <Tooltip title="Sharpe Ratio">
+                        <Box>
+                          <Typography variant="caption" color="text.secondary" display="block">Sharpe</Typography>
+                          <Typography variant="body2" fontWeight={700} sx={{ color: sharpeColor(w.sharpeRatio) }}>
+                            {w.sharpeRatio.toFixed(2)}
+                          </Typography>
+                        </Box>
+                      </Tooltip>
+                      <Tooltip title="Max Drawdown">
+                        <Box>
+                          <Typography variant="caption" color="text.secondary" display="block">DD</Typography>
+                          <Typography variant="body2" fontWeight={700} color="error.light">
+                            -{fmtPct(w.maxDrawdownPct / 100)}
+                          </Typography>
+                        </Box>
+                      </Tooltip>
+                      <Tooltip title="Total trades in test window">
+                        <Box>
+                          <Typography variant="caption" color="text.secondary" display="block">Trades</Typography>
+                          <Typography variant="body2" fontWeight={700}>{w.totalTrades}</Typography>
+                        </Box>
+                      </Tooltip>
+                    </Box>
+                    {w.strategyBreakdown.length > 0 && (
+                      <Box mt={1} display="flex" gap={0.5} flexWrap="wrap">
+                        {w.strategyBreakdown.slice(0, 3).map(sb => (
+                          <Tooltip key={sb.strategyType} title={`${sb.totalTrades} trades · avg ${(sb.avgReturn * 100).toFixed(1)}%`}>
+                            <Box sx={{
+                              px: 0.5, py: 0.1, borderRadius: 0.5, fontSize: '0.58rem',
+                              bgcolor: 'rgba(255,255,255,0.06)', border: '1px solid',
+                              borderColor: 'divider', lineHeight: 1.6, cursor: 'default',
+                            }}>
+                              {sb.strategyType.replace('_', ' ')} {fmtPct(sb.winRate)}
+                            </Box>
+                          </Tooltip>
+                        ))}
+                      </Box>
+                    )}
+                  </Paper>
+                ))}
+              </Box>
+            </Box>
+          )}
+        </Grid>
+      )}
     </Grid>
   );
 };

@@ -39,6 +39,28 @@ export interface SectorAllocation {
   symbols: string[];
 }
 
+// ─── Walk-Forward Types ─────────────────────────────────────────
+
+export interface StrategyBreakdown {
+  strategyType: string;
+  totalTrades: number;
+  winRate: number;
+  avgReturn: number;
+}
+
+export interface WalkForwardWindow {
+  windowIndex: number;
+  trainStart: string;
+  trainEnd: string;
+  testStart: string;
+  testEnd: string;
+  winRate: number;
+  sharpeRatio: number;
+  maxDrawdownPct: number;
+  totalTrades: number;
+  strategyBreakdown: StrategyBreakdown[];
+}
+
 export const portfoliosApi = baseApi.injectEndpoints({
   endpoints: builder => ({
 
@@ -169,6 +191,12 @@ export const portfoliosApi = baseApi.injectEndpoints({
       query: id => ({ url: `/portfolios/${id}/sector-allocation`, method: 'GET' }),
     }),
 
+    // ─── Walk-Forward Results ──────────────────────────────────────
+
+    getWalkForwardResults: builder.query<WalkForwardWindow[], number>({
+      query: id => ({ url: `/portfolios/${id}/walk-forward`, method: 'GET' }),
+    }),
+
   }),
   overrideExisting: false,
 });
@@ -186,4 +214,5 @@ export const {
   useGetPortfolioTradesQuery,
   useGetPortfolioBenchmarkQuery,
   useGetPortfolioSectorsQuery,
+  useGetWalkForwardResultsQuery,
 } = portfoliosApi;
