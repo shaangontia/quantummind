@@ -428,17 +428,26 @@ async function runPortfolioTradingCycle(
     const buySector19 = getSector19(symbol);
     let policyEvaluationCandidateId19 = 0;
     if (portfolioPolicy19 && policySnapshot19) {
+      // Derive risk level from policy type (not from minFundamentalScore proxy)
+      const riskLevel19 = (['LOW_RISK_24M', 'VALUE_LONG'] as string[]).includes(portfolioPolicy19.policyType) ? 'low'
+        : (['HIGH_RISK_3M', 'AGGRESSIVE_SHORT'] as string[]).includes(portfolioPolicy19.policyType) ? 'high'
+        : 'medium';
       const eligInput19: CandidateEligibilityInput = {
         symbol,
         strategyType:     (signal.strategyType ?? 'UNKNOWN') as any,
         fundamentalScore: signal.fundamentalScore ?? null,
-        atrPct:           null,  // not exposed on TradeSignal; eligibility ATR gate uses null-safe skip
-        beta:             null,  // not available at signal time
+        // TODO(phase20): enrich signal with ATR%, beta, EPS so Gates 3/7/8 can fire for
+        // HIGH/LOW_RISK policies. Until then these gates are silently null-skipped.
+        atrPct:           null,
+        beta:             null,
         liquidityScore:   liquidityScore19,
         sector:           buySector19 || null,
-        eps:              null,  // not available at signal time
+        eps:              null,
         mlPwin:           signal.mlWinProbability ?? null,
-        evPct:            null,  // not exposed on TradeSignal; EV gate uses null-safe skip
+        // EV not exposed on TradeSignal — pass null so Gate 10 is correctly skipped
+        // rather than using a proxy that produces wrong-order-of-magnitude results.
+        // TODO(phase20): surface computeExpectedValue() result on TradeSignal and wire here.
+        evPct:            null,
         marketRegime:     signal.marketRegimeLabel ?? 'UNKNOWN',
       };
       const eligResult19 = checkEligibility(eligInput19, portfolioPolicy19, portfolioExposure19, modelStage19);
@@ -467,7 +476,7 @@ async function runPortfolioTradingCycle(
           policyType:           portfolioPolicy19.policyType,
           policyVersion:        portfolioPolicy19.policyVersion,
           policySnapshotJson:   policySnapshot19,
-          riskLevel:            portfolioPolicy19.minFundamentalScore >= 65 ? 'low' : 'medium',
+          riskLevel:            riskLevel19,
           horizonDays:          portfolioPolicy19.labelHorizonDays,
           targetReturnPct:      null,
           strategyWeightsJson:  JSON.stringify(portfolioPolicy19.strategyWeights),
@@ -497,12 +506,19 @@ async function runPortfolioTradingCycle(
       }
 
       // Eligible — compute utility and store BUY evaluation
+      // Note: candidates are evaluated in Gemini-sorted cycleUniverse order (not pre-ranked by utility).
+      // Utility is computed + stored per candidate, but execution order is still sequential.
+      // TODO(phase20): collect all signal utilities first, then execute top-N to ensure best-utility
+      // candidate executes when position cap is reached.
       const utilInput19: CandidateUtilityInput = {
         symbol,
         strategyType:         (signal.strategyType ?? 'UNKNOWN') as any,
-        evPct:                (signal.mlWinProbability ?? 0.52) * 2 - 1, // proxy: convert P(win) to rough EV
+        // EV not available on TradeSignal — use P(win) directly (scaled to pct units: 0.52 → ~52%)
+        // This drives strategyFit multiplier correctly; EV gate itself is disabled (evPct=null in eligibility).
+        // TODO(phase20): wire computeExpectedValue() result onto TradeSignal and use here.
+        evPct:                (signal.mlWinProbability ?? 0.52) * 100,
         mlPwin:               signal.mlWinProbability ?? null,
-        atrPct:               2.0, // default when not exposed by signal
+        atrPct:               2.0, // default ATR assumption; TODO(phase20): expose from tradingEngine
         liquidityScore:       liquidityScore19 ?? 0.5,
         sector:               buySector19 || null,
         expectedHoldingDays:  estimateHoldingDays((signal.strategyType ?? 'UNKNOWN') as any),
@@ -516,7 +532,7 @@ async function runPortfolioTradingCycle(
         policyType:           portfolioPolicy19.policyType,
         policyVersion:        portfolioPolicy19.policyVersion,
         policySnapshotJson:   policySnapshot19,
-        riskLevel:            portfolioPolicy19.minFundamentalScore >= 65 ? 'low' : 'medium',
+        riskLevel:            riskLevel19,
         horizonDays:          portfolioPolicy19.labelHorizonDays,
         targetReturnPct:      null,
         strategyWeightsJson:  JSON.stringify(portfolioPolicy19.strategyWeights),
