@@ -578,6 +578,9 @@ export function startScheduler(): void {
       await evaluateModelGovernance(Number(p.id)).catch(console.error);
     }
     await computeCalibration('buy_win_probability_v1').catch(console.error);
+    // Phase 18: Exit-plan reconciliation — find + restore holdings missing a stop-loss
+    const { reconcileAllExitPlans } = await import('../services/exitPlanReconciler.js');
+    await reconcileAllExitPlans().catch(console.error);
     // Phase 14: Retrain ML probability model on updated resolved patterns
     const { trainModel } = await import('../services/mlProbabilityModel.js');
     await trainModel().catch(console.error);

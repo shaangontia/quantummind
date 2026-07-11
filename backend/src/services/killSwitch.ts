@@ -147,23 +147,39 @@ export async function recordApiSuccess(): Promise<void> {
 
 /**
  * Called by marketData layer on a failed price fetch.
- * Increments failure counter in DB; trips circuit breaker at threshold.
+ * Uses atomic SQL increment to avoid read-modify-write race between concurrent invocations.
  * DB-persisted — safe across Vercel serverless invocations.
  */
 export async function recordApiFailure(): Promise<void> {
-  const current = await readGlobalState();
-  const newCount = current.apiFailureCount + 1;
-  const trips    = newCount >= API_FAILURE_THRESHOLD && !current.circuitBreakerActive;
-  const since    = trips ? new Date().toISOString() : current.circuitBreakerSince;
-
-  await writeGlobalState({
-    apiFailureCount: newCount,
-    circuitBreakerActive: newCount >= API_FAILURE_THRESHOLD,
-    circuitBreakerSince: since,
+  // Atomic: increment counter + conditionally set circuit_breaker_active in one statement.
+  // SQLite serialises writes, so no race between concurrent lambda invocations.
+  await run(
+    `INSERT INTO kill_switch_state (portfolio_id, api_failure_count, circuit_breaker_active, last_updated)
+     VALUES (?, 1, 0, datetime('now'))
+     ON CONFLICT(portfolio_id) DO UPDATE SET
+       api_failure_count = kill_switch_state.api_failure_count + 1,
+       circuit_breaker_active = CASE
+         WHEN kill_switch_state.api_failure_count + 1 >= ? THEN 1
+         ELSE kill_switch_state.circuit_breaker_active
+       END,
+       circuit_breaker_since = CASE
+         WHEN kill_switch_state.circuit_breaker_active = 0
+              AND kill_switch_state.api_failure_count + 1 >= ?
+         THEN datetime('now')
+         ELSE kill_switch_state.circuit_breaker_since
+       END,
+       last_updated = datetime('now')`,
+    [GLOBAL_ROW_ID, API_FAILURE_THRESHOLD, API_FAILURE_THRESHOLD],
+  ).catch(err => {
+    logger.warn({ job: 'kill-switch', reason: 'Failed to record API failure', err: String(err) });
   });
 
-  if (trips) {
-    logger.warn({ job: 'kill-switch', reason: `CIRCUIT_BREAKER tripped after ${newCount} consecutive API failures`, since });
+  // Check if we just tripped the breaker (for logging only)
+  const after = await readGlobalState();
+  if (after.circuitBreakerActive && after.apiFailureCount === API_FAILURE_THRESHOLD) {
+    logger.warn({ job: 'kill-switch',
+      reason: `CIRCUIT_BREAKER tripped after ${after.apiFailureCount} consecutive API failures`,
+      since: after.circuitBreakerSince });
   }
 }
 
@@ -477,6 +493,105 @@ export async function executeEmergencyLiquidation(
   }
 
   return closed;
+}
+
+// ─── Portfolio mode derivation ───────────────────────────────────────────────
+
+export type PortfolioMode = 'NORMAL' | 'COLD_START' | 'HALTED' | 'PROTECTION' | 'LIQUIDATION';
+
+export type PortfolioModeResult = {
+  mode: PortfolioMode;
+  blockedActions: string[];
+  allowedActions: string[];
+  primaryReasonCode: string;
+  activeSince: string | null;
+  requiresManualIntervention: boolean;
+};
+
+/**
+ * Derive a human-readable portfolio operating mode from kill-switch + governance state.
+ * Priority order (highest first):
+ *   LIQUIDATION > PROTECTION > HALTED > COLD_START > NORMAL
+ */
+export function derivePortfolioMode(
+  ks: KillSwitchState,
+  isColdStart: boolean,
+): PortfolioModeResult {
+  // LIQUIDATION — active emergency or drawdown > 12%
+  if (ks.drawdownProtection) {
+    return {
+      mode: 'LIQUIDATION',
+      blockedActions: ['BUY', 'NON_HARD_STOP_SELL'],
+      allowedActions: ['HARD_STOP_SELL', 'EMERGENCY_LIQUIDATION_SELL'],
+      primaryReasonCode: 'DRAWDOWN_PROTECTION',
+      activeSince: ks.lastClearedAt,
+      requiresManualIntervention: ks.emergencyLiquidationTriggered,
+    };
+  }
+
+  // PROTECTION — any halting kill-switch active
+  const isHalted =
+    ks.drawdownPaused ||
+    ks.dailyLossHalted ||
+    ks.consecutiveLossCooldown ||
+    ks.dataStaleHalted ||
+    ks.circuitBreakerActive;
+
+  if (isHalted) {
+    let code = 'UNKNOWN';
+    let activeSince: string | null = null;
+    if (ks.circuitBreakerActive)    { code = 'CIRCUIT_BREAKER'; activeSince = ks.circuitBreakerSince; }
+    else if (ks.dataStaleHalted)    { code = 'DATA_STALE'; }
+    else if (ks.drawdownPaused)     { code = 'DRAWDOWN_PAUSE'; }
+    else if (ks.dailyLossHalted)    { code = 'DAILY_LOSS'; }
+    else if (ks.consecutiveLossCooldown) { code = 'CONSECUTIVE_LOSS_COOLDOWN'; activeSince = ks.cooldownUntil; }
+
+    return {
+      mode: 'HALTED',
+      blockedActions: ks.circuitBreakerActive
+        ? ['BUY', 'NON_HARD_STOP_SELL']
+        : ['BUY'],
+      allowedActions: ks.circuitBreakerActive
+        ? ['HARD_STOP_SELL']
+        : ['SELL', 'HARD_STOP_SELL'],
+      primaryReasonCode: code,
+      activeSince,
+      requiresManualIntervention: ks.circuitBreakerActive && ks.apiFailureCount >= 10,
+    };
+  }
+
+  // PROTECTION — weekly loss halved (trading allowed but size reduced)
+  if (ks.weeklyLossHalted) {
+    return {
+      mode: 'PROTECTION',
+      blockedActions: [],
+      allowedActions: ['BUY_REDUCED_SIZE', 'SELL', 'HARD_STOP_SELL'],
+      primaryReasonCode: 'WEEKLY_LOSS',
+      activeSince: null,
+      requiresManualIntervention: false,
+    };
+  }
+
+  // COLD_START — model governance restricts sizes but system is operational
+  if (isColdStart) {
+    return {
+      mode: 'COLD_START',
+      blockedActions: ['WEAK_SIGNAL_BUY', 'LARGE_POSITION_BUY'],
+      allowedActions: ['BUY_SMALL', 'SELL', 'HARD_STOP_SELL'],
+      primaryReasonCode: 'INSUFFICIENT_TRAINING_DATA',
+      activeSince: null,
+      requiresManualIntervention: false,
+    };
+  }
+
+  return {
+    mode: 'NORMAL',
+    blockedActions: [],
+    allowedActions: ['BUY', 'SELL', 'HARD_STOP_SELL'],
+    primaryReasonCode: 'NONE',
+    activeSince: null,
+    requiresManualIntervention: false,
+  };
 }
 
 // ─── Kill-switch status API ───────────────────────────────────────────────────

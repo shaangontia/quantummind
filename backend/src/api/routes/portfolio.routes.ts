@@ -11,7 +11,8 @@ import { getLabelSummary } from '../../services/labelGenerator.js';
 import { getModelGovernanceState } from '../../services/modelLifecycle.js';
 import { getStrategyWFResults } from '../../services/strategyWalkForward.js';
 import { classifyMarketRegime } from '../../services/regimeEngine.js';
-import { getKillSwitchStatus } from '../../services/killSwitch.js';
+import { getDailyAuditReport, getDriftReport } from '../../services/auditReport.js';
+import { getKillSwitchStatus, derivePortfolioMode } from '../../services/killSwitch.js';
 
 const router = Router();
 
@@ -258,6 +259,35 @@ router.get('/portfolios/:id/kill-switch', verifyAuth, verifyOwner, async (req: R
   if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
   const status = await getKillSwitchStatus(pid).catch(() => null);
   return res.json({ success: true, data: status });
+});
+
+// ─── Phase 18: Portfolio operating mode ─────────────────────────────────────────
+router.get('/portfolios/:id/mode', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  const pid = parseIntParam(req.params.id);
+  if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+  const [ksStatus, govState] = await Promise.all([
+    getKillSwitchStatus(pid).catch(() => null),
+    getModelGovernanceState(pid).catch(() => null),
+  ]);
+  if (!ksStatus) return res.json({ success: true, data: null });
+  const mode = derivePortfolioMode(ksStatus.flags, govState?.isColdStart ?? true);
+  return res.json({ success: true, data: { ...mode, killSwitch: ksStatus } });
+});
+
+// ─── Phase 18: Daily audit report ───────────────────────────────────────────────
+router.get('/portfolios/:id/audit-report', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  const pid = parseIntParam(req.params.id);
+  if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+  const report = await getDailyAuditReport(pid).catch(() => null);
+  return res.json({ success: true, data: report });
+});
+
+// ─── Phase 18: Paper-vs-backtest drift report ─────────────────────────────────
+router.get('/portfolios/:id/drift-report', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  const pid = parseIntParam(req.params.id);
+  if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+  const report = await getDriftReport(pid).catch(() => null);
+  return res.json({ success: true, data: report });
 });
 
 // ─── Phase 13: Market regime ──────────────────────────────────────────────────

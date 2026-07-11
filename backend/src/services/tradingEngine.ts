@@ -613,6 +613,22 @@ export async function executeTrade(
     return null;
   }
 
+  // Phase 18: Idempotency guard — block duplicate order within 60s window.
+  // Prevents double-BUY or double-SELL from retry/concurrent invocations.
+  const DEDUP_WINDOW_S = 60;
+  const recentDuplicate = await queryOne(
+    `SELECT id FROM trades
+     WHERE portfolio_id=? AND symbol=? AND action=?
+       AND created_at >= datetime('now', '-${DEDUP_WINDOW_S} seconds')
+     LIMIT 1`,
+    [portfolioId, symbol, action],
+  ).catch(() => null);
+  if (recentDuplicate) {
+    logger.warn({ job: 'trade-execution', portfolioId, symbol, action, phase: 'execution',
+      reason: `DEDUP_BLOCKED: duplicate ${action} within ${DEDUP_WINDOW_S}s window (existing trade id=${recentDuplicate.id})` });
+    return null;
+  }
+
   const portfolio = await queryOne('SELECT * FROM portfolios WHERE id = ?', [portfolioId]);
   if (!portfolio || !portfolio.is_active) return null;
 
