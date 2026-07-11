@@ -2,6 +2,8 @@ import { memo } from 'react';
 import { useGetPortfolioSummaryQuery } from '../../../../store/portfolios/index.ts';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
+import { StrategyTypeBadge } from '../StrategyTypeBadge/index.ts';
+import { HoldingExitRules } from '../HoldingExitRules/index.ts';
 import { formatINR, formatPct } from '../../model/portfolios.utils.ts';
 import { useMarketPolling } from '../../hooks/useMarketPolling.ts';
 import type { SummaryHolding } from '../../../../api/portfolio.api.types.ts';
@@ -53,14 +55,14 @@ export const HoldingsTable = memo(({ portfolioId }: HoldingsTableProps) => {
               <tr>
                 <th>Symbol</th>
                 <th>Company</th>
-                <th>Sector</th>
+                <th>Strategy</th>
                 <th className="text-right">Qty</th>
                 <th className="text-right">Avg Buy Price</th>
                 <th className="text-right">Current Price</th>
                 <th className="text-right">Value</th>
                 <th className="text-right">P&L</th>
                 <th className="text-right">Return</th>
-                <th>Last Updated</th>
+                <th>Exit Rules</th>
               </tr>
             </thead>
             <tbody>
@@ -68,7 +70,15 @@ export const HoldingsTable = memo(({ portfolioId }: HoldingsTableProps) => {
                 <tr key={h.symbol}>
                   <td><strong>{h.symbol}</strong></td>
                   <td>{h.companyName}</td>
-                  <td>—</td>
+                  <td>
+                    <StrategyTypeBadge strategy={h.strategyType} />
+                    {h.asmGsmFlag && (
+                      <span title="ASM/GSM surveillance flag" style={{ marginLeft: 4, color: '#ef4444', fontSize: '0.72rem' }}>⚠ ASM</span>
+                    )}
+                    {h.liquidityWarning && (
+                      <span title="Low liquidity warning" style={{ marginLeft: 4, color: '#f59e0b', fontSize: '0.72rem' }}>💧</span>
+                    )}
+                  </td>
                   <td className="text-right">{h.quantity}</td>
                   <td className="text-right">{formatINR(h.avgBuyPrice)}</td>
                   <td className="text-right">
@@ -95,7 +105,14 @@ export const HoldingsTable = memo(({ portfolioId }: HoldingsTableProps) => {
                   >
                     {formatPct(h.pnlPct)}
                   </td>
-                  <td className="text-muted">—</td>
+                  <td>
+                    <HoldingExitRules
+                      atrStopPrice={h.atrStopPrice}
+                      trailingStopPrice={h.trailingStopPrice}
+                      timeStopDate={h.timeStopDate}
+                      riskAmountInr={h.riskAmountInr}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>

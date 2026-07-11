@@ -116,6 +116,18 @@ export interface PerformanceSnapshot {
   holdings_count: number;
 }
 
+export type MarketRegimeLabel = 'BULLISH' | 'NEUTRAL' | 'BEARISH';
+export type DmaPosition = 'above' | 'below';
+export type GeminiRiskLevel = 'low' | 'medium' | 'high';
+export type GeminiNewsEventType = 'earnings' | 'fraud' | 'downgrade' | 'macro' | 'sector' | 'none';
+
+export interface MarketRegime {
+  label: MarketRegimeLabel;
+  niftyVs50Dma: DmaPosition;
+  niftyVs200Dma: DmaPosition;
+  nifty50Close: number;
+}
+
 export interface MarketSignal {
   id: number;
   portfolio_id: number;
@@ -127,7 +139,16 @@ export interface MarketSignal {
   price_at_signal?: number;
   acted_upon: number;
   trade_id?: number;
+  // Phase 13 fields — optional until backend ships
+  strategyType?: StrategyType;
+  regimeAllowed?: boolean;
+  liquidityOk?: boolean;
+  geminiRiskLevel?: GeminiRiskLevel;
+  geminiRedFlags?: string[];
+  geminiNewsEventType?: GeminiNewsEventType;
 }
+
+export type StrategyType = 'MEAN_REVERSION' | 'MOMENTUM' | 'VALUE' | 'NEWS_CATALYST';
 
 export interface SummaryHolding {
   symbol: string;
@@ -140,9 +161,19 @@ export interface SummaryHolding {
   pnlPct: number;
   priceStatus?: 'LIVE' | 'STALE';
   priceUpdatedAt?: string;
+  // Phase 13 fields — optional until backend ships
+  strategyType?: StrategyType;
+  atrStopPrice?: number;
+  trailingStopPrice?: number;
+  timeStopDate?: string;
+  riskAmountInr?: number;
+  liquidityWarning?: boolean;
+  asmGsmFlag?: boolean;
 }
 
 export interface PortfolioSummary {
+  // Phase 13 field — optional until backend ships
+  marketRegime?: MarketRegime;
   id: number;
   name: string;
   initialCapital: number;

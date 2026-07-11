@@ -9,6 +9,7 @@ import { SectorAllocationChart } from '../SectorAllocationChart/SectorAllocation
 import { BenchmarkChart } from '../BenchmarkChart/BenchmarkChart.tsx';
 import { NewsFeed } from '../../../news/ui/NewsFeed/NewsFeed.tsx';
 import { AdaptivePanel } from '../../../intelligence/ui/AdaptivePanel/AdaptivePanel.tsx';
+import { MarketRegimeBanner } from '../MarketRegimeBanner/index.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -113,6 +114,9 @@ export const PortfolioDashboard = () => {
           <Link to={`/portfolios/${portfolioId}/trades`} className="btn btn-ghost">Audit Log</Link>
         </div>
       </div>
+
+      {/* Market regime indicator — Phase 13, renders nothing until backend ships */}
+      <MarketRegimeBanner regime={headerData.marketRegime} />
 
       {/* Stats — independent subscription, polls during market hours */}
       <PortfolioStats portfolioId={portfolioId} />
