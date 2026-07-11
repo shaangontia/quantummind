@@ -118,6 +118,9 @@ export async function generateLabels(): Promise<number> {
     const grossReturn = (exitPrice - entryPrice) / entryPrice * 100;
     const costAdjReturn = grossReturn - TRADE_COSTS_PCT * 100;
 
+    // Phase 16: Stamp label_type to separate TARGET_BEFORE_STOP from proxy labels
+    const labelType = priceHistory.length >= 3 ? 'TARGET_BEFORE_STOP' : 'SELL_PRICE_PROXY';
+
     await run(
       `UPDATE trade_candidates
        SET target_hit_before_stop = ?,
@@ -125,9 +128,10 @@ export async function generateLabels(): Promise<number> {
            max_favorable_excursion_pct = ?,
            actual_hold_days = ?,
            cost_adjusted_return_pct = ?,
+           label_type = ?,
            label_generated_at = datetime('now')
        WHERE id = ?`,
-      [targetHit && !stopHit ? 1 : 0, mae, mfe, holdDays, costAdjReturn, row.id],
+      [targetHit && !stopHit ? 1 : 0, mae, mfe, holdDays, costAdjReturn, labelType, row.id],
     ).catch(() => null);
 
     labelled++;

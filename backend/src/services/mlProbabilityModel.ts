@@ -83,12 +83,27 @@ function extractFeatures(row: {
  * Returns trained weights + bias, or null when insufficient data.
  */
 export async function trainModel(): Promise<ModelState | null> {
-  const rows = await query(
-    `SELECT rsi_value, volume_ratio, market_regime, strategy_type, fundamental_score, outcome
-     FROM signal_patterns
-     WHERE action='BUY' AND outcome IN ('WIN','LOSS')
-     ORDER BY created_at DESC LIMIT 2000`,
-  ).catch(() => []);
+  // Phase 16: Only train on TARGET_BEFORE_STOP labels (not proxy labels)
+  // Falls back to signal_patterns proxy when insufficient true labels
+  let rows = await query(
+    `SELECT rsi_value, volume_ratio, market_regime, strategy_type, fundamental_score,
+            target_hit_before_stop AS outcome_int
+     FROM trade_candidates
+     WHERE action_taken='EXECUTED'
+       AND label_type='TARGET_BEFORE_STOP'
+       AND target_hit_before_stop IS NOT NULL
+     ORDER BY evaluated_at DESC LIMIT 2000`,
+  ).then(r => r.map(x => ({ ...x, outcome: x.outcome_int === 1 ? 'WIN' : 'LOSS' }))).catch(() => []);
+
+  // Fallback to signal_patterns when fewer than MIN_TRAIN_SAMPLES true labels available
+  if (rows.length < MIN_TRAIN_SAMPLES) {
+    rows = await query(
+      `SELECT rsi_value, volume_ratio, market_regime, strategy_type, fundamental_score, outcome
+       FROM signal_patterns
+       WHERE action='BUY' AND outcome IN ('WIN','LOSS')
+       ORDER BY created_at DESC LIMIT 2000`,
+    ).catch(() => []);
+  }
 
   if (rows.length < MIN_TRAIN_SAMPLES) {
     logger.info({ job: 'ml-model', reason: `Insufficient training data: ${rows.length} samples (need ${MIN_TRAIN_SAMPLES})` });

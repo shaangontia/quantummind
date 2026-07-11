@@ -320,6 +320,36 @@ export async function runMigrations(): Promise<void> {
     await db.execute('CREATE INDEX IF NOT EXISTS idx_trade_candidates_action ON trade_candidates(action_taken, evaluated_at)');
   } catch (_) { /* already exists */ }
   console.log('[DB] Migration: Phase 15 candidate recorder schema done');
+
+  // Phase 16: Label type + model lifecycle schema
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN label_type TEXT DEFAULT 'UNKNOWN'"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE ml_model_weights ADD COLUMN lifecycle_stage TEXT DEFAULT 'CANDIDATE'"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE ml_model_weights ADD COLUMN true_label_count INTEGER DEFAULT 0"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE ml_model_weights ADD COLUMN positive_wf_windows INTEGER DEFAULT 0"); } catch (_) { /* exists */ }
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS model_calibration (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model_name TEXT NOT NULL,
+      pwin_band_low REAL NOT NULL,
+      pwin_band_high REAL NOT NULL,
+      predicted_count INTEGER NOT NULL,
+      actual_win_count INTEGER NOT NULL,
+      actual_win_rate REAL NOT NULL,
+      calibration_error REAL NOT NULL,
+      evaluated_at TEXT DEFAULT (datetime('now'))
+    )`);
+  } catch (_) { /* exists */ }
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS cold_start_state (
+      portfolio_id INTEGER PRIMARY KEY,
+      is_cold_start INTEGER DEFAULT 1,
+      lifecycle_stage TEXT DEFAULT 'CANDIDATE',
+      true_label_count INTEGER DEFAULT 0,
+      positive_wf_windows INTEGER DEFAULT 0,
+      last_evaluated TEXT DEFAULT (datetime('now'))
+    )`);
+  } catch (_) { /* exists */ }
+  console.log('[DB] Migration: Phase 16 model governance schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

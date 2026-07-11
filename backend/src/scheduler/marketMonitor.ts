@@ -13,6 +13,7 @@ import { evaluateKillSwitch, killSwitchSizeMultiplier } from '../services/killSw
 import { registerExitPlan, evaluateExits, updateTrailingStop } from '../services/exitEngine.js';
 import { classifyMarketRegime } from '../services/regimeEngine.js';
 import { recordCandidate } from '../services/candidateRecorder.js';
+import { getModelGovernanceState } from '../services/modelLifecycle.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -228,7 +229,21 @@ async function runPortfolioTradingCycle(
     return { trades: tradeCount, signals: signalCount };
   }
 
-  const maxPosPct = (riskTolerance === 'High' ? 0.08 : riskTolerance === 'Low' ? 0.03 : 0.05) * ksMult;
+  // Phase 16: Cold-start safety mode — apply model governance constraints
+  const govState = await getModelGovernanceState(portfolioId).catch(() => null);
+  const coldStartMaxPos  = govState?.maxPositionPctOverride;
+  const coldStartMaxPos2 = govState?.isColdStart ? (govState.maxOpenPositionsOverride ?? 5) : null;
+  if (govState?.isColdStart) {
+    const openPositions = refreshed.holdings.length;
+    if (coldStartMaxPos2 !== null && openPositions >= coldStartMaxPos2) {
+      logger.info({ job: 'market-cycle', portfolioId, phase: 'execution', action: 'SKIP',
+        reason: `Cold-start: max ${coldStartMaxPos2} open positions reached (stage: ${govState.stage})` });
+      return { trades: tradeCount, signals: signalCount };
+    }
+  }
+
+  const baseMaxPosPct = riskTolerance === 'High' ? 0.08 : riskTolerance === 'Low' ? 0.03 : 0.05;
+  const maxPosPct = ((coldStartMaxPos != null) ? coldStartMaxPos : baseMaxPosPct) * ksMult;
   // Dynamic open-market universe: full NSE equity list (fetched from NSE, cached 24h)
   // Rotating 50-stock sample per cycle. Falls back to static ~150 list if NSE blocks.
   const cycleSlot = Math.floor(Date.now() / (5 * 60 * 1000)); // bucket changes every 5 min
@@ -263,7 +278,15 @@ async function runPortfolioTradingCycle(
   const volatilityPref = portfolio?.volatility_preference as string | null ?? null;
   const investmentGoal = portfolio?.investment_goal as string | null ?? null;
 
+  const coldStartDailyMax = govState?.isColdStart ? (govState.maxTradesPerDayOverride ?? 2) : Infinity;
+
   for (const symbol of candidates) {
+    // Phase 16: Cold-start daily trade cap
+    if (tradeCount >= coldStartDailyMax) {
+      logger.info({ job: 'market-cycle', portfolioId, phase: 'execution', action: 'SKIP',
+        reason: `Cold-start: daily trade cap ${coldStartDailyMax} reached (stage: ${govState?.stage})` });
+      break;
+    }
     const { getSymbolSector } = await import('../services/marketData.js');
     const buySector = getSymbolSector(symbol);
     const buySectorNAV = refreshed.holdings
@@ -510,6 +533,13 @@ export function startScheduler(): void {
     // Phase 15: Generate target-before-stop labels for closed candidates
     const { generateLabels } = await import('../services/labelGenerator.js');
     await generateLabels().catch(console.error);
+    // Phase 16: Evaluate model governance state for each portfolio
+    const { evaluateModelGovernance, computeCalibration } = await import('../services/modelLifecycle.js');
+    const govPortfolios = await query('SELECT id FROM portfolios WHERE is_active=1').catch(() => []);
+    for (const p of govPortfolios) {
+      await evaluateModelGovernance(Number(p.id)).catch(console.error);
+    }
+    await computeCalibration('buy_win_probability_v1').catch(console.error);
     // Phase 14: Retrain ML probability model on updated resolved patterns
     const { trainModel } = await import('../services/mlProbabilityModel.js');
     await trainModel().catch(console.error);
