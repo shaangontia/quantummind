@@ -347,6 +347,10 @@ async function runPortfolioTradingCycle(
         void recordCandidate({
           portfolioId, symbol,
           strategyType: signal.strategyType ?? null,
+          strategyConfidence: signal.strategyConfidence ?? null,
+          strategyReasonCodes: signal.strategyReasonCodes ?? null,
+          strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
+          strategySource: 'REAL_TIME_CLASSIFIER',
           signalScore: 0,
           rsiValue: null, volumeRatio: null,
           marketRegime: signal.marketRegimeLabel ?? null,
@@ -361,6 +365,10 @@ async function runPortfolioTradingCycle(
       void recordCandidate({
         portfolioId, symbol,
         strategyType: signal.strategyType ?? null,
+        strategyConfidence: signal.strategyConfidence ?? null,
+        strategyReasonCodes: signal.strategyReasonCodes ?? null,
+        strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
+        strategySource: 'REAL_TIME_CLASSIFIER',
         signalScore: 0,
         marketRegime: signal.marketRegimeLabel ?? null,
         fundamentalScore: signal.fundamentalScore ?? null,
@@ -378,6 +386,10 @@ async function runPortfolioTradingCycle(
       void recordCandidate({
         portfolioId, symbol,
         strategyType: signal.strategyType ?? null,
+        strategyConfidence: signal.strategyConfidence ?? null,
+        strategyReasonCodes: signal.strategyReasonCodes ?? null,
+        strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
+        strategySource: 'REAL_TIME_CLASSIFIER',
         signalScore: 0,
         marketRegime: signal.marketRegimeLabel ?? null,
         filtersPassed: ['score', 'direction'], filtersBlocked: ['liquidity_gate'],
@@ -423,6 +435,10 @@ async function runPortfolioTradingCycle(
       void recordCandidate({
         portfolioId, symbol,
         strategyType: signal.strategyType ?? null,
+        strategyConfidence: signal.strategyConfidence ?? null,
+        strategyReasonCodes: signal.strategyReasonCodes ?? null,
+        strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
+        strategySource: 'REAL_TIME_CLASSIFIER',
         signalScore: 0,
         marketRegime: signal.marketRegimeLabel ?? null,
         fundamentalScore: signal.fundamentalScore ?? null,
@@ -587,6 +603,9 @@ export function startScheduler(): void {
     // Phase 18: Exit-plan reconciliation — find + restore holdings missing a stop-loss
     const { reconcileAllExitPlans } = await import('../services/exitPlanReconciler.js');
     await reconcileAllExitPlans().catch(console.error);
+    // Phase 19: Generate horizon-specific policy outcome labels for policy evaluations
+    const { generatePolicyOutcomeLabels } = await import('../services/policyLabelGenerator.js');
+    await generatePolicyOutcomeLabels().catch(console.error);
     // Phase 14: Retrain ML probability model on updated resolved patterns
     const { trainModel } = await import('../services/mlProbabilityModel.js');
     await trainModel().catch(console.error);

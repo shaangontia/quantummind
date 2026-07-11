@@ -32,6 +32,9 @@ export interface TradeSignal {
   fundamentalScore?: number;
   fundamentalReasoning?: string;
   strategyType?: string;
+  strategyConfidence?: number;
+  strategyReasonCodes?: string[];
+  strategyClassifierVersion?: string;
   marketRegimeLabel?: string;
   mlWinProbability?: number;
 }
@@ -408,18 +411,18 @@ export async function generateSignal(
     const marketRegime = await classifyMarketRegime().catch(() => null);
     if (buy > sell && buy >= 3) {
       const regimeAllowed = marketRegime
-        ? isStrategyAllowed(strategyResult.type, marketRegime.allowedStrategies)
+        ? isStrategyAllowed(strategyResult.strategyType, marketRegime.allowedStrategies)
         : true;
       if (!regimeAllowed) {
-        return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Strategy ${strategyResult.type} blocked in ${marketRegime?.label} regime`, price: q.price };
+        return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Strategy ${strategyResult.strategyType} blocked in ${marketRegime?.label} regime`, price: q.price };
       }
 
       // Walk-forward auto-disable gate
       if (portfolioCtx?.portfolioId) {
         const disabledStrategies = await getDisabledStrategies(portfolioCtx.portfolioId).catch(() => new Set<string>());
-        if (disabledStrategies.has(strategyResult.type)) {
+        if (disabledStrategies.has(strategyResult.strategyType)) {
           return { symbol, action: 'HOLD', strength: 'WEAK',
-            reason: `Strategy ${strategyResult.type} auto-disabled: negative expectancy ≥ 3 consecutive WF windows`,
+            reason: `Strategy ${strategyResult.strategyType} auto-disabled: negative expectancy ≥ 3 consecutive WF windows`,
             price: q.price };
         }
       }
@@ -482,12 +485,12 @@ export async function generateSignal(
     // Phase 14: ML Win Probability gate — block BUY when P(win) < 52% and model is trained
     if (topAction === 'BUY') {
       const [evResult, winProb] = await Promise.all([
-        computeExpectedValue(symbol, strategyResult.type).catch(() => null),
+        computeExpectedValue(symbol, strategyResult.strategyType).catch(() => null),
         getWinProbability({
           rsiValue: rsiVal,
           volumeRatio: q.volumeRatio,
           marketRegime: marketRegime?.label ?? null,
-          strategyType: strategyResult.type,
+          strategyType: strategyResult.strategyType,
           fundamentalScore: fundamentalScore,
         }).catch(() => null),
       ]);
@@ -560,13 +563,17 @@ export async function generateSignal(
       const finalReason = veto.reason ? `${reason} | Gemini: ${veto.reason}` : reason;
       return { symbol, action: topAction, strength, reason: finalReason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment,
         fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined,
-        strategyType: strategyResult.type, marketRegimeLabel: marketRegime?.label };
+        strategyType: strategyResult.strategyType, strategyConfidence: strategyResult.confidence,
+        strategyReasonCodes: strategyResult.reasonCodes, strategyClassifierVersion: strategyResult.classifierVersion,
+        marketRegimeLabel: marketRegime?.label };
     }
 
     if (topAction) {
       return { symbol, action: topAction, strength: topScore >= 5.5 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment,
         fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined,
-        strategyType: strategyResult.type, marketRegimeLabel: marketRegime?.label };
+        strategyType: strategyResult.strategyType, strategyConfidence: strategyResult.confidence,
+        strategyReasonCodes: strategyResult.reasonCodes, strategyClassifierVersion: strategyResult.classifierVersion,
+        marketRegimeLabel: marketRegime?.label };
     }
     return { symbol, action: 'HOLD', strength: 'WEAK', reason, price: q.price };
   } catch (err) {

@@ -290,6 +290,26 @@ router.get('/portfolios/:id/drift-report', verifyAuth, verifyOwner, async (req: 
   return res.json({ success: true, data: report });
 });
 
+// ─── Phase 19: Portfolio overlap analytics ───────────────────────────────────
+router.get('/portfolios/overlap', verifyAuth, async (req: Request, res: Response) => {
+  const { getPortfolioOverlap } = await import('../../services/overlapAnalytics.js');
+  const data = await getPortfolioOverlap(req.user!.id).catch(() => null);
+  return res.json({ success: true, data });
+});
+
+// ─── Phase 19: Policy simulation (admin) ──────────────────────────────────────
+router.post('/admin/policy-simulation', verifyAuth, async (req: Request, res: Response) => {
+  const adminRow = await queryOne('SELECT is_admin FROM users WHERE id = ?', [req.user!.id]);
+  if (!Number(adminRow?.is_admin)) return res.status(403).json({ success: false, error: 'Admin only' });
+  const { fromDate, toDate, policies, dryRun } = req.body as {
+    fromDate?: string; toDate?: string; policies?: string[]; dryRun?: boolean;
+  };
+  if (!fromDate || !toDate) return res.status(400).json({ success: false, error: 'fromDate and toDate required' });
+  const { runPolicySimulation } = await import('../../services/policySimulator.js');
+  const summary = await runPolicySimulation({ fromDate, toDate, policies: policies as any, dryRun });
+  return res.json({ success: true, data: summary });
+});
+
 // ─── Phase 13: Market regime ──────────────────────────────────────────────────
 router.get('/market-regime', async (_req: Request, res: Response) => {
   const regime = await classifyMarketRegime().catch(() => null);

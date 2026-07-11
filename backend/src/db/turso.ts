@@ -429,6 +429,85 @@ export async function runMigrations(): Promise<void> {
     await db.execute('CREATE INDEX IF NOT EXISTS idx_te_portfolio_created ON trade_events(portfolio_id, created_at)');
   } catch (_) { /* exists */ }
   console.log('[DB] Migration: Phase 18 verification schema done');
+
+  // ── Phase 19: Portfolio-Aware Ranking & Policy Engine ─────────────────────
+  // Strategy classifier columns on trade_candidates
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN strategy_confidence REAL"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN strategy_reason_codes_json TEXT"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN strategy_classifier_version TEXT"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN strategy_source TEXT DEFAULT 'REAL_TIME_CLASSIFIER'"); } catch (_) { /* exists */ }
+
+  // portfolio_policy_evaluations: one row per candidate × portfolio evaluation
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS portfolio_policy_evaluations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      candidate_id INTEGER NOT NULL,
+      portfolio_id INTEGER NOT NULL,
+      policy_type TEXT NOT NULL,
+      policy_version TEXT NOT NULL DEFAULT 'v1',
+      policy_snapshot_json TEXT NOT NULL,
+      risk_level TEXT NOT NULL,
+      horizon_days INTEGER NOT NULL,
+      target_return_pct REAL,
+      strategy_weights_json TEXT,
+      eligible INTEGER NOT NULL DEFAULT 0,
+      utility_score REAL,
+      portfolio_rank INTEGER,
+      decision TEXT NOT NULL,
+      selection_reason TEXT,
+      rejection_reasons_json TEXT,
+      expected_value_pct REAL,
+      portfolio_adjusted_pwin REAL,
+      strategy_fit_multiplier REAL,
+      horizon_fit_multiplier REAL,
+      regime_fit_multiplier REAL,
+      volatility_penalty REAL,
+      drawdown_penalty REAL,
+      sector_concentration_penalty REAL,
+      liquidity_penalty REAL,
+      position_size_pct REAL,
+      max_position_allowed_pct REAL,
+      label_horizon_days INTEGER,
+      label_status TEXT DEFAULT 'PENDING',
+      data_source TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(candidate_id, portfolio_id, policy_version)
+    )`);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_ppe_candidate_portfolio ON portfolio_policy_evaluations(candidate_id, portfolio_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_ppe_portfolio_decision ON portfolio_policy_evaluations(portfolio_id, decision, created_at)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_ppe_label_status ON portfolio_policy_evaluations(label_status, label_horizon_days)');
+  } catch (_) { /* exists */ }
+
+  // policy_outcome_labels: one label per policy evaluation (horizon-specific)
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS policy_outcome_labels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      policy_evaluation_id INTEGER NOT NULL,
+      candidate_id INTEGER NOT NULL,
+      portfolio_id INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      label_type TEXT NOT NULL,
+      label_horizon_days INTEGER NOT NULL,
+      target_r_multiple REAL,
+      stop_r_multiple REAL,
+      target_hit_before_stop INTEGER,
+      target_hit_days INTEGER,
+      stop_hit_days INTEGER,
+      forward_return_pct REAL,
+      cost_adjusted_return_pct REAL,
+      mae_pct REAL,
+      mfe_pct REAL,
+      hold_days INTEGER,
+      label_status TEXT NOT NULL DEFAULT 'PENDING',
+      label_generated_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(policy_evaluation_id, label_type, label_horizon_days)
+    )`);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_pol_evaluation ON policy_outcome_labels(policy_evaluation_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_pol_symbol_status ON policy_outcome_labels(symbol, label_status, label_type)');
+  } catch (_) { /* exists */ }
+
+  console.log('[DB] Migration: Phase 19 portfolio-aware ranking schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {
