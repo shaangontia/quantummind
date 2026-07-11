@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { query, queryOne, run } from '../db/turso.js';
 import { generateSignal, executeTrade, getPortfolioSummary } from '../services/tradingEngine.js';
-import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen, warmTwelveDataCache, fetchEarningsCalendar } from '../services/marketData.js';
+import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen, warmTwelveDataCache, fetchEarningsCalendar, getAvgDailyTradedValue } from '../services/marketData.js';
 import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
@@ -277,13 +277,10 @@ async function runPortfolioTradingCycle(
 
     // Phase 13: Liquidity gate — avg daily traded value must be ≥ 20× intended trade size
     const allocationCapInr = refreshed.totalValue * maxPosPct;
-    const { getAvgDailyTradedValue } = await import('../services/marketData.js').catch(() => ({ getAvgDailyTradedValue: null }));
-    if (getAvgDailyTradedValue) {
-      const avgDTV = await (getAvgDailyTradedValue as (s: string) => Promise<number | null>)(symbol).catch(() => null);
-      if (avgDTV !== null && avgDTV < allocationCapInr * 20) {
-        logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP', reason: `Liquidity gate: avg DTV ₹${(avgDTV/1e7).toFixed(1)}Cr < 20× trade size` });
-        continue;
-      }
+    const avgDTV = await getAvgDailyTradedValue(symbol).catch(() => null);
+    if (avgDTV !== null && avgDTV < allocationCapInr * 20) {
+      logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP', reason: `Liquidity gate: avg DTV ₹${(avgDTV/1e7).toFixed(1)}Cr < 20× trade size` });
+      continue;
     }
 
     signalCount++;

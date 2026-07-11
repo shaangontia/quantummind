@@ -180,6 +180,9 @@ export interface TradeVetoContext {
 export async function geminiTradeVeto(ctx: TradeVetoContext): Promise<{
   verdict: 'EXECUTE' | 'SKIP' | 'REDUCE';
   reason: string;
+  geminiRiskLevel?: string;
+  geminiRedFlags?: string[];
+  geminiNewsEventType?: string;
 }> {
   if (!getChatModel()) return { verdict: 'EXECUTE', reason: 'Gemini unavailable — proceeding' };
   if (!consumeVetoBudget()) return { verdict: 'EXECUTE', reason: 'Gemini daily budget exhausted — proceeding' };
@@ -188,42 +191,55 @@ export async function geminiTradeVeto(ctx: TradeVetoContext): Promise<{
   const { buildPatternContext } = await import('./patternEngine.js');
   const patternCtx = await buildPatternContext(ctx.symbol).catch(() => '');
 
-  const prompt = `You are a senior NSE equity trader reviewing an algorithmic trade proposal.
+  // Phase 13: Structured JSON output — deterministic schema, temperature=0
+  const prompt = `You are a quantitative risk reviewer for an NSE algorithmic trading system.
+Your ONLY job is to classify the risk of this trade proposal using structured JSON.
+Do NOT decide whether to trade — the trading engine makes the final decision based on your output.
 
 TRADE PROPOSAL:
-- Action: ${ctx.action} ${ctx.symbol}
+- Symbol: ${ctx.symbol}
+- Action: ${ctx.action}
 - Price: ₹${ctx.price}
-- Rule engine vote score: ${ctx.voteScore} (higher = stronger signal)
+- Rule engine vote score: ${ctx.voteScore}/10 (threshold for execution: 5.5)
 - RSI: ${ctx.rsiValue?.toFixed(1) ?? 'unknown'}
 - Momentum: ${ctx.momentumTrend ?? 'unknown'}
-- News sentiment: ${ctx.groqSentiment ?? 'none'}${patternCtx}
+- News/event: ${ctx.groqSentiment ?? 'none'}${patternCtx}
 
-PORTFOLIO CONTEXT:
-- Sector exposure: ${ctx.portfolioContext.sectorExposurePct?.toFixed(1) ?? '?'}% of NAV
+PORTFOLIO EXPOSURE:
+- Sector: ${ctx.portfolioContext.sectorExposurePct?.toFixed(1) ?? '?'}% of NAV
 - Proposed position: ${ctx.portfolioContext.positionSizePct.toFixed(1)}% of NAV
-- Cash available: ${ctx.portfolioContext.cashBalancePct.toFixed(1)}% of NAV
-- Total holdings: ${ctx.portfolioContext.totalHoldings}
+- Cash: ${ctx.portfolioContext.cashBalancePct.toFixed(1)}% of NAV
+- Open positions: ${ctx.portfolioContext.totalHoldings}
 
-Assess this trade. Use the historical pattern if available — if current conditions match past winning entries, lean EXECUTE; if they match past losing entries, lean SKIP.
-Reply in this exact JSON format only, no markdown:
+Respond ONLY with this JSON (no markdown, no explanation outside JSON):
 {
-  "verdict": "EXECUTE" | "SKIP" | "REDUCE",
-  "reason": "<1-2 sentence rationale>"
+  "risk_level": "low" | "medium" | "high",
+  "red_flags": ["<flag1>", "<flag2>"],
+  "news_event_type": "earnings" | "downgrade" | "upgrade" | "contract" | "fraud" | "macro" | "none",
+  "confidence": <0-100>,
+  "reason": "<max 120 chars>"
 }
 
-Rules:
-- EXECUTE: trade looks sound given all signals and portfolio context
-- SKIP: signals are conflicting, sector already over-exposed, or risk/reward poor
-- REDUCE: direction is right but position size should be halved (over-extension risk)`;
+Definitions:
+- risk_level "high": strong reason to avoid (fraud signal, sector collapse, extreme overvaluation, corporate event risk)
+- risk_level "medium": proceed with caution (borderline fundamentals, event risk, mild overexposure)
+- risk_level "low": no red flags, trade looks consistent with signals
+- red_flags: list specific concerns (empty array if none)
+- confidence: how confident you are in your risk_level assessment (0-100)`;
 
-  const text = await geminiGenerate(prompt, { temperature: 0.1, maxTokens: 150 });
+  const text = await geminiGenerate(prompt, { temperature: 0, maxTokens: 200 });
   if (!text) return { verdict: 'EXECUTE', reason: 'Gemini timeout — proceeding' };
   try {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return { verdict: 'EXECUTE', reason: 'Gemini parse error — proceeding' };
     const parsed = JSON.parse(jsonMatch[0]);
-    const verdict = ['EXECUTE', 'SKIP', 'REDUCE'].includes(parsed.verdict) ? parsed.verdict : 'EXECUTE';
-    return { verdict, reason: String(parsed.reason ?? '') };
+    // Deterministic mapping: engine decides SKIP/REDUCE/EXECUTE based on risk_level
+    const riskLevel = String(parsed.risk_level ?? 'low').toLowerCase();
+    const verdict: 'EXECUTE' | 'SKIP' | 'REDUCE' =
+      riskLevel === 'high'   ? 'SKIP'    :
+      riskLevel === 'medium' ? 'REDUCE'  : 'EXECUTE';
+    const reason = String(parsed.reason ?? '');
+    return { verdict, reason, geminiRiskLevel: riskLevel, geminiRedFlags: parsed.red_flags ?? [], geminiNewsEventType: String(parsed.news_event_type ?? 'none') };
   } catch {
     return { verdict: 'EXECUTE', reason: 'Gemini JSON parse error — proceeding' };
   }

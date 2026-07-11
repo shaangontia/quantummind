@@ -300,3 +300,64 @@ export async function buildPortfolioPatternContext(symbols: string[]): Promise<s
   if (lines.length === 0) return '';
   return `\nLEARNED PATTERNS (from trade history):\n${lines.join('\n')}`;
 }
+
+// ─── Expected Value Gate ────────────────────────────────────────────────────────
+
+const TRADE_COSTS_PCT = 0.004; // 0.4% round-trip: brokerage + STT + exchange + GST + stamp
+const MIN_EV_PCT      = 1.0;   // only trade when EV > 1% after costs
+const MIN_EV_SAMPLES  = 15;    // need at least 15 resolved trades to compute EV
+
+export interface EVResult {
+  ev: number;           // expected value as % of capital
+  pWin: number;         // win probability 0–1
+  avgWinPct: number;    // average winning return %
+  avgLossPct: number;   // average losing return % (positive = loss magnitude)
+  sampleCount: number;
+  sufficient: boolean;  // true when sample count ≥ MIN_EV_SAMPLES
+  meetsThreshold: boolean; // true when EV ≥ MIN_EV_PCT
+}
+
+/**
+ * Compute expected value for a BUY in a given strategy type.
+ * Uses resolved signal_patterns (outcome='WIN'/'LOSS') filtered by strategy.
+ * Falls back to 'sufficient=false' when not enough data — caller should proceed without EV gate.
+ */
+export async function computeExpectedValue(
+  symbol: string,
+  strategyType: string,
+): Promise<EVResult> {
+  const { query } = await import('../db/turso.js');
+
+  // Fetch resolved patterns for this symbol (strategy-specific first, fallback to symbol-level)
+  const rows = await query(
+    `SELECT outcome, realized_pnl_pct FROM signal_patterns
+     WHERE portfolio_id IN (SELECT id FROM portfolios WHERE is_active=1)
+       AND symbol=?
+       AND outcome IN ('WIN','LOSS')
+       AND action='BUY'
+     ORDER BY created_at DESC LIMIT 100`,
+    [symbol],
+  ).catch(() => [] as Array<{ outcome: string; realized_pnl_pct: number }>);
+
+  if (rows.length < MIN_EV_SAMPLES) {
+    return { ev: 0, pWin: 0, avgWinPct: 0, avgLossPct: 0, sampleCount: rows.length, sufficient: false, meetsThreshold: false };
+  }
+
+  const wins  = rows.filter(r => r.outcome === 'WIN');
+  const losses = rows.filter(r => r.outcome === 'LOSS');
+  const pWin = wins.length / rows.length;
+  const avgWinPct  = wins.length  > 0 ? wins.reduce((s, r)  => s + Number(r.realized_pnl_pct), 0)  / wins.length  : 0;
+  const avgLossPct = losses.length > 0 ? Math.abs(losses.reduce((s, r) => s + Number(r.realized_pnl_pct), 0) / losses.length) : 0;
+
+  const ev = pWin * avgWinPct - (1 - pWin) * avgLossPct - TRADE_COSTS_PCT * 100;
+
+  return {
+    ev,
+    pWin,
+    avgWinPct,
+    avgLossPct,
+    sampleCount: rows.length,
+    sufficient: true,
+    meetsThreshold: ev >= MIN_EV_PCT,
+  };
+}

@@ -95,20 +95,40 @@ export interface FundamentalVerdict {
 }
 
 /**
- * Apply deterministic veto rules and compute a 0–100 fundamental score.
+ * Apply deterministic, sector-aware veto rules and compute a 0–100 fundamental score.
+ * Phase 13: Sector-specific gates (Bank/NBFC, IT, Manufacturing, generic).
  * No LLM involvement — fully auditable and unit-testable.
- *
- * Veto rules (any one triggers hard BUY block):
- *   1. CFO/NetIncome < 0.5  — earnings quality / possible manipulation
- *   2. Debt-to-Equity > 3.0 — excessive leverage
- *   3. PAT YoY decline > 50% — severe earnings deterioration
  */
-export function computeFundamentalVerdict(snap: FundamentalSnapshot): FundamentalVerdict {
+export function computeFundamentalVerdict(snap: FundamentalSnapshot, sector?: string): FundamentalVerdict {
   const vetoReasons: string[] = [];
+  const sec = (sector ?? '').toLowerCase();
+  const isBankNbfc    = sec.includes('bank') || sec.includes('nbfc') || sec.includes('financ');
+  const isIT          = sec.includes('tech') || sec.includes('it') || sec.includes('software');
+  const isManufacture = sec.includes('manufactur') || sec.includes('industri') || sec.includes('auto') || sec.includes('energy') || sec.includes('infra');
 
+  // ── CFO quality veto (universal — accounting manipulation signal) ────────
   if (snap.cfoToNetIncome < 0.5) vetoReasons.push(`CFO/NI=${snap.cfoToNetIncome.toFixed(2)} (<0.5 — poor earnings quality)`);
-  if (snap.debtToEquity   > 3.0) vetoReasons.push(`D/E=${snap.debtToEquity.toFixed(2)} (>3.0 — excessive leverage)`);
-  if (snap.patGrowthYoY  < -50) vetoReasons.push(`PAT YoY=${snap.patGrowthYoY.toFixed(1)}% (<-50% — earnings collapse)`);
+
+  // ── Sector-specific veto rules ──────────────────────────────────────────
+  if (isBankNbfc) {
+    // Banks: D/E is meaningless (they're supposed to be leveraged); PAT collapse is the key risk
+    if (snap.patGrowthYoY < -60) vetoReasons.push(`PAT YoY=${snap.patGrowthYoY.toFixed(1)}% (<-60% — banking earnings collapse)`);
+    // High D/E normal for banks — skip D/E veto; use ROE as proxy for health
+    if (snap.roe < 2 && snap.patMarginPct < 0) vetoReasons.push(`Bank/NBFC: ROE=${snap.roe.toFixed(1)}% + loss-making — distressed`);
+  } else if (isIT) {
+    // IT: debt-light sector; margin compression is the key risk
+    if (snap.debtToEquity > 1.5) vetoReasons.push(`D/E=${snap.debtToEquity.toFixed(2)} (>1.5 — unusual for IT company)`);
+    if (snap.patGrowthYoY < -40) vetoReasons.push(`PAT YoY=${snap.patGrowthYoY.toFixed(1)}% (<-40% — IT earnings collapse)`);
+    if (snap.patMarginPct < 8 && snap.revenueGrowthYoY < 0) vetoReasons.push(`IT: margin ${snap.patMarginPct.toFixed(1)}% + shrinking revenue — deteriorating`);
+  } else if (isManufacture) {
+    // Manufacturing: interest coverage and leverage matter
+    if (snap.debtToEquity > 2.5) vetoReasons.push(`D/E=${snap.debtToEquity.toFixed(2)} (>2.5 — high leverage for manufacturer)`);
+    if (snap.patGrowthYoY < -50) vetoReasons.push(`PAT YoY=${snap.patGrowthYoY.toFixed(1)}% (<-50% — earnings collapse)`);
+  } else {
+    // Generic veto rules (non-cyclical sectors)
+    if (snap.debtToEquity > 3.0) vetoReasons.push(`D/E=${snap.debtToEquity.toFixed(2)} (>3.0 — excessive leverage)`);
+    if (snap.patGrowthYoY < -50) vetoReasons.push(`PAT YoY=${snap.patGrowthYoY.toFixed(1)}% (<-50% — earnings collapse)`);
+  }
 
   const vetoed = vetoReasons.length > 0;
 

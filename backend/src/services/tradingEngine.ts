@@ -15,7 +15,7 @@ import { getGroqStockSentiment } from './groqService.js';
 import { getSignalWeights, getCurrentRegime, recordSignalForTracking, resolveGeminiSellDecisions } from './adaptiveEngine.js';
 import { geminiTradeVeto, geminiFundamentalAnalysis } from './geminiService.js';
 import { getFundamentalSnapshot, computeFundamentalVerdict } from './fundamentalService.js';
-import { getAdaptiveRSIBuy, getPatternConfidence } from './patternEngine.js';
+import { getAdaptiveRSIBuy, getPatternConfidence, computeExpectedValue } from './patternEngine.js';
 import { classifyStrategy, isStrategyAllowed } from './strategyClassifier.js';
 import { classifyMarketRegime } from './regimeEngine.js';
 
@@ -416,7 +416,8 @@ export async function generateSignal(
         const snapshot = await getFundamentalSnapshot(symbol);
         if (snapshot) {
           // ─ Deterministic veto + score — rules only, no LLM involvement ─
-          const verdict = computeFundamentalVerdict(snapshot);
+          const symbolSector = getSymbolSector(symbol);
+          const verdict = computeFundamentalVerdict(snapshot, symbolSector);
           fundamentalScore = verdict.score;
           fundamentalVetoed = verdict.vetoed;
 
@@ -452,9 +453,19 @@ export async function generateSignal(
       return { symbol, action: 'HOLD', strength: 'WEAK', reason: notes.join('; '), price: q.price };
     }
 
+    // Phase 13: Expected Value gate — block BUY when EV < 1% after costs (requires 15+ resolved trades)
+    if (topAction === 'BUY') {
+      const evResult = await computeExpectedValue(symbol, strategyResult.type).catch(() => null);
+      if (evResult?.sufficient && !evResult.meetsThreshold) {
+        return { symbol, action: 'HOLD', strength: 'WEAK',
+          reason: `EV gate: expected value ${evResult.ev.toFixed(2)}% below 1% threshold (${evResult.sampleCount} trades: P(win)=${(evResult.pWin*100).toFixed(0)}%, avgWin=${evResult.avgWinPct.toFixed(1)}%, avgLoss=${evResult.avgLossPct.toFixed(1)}%)`,
+          price: q.price };
+      }
+    }
+
     if (topAction && portfolioCtx && topScore >= 5.5) {
-      // Gemini pre-trade reasoning gate — only fires on STRONG signals (score ≥ 4)
-      // MODERATE signals (score 2-3) proceed without veto to conserve Gemini quota
+      // Gemini pre-trade reasoning gate — only fires on STRONG signals (score ≥ 5.5)
+      // MODERATE signals (score 3–5.4) proceed without veto to conserve Gemini quota
       const veto = await geminiTradeVeto({
         symbol, action: topAction, price: q.price,
         rsiValue: rsiVal, momentumTrend: ml?.reason,
