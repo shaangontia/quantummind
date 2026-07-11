@@ -29,14 +29,14 @@ export const PortfolioModeChip = ({ portfolioId }: PortfolioModeChipProps) => {
           Reason: {pm.primaryReasonCode}
         </Typography>
       )}
-      {pm.blockedActions.length > 0 && (
+      {(pm.blockedActions ?? []).length > 0 && (
         <Typography variant="caption" color="error.light" display="block">
-          Blocked: {pm.blockedActions.join(', ')}
+          Blocked: {(pm.blockedActions ?? []).join(', ')}
         </Typography>
       )}
-      {pm.allowedActions.length > 0 && (
+      {(pm.allowedActions ?? []).length > 0 && (
         <Typography variant="caption" color="success.light" display="block">
-          Allowed: {pm.allowedActions.join(', ')}
+          Allowed: {(pm.allowedActions ?? []).join(', ')}
         </Typography>
       )}
       {pm.requiresManualIntervention && (

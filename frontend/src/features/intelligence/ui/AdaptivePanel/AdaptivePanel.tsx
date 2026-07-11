@@ -47,7 +47,7 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
   if (isLoading) return <Box display="flex" justifyContent="center" py={3}><Spinner /></Box>;
   if (error || !report) return null;
 
-  const { regime, signalWeights } = report;
+  const { regime, signalWeights = [] } = report;
   const maxWeight = Math.max(...signalWeights.map(s => s.weight), 1);
 
   return (
@@ -265,9 +265,9 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
                         </Tooltip>
                       )}
                     </Box>
-                    {w.strategyBreakdown.length > 0 && (
+                    {(w.strategyBreakdown ?? []).length > 0 && (
                       <Box mt={1} display="flex" gap={0.5} flexWrap="wrap">
-                        {w.strategyBreakdown.slice(0, 3).map(sb => (
+                        {(w.strategyBreakdown ?? []).slice(0, 3).map(sb => (
                           <Tooltip key={sb.strategyType} title={`${sb.totalTrades} trades · avg ${(sb.avgReturn * 100).toFixed(1)}%`}>
                             <Box sx={{
                               px: 0.5, py: 0.1, borderRadius: 0.5, fontSize: '0.58rem',
@@ -313,9 +313,9 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
               </Box>
             ))}
           </Box>
-          {auditReport.killSwitchEvents.length > 0 && (
+          {(auditReport.killSwitchEvents ?? []).length > 0 && (
             <Box mt={1} display="flex" gap={0.5} flexWrap="wrap">
-              {auditReport.killSwitchEvents.map(evt => (
+              {(auditReport.killSwitchEvents ?? []).map(evt => (
                 <Box key={evt} sx={{ px: 0.75, py: 0.2, borderRadius: 0.5, bgcolor: 'rgba(239,68,68,0.08)',
                   border: '1px solid rgba(239,68,68,0.25)', fontSize: '0.65rem', color: '#f87171' }}>
                   {evt}
@@ -343,8 +343,8 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
             </Typography>
           </Box>
           <Box sx={{ overflowX: 'auto' }}>
-            <Box display="flex" gap={1.5} flexWrap="wrap" mb={driftReport.driftFlags.length > 0 ? 1 : 0}>
-              {driftReport.metrics.map(m => (
+            <Box display="flex" gap={1.5} flexWrap="wrap" mb={(driftReport.driftFlags ?? []).length > 0 ? 1 : 0}>
+              {(driftReport.metrics ?? []).map(m => (
                 <Box key={m.metric} p={1} sx={{
                   minWidth: 120, borderRadius: 1, border: '1px solid',
                   borderColor: m.flagged ? 'rgba(245,158,11,0.4)' : 'divider',
@@ -370,7 +370,7 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
                 </Box>
               ))}
             </Box>
-            {driftReport.driftFlags.map(flag => (
+            {(driftReport.driftFlags ?? []).map(flag => (
               <Typography key={flag} variant="caption" color="warning.light" display="block" mt={0.25}>• {flag}</Typography>
             ))}
           </Box>
