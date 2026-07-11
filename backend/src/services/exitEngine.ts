@@ -33,6 +33,12 @@ export interface HoldingExitContext {
 export interface ExitDecision {
   shouldExit: boolean;
   exitType: 'STOP_LOSS' | 'TRAILING_STOP' | 'TIME_STOP' | 'PROFIT_TARGET' | 'THESIS_INVALIDATED' | 'REGIME_EXIT' | null;
+  /**
+   * True when this exit is a hard protective stop (STOP_LOSS or TRAILING_STOP).
+   * Set explicitly at source — never derived from reason strings.
+   * Used by circuit breaker gate: hard stops are allowed even when circuit breaker is active.
+   */
+  isHardStop: boolean;
   reason: string;
   urgency: 'IMMEDIATE' | 'NEXT_CYCLE' | 'MONITOR';
 }
@@ -110,7 +116,7 @@ export function evaluateExits(h: HoldingExitContext, marketRegimeLabel: 'BULLISH
   // 1. Hard stop-loss (ATR-based)
   if (h.atrStopPrice !== null && h.currentPrice <= h.atrStopPrice) {
     return {
-      shouldExit: true,
+      shouldExit: true, isHardStop: true,
       exitType: 'STOP_LOSS',
       reason: `ATR stop hit: ₹${h.currentPrice.toFixed(2)} ≤ stop ₹${h.atrStopPrice.toFixed(2)} (${pnlPct.toFixed(1)}%)`,
       urgency: 'IMMEDIATE',
@@ -120,7 +126,7 @@ export function evaluateExits(h: HoldingExitContext, marketRegimeLabel: 'BULLISH
   // 2. Trailing stop
   if (h.trailingStopPrice !== null && h.currentPrice <= h.trailingStopPrice && pnlPct > 0) {
     return {
-      shouldExit: true,
+      shouldExit: true, isHardStop: true,
       exitType: 'TRAILING_STOP',
       reason: `Trailing stop hit: ₹${h.currentPrice.toFixed(2)} ≤ trailing ₹${h.trailingStopPrice.toFixed(2)} (locked profit: ${pnlPct.toFixed(1)}%)`,
       urgency: 'IMMEDIATE',
@@ -130,7 +136,7 @@ export function evaluateExits(h: HoldingExitContext, marketRegimeLabel: 'BULLISH
   // 3. Thesis invalidated post-entry
   if (h.thesisInvalidated === 1) {
     return {
-      shouldExit: true,
+      shouldExit: true, isHardStop: false,
       exitType: 'THESIS_INVALIDATED',
       reason: `Post-entry red flag detected — thesis invalidated`,
       urgency: 'IMMEDIATE',
@@ -143,7 +149,7 @@ export function evaluateExits(h: HoldingExitContext, marketRegimeLabel: 'BULLISH
     const today = new Date();
     if (today >= dueDate && Math.abs(pnlPct) < 2) {
       return {
-        shouldExit: true,
+        shouldExit: true, isHardStop: false,
         exitType: 'TIME_STOP',
         reason: `Time stop: ${TRADING_DAYS_TIME_STOP} trading days elapsed with no directional move (${pnlPct.toFixed(1)}%)`,
         urgency: 'NEXT_CYCLE',
@@ -154,7 +160,7 @@ export function evaluateExits(h: HoldingExitContext, marketRegimeLabel: 'BULLISH
   // 5. Portfolio regime exit — bearish market, position underwater
   if (marketRegimeLabel === 'BEARISH' && pnlPct < -2) {
     return {
-      shouldExit: true,
+      shouldExit: true, isHardStop: false,
       exitType: 'REGIME_EXIT',
       reason: `Market regime: BEARISH + position underwater ${pnlPct.toFixed(1)}% — exit to preserve capital`,
       urgency: 'NEXT_CYCLE',
@@ -167,7 +173,7 @@ export function evaluateExits(h: HoldingExitContext, marketRegimeLabel: 'BULLISH
     const actualPnlInr = (h.currentPrice - h.avgBuyPrice) * h.quantity;
     if (actualPnlInr >= targetPnlInr) {
       return {
-        shouldExit: true,
+        shouldExit: true, isHardStop: false,
         exitType: 'PROFIT_TARGET',
         reason: `2R profit target hit: +₹${actualPnlInr.toFixed(0)} vs target ₹${targetPnlInr.toFixed(0)} (${pnlPct.toFixed(1)}%)`,
         urgency: 'NEXT_CYCLE',
@@ -175,7 +181,7 @@ export function evaluateExits(h: HoldingExitContext, marketRegimeLabel: 'BULLISH
     }
   }
 
-  return { shouldExit: false, exitType: null, reason: '', urgency: 'MONITOR' };
+  return { shouldExit: false, isHardStop: false, exitType: null, reason: '', urgency: 'MONITOR' };
 }
 
 /**

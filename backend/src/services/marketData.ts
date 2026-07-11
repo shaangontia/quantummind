@@ -215,13 +215,13 @@ export async function warmTwelveDataCache(nseSymbols: string[]): Promise<void> {
       memCache.set(`${TWELVE_DATA_CACHE_PREFIX}${symbol}`, quote, TWELVE_DATA_CACHE_TTL);
     }
     if (batchMap.size > 0) {
-      recordApiSuccess();  // Phase 17: data freshness signal
+      void recordApiSuccess();  // Phase 17: data freshness signal (async, fire-and-forget)
     } else {
-      recordApiFailure();  // Phase 17: empty batch = API issue
+      void recordApiFailure();  // Phase 17: empty batch = API issue
     }
     console.log(`[MarketData] twelve_data cache warmed: ${batchMap.size}/${nseSymbols.length} symbols`);
   } catch (err) {
-    recordApiFailure();  // Phase 17: exception = API failure
+    void recordApiFailure();  // Phase 17: exception = API failure
     console.warn('[MarketData] warmTwelveDataCache failed:', String(err));
   }
 }
@@ -535,7 +535,7 @@ export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]
     try {
       const batchMap = await batchQuoteTwelveData(nseSymbols);
       if (batchMap.size > 0) {
-        recordApiSuccess();  // Phase 17: successful price fetch
+        void recordApiSuccess();  // Phase 17: successful price fetch
         // Fill in any missing symbols via individual fallback calls
         const missing = nseSymbols.filter(s => !batchMap.has(s));
         if (missing.length > 0) {
@@ -546,10 +546,10 @@ export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]
         }
         return nseSymbols.map(s => batchMap.get(s)).filter(Boolean) as StockQuote[];
       } else {
-        recordApiFailure();  // Phase 17: empty batch
+        void recordApiFailure();  // Phase 17: empty batch
       }
     } catch (err) {
-      recordApiFailure();  // Phase 17: exception
+      void recordApiFailure();  // Phase 17: exception
       console.warn('[MarketData] getMultipleQuotes twelve_data error:', String(err));
     }
   }
@@ -562,8 +562,8 @@ export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]
     else console.warn('[MarketData] getMultipleQuotes error:', r.reason);
   }
   // Record success/failure based on yahoo fallback results too
-  if (quotes.length > 0) recordApiSuccess();
-  else recordApiFailure();
+  if (quotes.length > 0) void recordApiSuccess();
+  else void recordApiFailure();
   return quotes;
 }
 

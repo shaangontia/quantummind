@@ -406,6 +406,8 @@ export async function runMigrations(): Promise<void> {
   // Emergency liquidation tracking
   try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN emergency_liquidation_triggered INTEGER DEFAULT 0"); } catch (_) { /* exists */ }
   try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN last_cleared_at TEXT"); } catch (_) { /* exists */ }
+  // Phase 17 fix: audit trail for emergency liquidation resets
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN last_emergency_liquidation_at TEXT"); } catch (_) { /* exists */ }
   console.log('[DB] Migration: Phase 17 autonomous risk closure schema done');
 }
 

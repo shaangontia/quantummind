@@ -107,6 +107,7 @@ async function runPortfolioTradingCycle(
     if (!signal || signal.price <= 0) continue;
     const lossRatio = (signal.price - h.avgBuyPrice) / h.avgBuyPrice;
     let shouldSell = false, reason = signal.reason;
+    let isHardStop = false;  // Phase 17 fix: explicit field, never string-derived
 
     // Phase 13: Update trailing stop as price rises (before exit evaluation)
     const marketRegimeForExit = await classifyMarketRegime().catch(() => null);
@@ -128,6 +129,7 @@ async function runPortfolioTradingCycle(
     );
     if (exitDecision.shouldExit && exitDecision.exitType !== null) {
       shouldSell = true;
+      isHardStop = exitDecision.isHardStop;  // STOP_LOSS / TRAILING_STOP = true; everything else = false
       reason = exitDecision.reason;
     }
 
@@ -136,6 +138,7 @@ async function runPortfolioTradingCycle(
     if (isStopLoss) {
       // Hard rule — no LLM involvement ever on stop-loss
       shouldSell = true;
+      isHardStop = true;  // portfolio-level % stop-loss is also a hard stop
       reason = `Stop-loss: ${(lossRatio*100).toFixed(1)}%`;
     } else if (lossRatio > takeProfit && signal.action === 'SELL') {
       shouldSell = true;
@@ -204,9 +207,9 @@ async function runPortfolioTradingCycle(
     logger.signal(portfolioId, h.symbol, signal.action, signal.strength, signal.reason, signal.price);
 
     if (shouldSell) {
-      // Phase 17: Circuit breaker blocks non-hard-stop SELLs (only ATR/hard stop-loss allowed)
+      // Phase 17: Circuit breaker blocks non-hard-stop SELLs.
+      // isHardStop set explicitly from exitDecision.isHardStop — never string-derived.
       const isCbActive = circuitBreakerBlocksSell(ksStateForSell ?? { circuitBreakerActive: false } as any);
-      const isHardStop = reason.includes('Stop-loss') || reason.includes('ATR stop hit') || reason.includes('Trailing stop hit');
       if (isCbActive && !isHardStop) {
         logger.warn({ job: 'market-cycle', portfolioId, symbol: h.symbol, phase: 'execution', action: 'SKIP',
           reason: 'Circuit breaker active — only hard stop-loss SELLs allowed' });

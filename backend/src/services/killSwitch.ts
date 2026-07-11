@@ -1,7 +1,12 @@
 /**
  * killSwitch.ts — Phase 13 + Phase 17: Automated trading halt engine
  *
- * Kill-switch conditions (all persisted per-portfolio in kill_switch_state):
+ * All state is persisted to DB on every mutation.
+ * portfolio_id = 0 is a reserved global sentinel row for circuit breaker
+ * and data-freshness state (which are not per-portfolio — they reflect
+ * the health of the shared market-data API).
+ *
+ * Kill-switch conditions:
  *
  * Phase 13:
  *   Daily loss   > 1% NAV  → halt all new BUYs for the day
@@ -10,10 +15,14 @@
  *   Drawdown     > 12% NAV → protection mode + emergency liquidation
  *
  * Phase 17:
- *   Consecutive losses >= 3 → 24-hour BUY cooldown
- *   Data staleness > 2 cycles (10 min) → halt new BUYs, no auto-SELLs
- *   API failures   >= 3 consecutive → CIRCUIT_BREAKER: halt BUYs + non-hard-stop SELLs
- *   Drawdown       > 12% → emergency liquidation (close weakest N positions)
+ *   Consecutive losses >= 3 → 24-hour BUY cooldown (per-portfolio)
+ *   Data staleness > 2 cycles (10 min) → halt new BUYs (global)
+ *   API failures   >= 3 consecutive → CIRCUIT_BREAKER (global, DB-persisted)
+ *   Drawdown       > 12% → emergency liquidation (per-portfolio)
+ *
+ * Phase 17 fix (Darth Reviewer CRITICAL):
+ *   Circuit breaker state fully persisted to DB — no in-memory module variables.
+ *   Vercel serverless cold-start safe.
  */
 
 import { query, queryOne, run } from '../db/turso.js';
@@ -39,85 +48,161 @@ export type KillSwitchState = {
 };
 
 // ─── Thresholds ───────────────────────────────────────────────────────────────
-const DAILY_LOSS_LIMIT_PCT      = 1.0;   // % of NAV
+const DAILY_LOSS_LIMIT_PCT      = 1.0;
 const WEEKLY_LOSS_LIMIT_PCT     = 3.0;
 const DRAWDOWN_PAUSE_PCT        = 8.0;
 const DRAWDOWN_PROTECT_PCT      = 12.0;
 
-// Phase 17
-const CONSECUTIVE_LOSS_THRESHOLD = 3;    // losses in a row before cooldown
-const COOLDOWN_HOURS             = 24;   // hours to block new BUYs after threshold
-const DATA_STALE_CYCLES          = 2;    // missing cycles before stale halt (5 min each)
-const DATA_STALE_MINUTES         = DATA_STALE_CYCLES * 5;
-const API_FAILURE_THRESHOLD      = 3;    // consecutive failures before circuit breaker
+const CONSECUTIVE_LOSS_THRESHOLD = 3;
+const COOLDOWN_HOURS             = 24;
+const DATA_STALE_MINUTES         = 10;
+const API_FAILURE_THRESHOLD      = 3;
 
-// ─── In-memory API failure counter (per-process, global across portfolios) ────
-let _apiFailureCount = 0;
-let _circuitBreakerActive = false;
-let _circuitBreakerSince: string | null = null;
-let _lastFreshPriceAt: string | null = null;
+// Reserved sentinel portfolio_id for global (cross-portfolio) state
+const GLOBAL_ROW_ID = 0;
+
+// ─── DB helpers for global circuit breaker ───────────────────────────────────
 
 /**
- * Called by marketData layer on successful price fetch.
- * Clears the circuit breaker and resets staleness timer.
+ * Read global circuit breaker + freshness row from DB.
+ * Returns defaults if the row doesn't exist yet.
  */
-export function recordApiSuccess(): void {
-  const wasBreaker = _circuitBreakerActive;
-  _apiFailureCount = 0;
-  _circuitBreakerActive = false;
-  _lastFreshPriceAt = new Date().toISOString();
+async function readGlobalState(): Promise<{
+  apiFailureCount: number;
+  circuitBreakerActive: boolean;
+  circuitBreakerSince: string | null;
+  lastFreshPriceAt: string | null;
+}> {
+  const row = await queryOne(
+    `SELECT api_failure_count, circuit_breaker_active, circuit_breaker_since, last_fresh_price_at
+     FROM kill_switch_state WHERE portfolio_id=?`,
+    [GLOBAL_ROW_ID],
+  ).catch(() => null);
+
+  return {
+    apiFailureCount:      row ? Number(row.api_failure_count    ?? 0)    : 0,
+    circuitBreakerActive: row ? Number(row.circuit_breaker_active ?? 0) === 1 : false,
+    circuitBreakerSince:  row?.circuit_breaker_since ? String(row.circuit_breaker_since) : null,
+    lastFreshPriceAt:     row?.last_fresh_price_at   ? String(row.last_fresh_price_at)   : null,
+  };
+}
+
+async function writeGlobalState(patch: {
+  apiFailureCount?: number;
+  circuitBreakerActive?: boolean;
+  circuitBreakerSince?: string | null;
+  lastFreshPriceAt?: string | null;
+}): Promise<void> {
+  // Build an upsert that only touches provided columns
+  const current = await readGlobalState();
+  const apiFailureCount     = patch.apiFailureCount     ?? current.apiFailureCount;
+  const circuitBreakerActive = patch.circuitBreakerActive ?? current.circuitBreakerActive;
+  // Preserve existing since if not explicitly cleared
+  const circuitBreakerSince = 'circuitBreakerSince' in patch
+    ? (patch.circuitBreakerSince ?? null)
+    : current.circuitBreakerSince;
+  const lastFreshPriceAt    = 'lastFreshPriceAt' in patch
+    ? (patch.lastFreshPriceAt ?? null)
+    : current.lastFreshPriceAt;
+
+  await run(
+    `INSERT INTO kill_switch_state (
+       portfolio_id, api_failure_count, circuit_breaker_active, circuit_breaker_since,
+       last_fresh_price_at, last_updated
+     ) VALUES (?,?,?,?,?,datetime('now'))
+     ON CONFLICT(portfolio_id) DO UPDATE SET
+       api_failure_count=excluded.api_failure_count,
+       circuit_breaker_active=excluded.circuit_breaker_active,
+       circuit_breaker_since=excluded.circuit_breaker_since,
+       last_fresh_price_at=excluded.last_fresh_price_at,
+       last_updated=excluded.last_updated`,
+    [GLOBAL_ROW_ID, apiFailureCount, circuitBreakerActive ? 1 : 0, circuitBreakerSince, lastFreshPriceAt],
+  ).catch(err => {
+    logger.warn({ job: 'kill-switch', reason: 'Failed to write global state', err: String(err) });
+  });
+}
+
+// ─── Public API-failure tracking (called by marketData.ts) ───────────────────
+
+/**
+ * Called by marketData layer on a successful price fetch.
+ * Resets circuit breaker and records freshness timestamp.
+ * DB-persisted — safe across Vercel serverless invocations.
+ */
+export async function recordApiSuccess(): Promise<void> {
+  const current = await readGlobalState();
+  const wasBreaker = current.circuitBreakerActive;
+
+  await writeGlobalState({
+    apiFailureCount: 0,
+    circuitBreakerActive: false,
+    circuitBreakerSince: null,
+    lastFreshPriceAt: new Date().toISOString(),
+  });
+
   if (wasBreaker) {
     logger.warn({ job: 'kill-switch', reason: 'CIRCUIT_BREAKER cleared — API healthy again' });
   }
 }
 
 /**
- * Called by marketData layer on API error.
- * Increments failure counter; trips circuit breaker at threshold.
+ * Called by marketData layer on a failed price fetch.
+ * Increments failure counter in DB; trips circuit breaker at threshold.
+ * DB-persisted — safe across Vercel serverless invocations.
  */
-export function recordApiFailure(): void {
-  _apiFailureCount++;
-  if (_apiFailureCount >= API_FAILURE_THRESHOLD && !_circuitBreakerActive) {
-    _circuitBreakerActive = true;
-    _circuitBreakerSince = new Date().toISOString();
-    logger.warn({ job: 'kill-switch', reason: `CIRCUIT_BREAKER tripped after ${_apiFailureCount} consecutive API failures`, since: _circuitBreakerSince });
+export async function recordApiFailure(): Promise<void> {
+  const current = await readGlobalState();
+  const newCount = current.apiFailureCount + 1;
+  const trips    = newCount >= API_FAILURE_THRESHOLD && !current.circuitBreakerActive;
+  const since    = trips ? new Date().toISOString() : current.circuitBreakerSince;
+
+  await writeGlobalState({
+    apiFailureCount: newCount,
+    circuitBreakerActive: newCount >= API_FAILURE_THRESHOLD,
+    circuitBreakerSince: since,
+  });
+
+  if (trips) {
+    logger.warn({ job: 'kill-switch', reason: `CIRCUIT_BREAKER tripped after ${newCount} consecutive API failures`, since });
   }
 }
 
-/** Expose circuit breaker state for external callers */
-export function getCircuitBreakerState(): { active: boolean; since: string | null; failureCount: number } {
-  return { active: _circuitBreakerActive, since: _circuitBreakerSince, failureCount: _apiFailureCount };
+/**
+ * Returns current circuit breaker state from DB.
+ * Exposed for callers that need to check without running full evaluation.
+ */
+export async function getCircuitBreakerState(): Promise<{ active: boolean; since: string | null; failureCount: number }> {
+  const g = await readGlobalState();
+  return { active: g.circuitBreakerActive, since: g.circuitBreakerSince, failureCount: g.apiFailureCount };
 }
+
+// ─── Consecutive-loss tracking ───────────────────────────────────────────────
 
 /**
  * Record a trade outcome for consecutive-loss tracking.
- * Called from marketMonitor after every SELL trade resolves.
- * @param portfolioId
- * @param wasLoss - true if net PnL of the closed trade is negative
+ * Called from marketMonitor after every resolved SELL.
  */
 export async function recordTradeOutcome(portfolioId: number, wasLoss: boolean): Promise<void> {
   const current = await queryOne(
     'SELECT consecutive_losses FROM kill_switch_state WHERE portfolio_id=?',
     [portfolioId],
-  );
+  ).catch(() => null);
 
   const prevCount = current ? Number(current.consecutive_losses ?? 0) : 0;
-  const newCount  = wasLoss ? prevCount + 1 : 0;  // reset on any win
+  const newCount  = wasLoss ? prevCount + 1 : 0;
 
   let cooldownUntil: string | null = null;
   let cooldownActive = 0;
 
   if (newCount >= CONSECUTIVE_LOSS_THRESHOLD) {
-    const until = new Date(Date.now() + COOLDOWN_HOURS * 3_600_000);
-    cooldownUntil  = until.toISOString();
+    cooldownUntil  = new Date(Date.now() + COOLDOWN_HOURS * 3_600_000).toISOString();
     cooldownActive = 1;
     logger.warn({ job: 'kill-switch', portfolioId, consecutiveLosses: newCount,
       reason: `CONSECUTIVE_LOSS COOLDOWN — new BUYs blocked until ${cooldownUntil}` });
   }
 
   await run(
-    `INSERT INTO kill_switch_state
-       (portfolio_id, consecutive_losses, cooldown_until, cooldown_active, last_updated)
+    `INSERT INTO kill_switch_state (portfolio_id, consecutive_losses, cooldown_until, cooldown_active, last_updated)
      VALUES (?,?,?,?,datetime('now'))
      ON CONFLICT(portfolio_id) DO UPDATE SET
        consecutive_losses=excluded.consecutive_losses,
@@ -128,12 +213,18 @@ export async function recordTradeOutcome(portfolioId: number, wasLoss: boolean):
   ).catch(() => null);
 }
 
+// ─── Full kill-switch evaluation ──────────────────────────────────────────────
+
 /**
  * Evaluate and persist the full kill-switch state for a portfolio.
  * Called at the start of each market cycle before BUY scanning.
+ * Reads global circuit-breaker / freshness state from DB — no module vars.
  */
 export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitchState> {
-  // ── NAV and drawdown ───────────────────────────────────────────────────────
+  // ── Global state (circuit breaker + data freshness) ───────────────────────
+  const global = await readGlobalState();
+
+  // ── NAV and drawdown ──────────────────────────────────────────────────────
   const port = await queryOne('SELECT peak_nav FROM portfolios WHERE id=?', [portfolioId]);
   const snapshot = await queryOne(
     `SELECT total_portfolio_value FROM performance_snapshots
@@ -149,8 +240,9 @@ export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitc
     drawdownPaused: false, drawdownProtection: false,
     consecutiveLossCooldown: false, consecutiveLosses: 0, cooldownUntil: null,
     dataStaleHalted: false, dataStalenessMinutes: 0,
-    circuitBreakerActive: _circuitBreakerActive, circuitBreakerSince: _circuitBreakerSince,
-    apiFailureCount: _apiFailureCount,
+    circuitBreakerActive: global.circuitBreakerActive,
+    circuitBreakerSince: global.circuitBreakerSince,
+    apiFailureCount: global.apiFailureCount,
     emergencyLiquidationTriggered: false, lastClearedAt: null,
   };
 
@@ -189,13 +281,13 @@ export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitc
     weeklyLossPct  = startVal > 0 ? ((startVal - endVal) / startVal) * 100 : 0;
   }
 
-  // ── Phase 17: Consecutive-loss cooldown ───────────────────────────────────
+  // ── Per-portfolio state ────────────────────────────────────────────────────
   const ksRow = await queryOne(
-    `SELECT consecutive_losses, cooldown_until, cooldown_active, last_fresh_price_at,
+    `SELECT consecutive_losses, cooldown_until, cooldown_active,
             emergency_liquidation_triggered, last_cleared_at
      FROM kill_switch_state WHERE portfolio_id=?`,
     [portfolioId],
-  );
+  ).catch(() => null);
 
   const consecutiveLosses = ksRow ? Number(ksRow.consecutive_losses ?? 0) : 0;
   const cooldownUntil     = ksRow?.cooldown_until ? String(ksRow.cooldown_until) : null;
@@ -211,12 +303,11 @@ export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitc
     ).catch(() => null);
   }
 
-  // ── Phase 17: Data staleness check ────────────────────────────────────────
+  // ── Data staleness (from global row) ──────────────────────────────────────
   let dataStalenessMinutes = 0;
   let dataStaleHalted      = false;
-  const lastFreshAt = _lastFreshPriceAt ?? (ksRow?.last_fresh_price_at ? String(ksRow.last_fresh_price_at) : null);
-  if (lastFreshAt) {
-    const staleMs = Date.now() - new Date(lastFreshAt).getTime();
+  if (global.lastFreshPriceAt) {
+    const staleMs = Date.now() - new Date(global.lastFreshPriceAt).getTime();
     dataStalenessMinutes = Math.floor(staleMs / 60_000);
     dataStaleHalted      = dataStalenessMinutes >= DATA_STALE_MINUTES;
   }
@@ -226,45 +317,58 @@ export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitc
       reason: `DATA_STALE_HALT — prices are ${dataStalenessMinutes}min old, new BUYs blocked` });
   }
 
-  // ── Phase 17: Emergency liquidation tracking ───────────────────────────────
-  const emergencyLiquidationTriggered = ksRow ? Number(ksRow.emergency_liquidation_triggered ?? 0) === 1 : false;
+  // ── Emergency liquidation flag ─────────────────────────────────────────────
+  let emergencyLiquidationTriggered = ksRow ? Number(ksRow.emergency_liquidation_triggered ?? 0) === 1 : false;
   const lastClearedAt = ksRow?.last_cleared_at ? String(ksRow.last_cleared_at) : null;
+
+  // Phase 17 MAJOR fix (Darth Reviewer): reset flag when drawdown recovers below threshold
+  const drawdownProtection = drawdownPct > DRAWDOWN_PROTECT_PCT;
+  if (!drawdownProtection && emergencyLiquidationTriggered) {
+    // Store timestamp of the now-cleared event for audit trail, then reset the flag
+    await run(
+      `UPDATE kill_switch_state
+       SET emergency_liquidation_triggered=0,
+           last_emergency_liquidation_at=datetime('now'),
+           last_cleared_at=datetime('now'),
+           last_updated=datetime('now')
+       WHERE portfolio_id=?`,
+      [portfolioId],
+    ).catch(() => null);
+    emergencyLiquidationTriggered = false;
+    logger.warn({ job: 'kill-switch', portfolioId,
+      reason: 'Emergency liquidation flag cleared — drawdown recovered below 12%' });
+  }
 
   const state: KillSwitchState = {
     dailyLossHalted:   dailyLossPct  > DAILY_LOSS_LIMIT_PCT,
     weeklyLossHalted:  weeklyLossPct > WEEKLY_LOSS_LIMIT_PCT,
     drawdownPaused:    drawdownPct   > DRAWDOWN_PAUSE_PCT,
-    drawdownProtection: drawdownPct  > DRAWDOWN_PROTECT_PCT,
+    drawdownProtection,
     consecutiveLossCooldown,
     consecutiveLosses,
     cooldownUntil,
     dataStaleHalted,
     dataStalenessMinutes,
-    circuitBreakerActive: _circuitBreakerActive,
-    circuitBreakerSince: _circuitBreakerSince,
-    apiFailureCount: _apiFailureCount,
+    circuitBreakerActive: global.circuitBreakerActive,
+    circuitBreakerSince:  global.circuitBreakerSince,
+    apiFailureCount:      global.apiFailureCount,
     emergencyLiquidationTriggered,
     lastClearedAt,
   };
 
-  // ── Persist full state ─────────────────────────────────────────────────────
+  // ── Persist per-portfolio state ────────────────────────────────────────────
   await run(
     `INSERT INTO kill_switch_state (
        portfolio_id,
        daily_loss_halted, weekly_loss_halted, drawdown_paused, drawdown_protection,
-       data_stale_halted, api_failure_count, circuit_breaker_active, circuit_breaker_since,
-       last_fresh_price_at, last_updated
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
+       data_stale_halted, last_updated
+     ) VALUES (?,?,?,?,?,?,datetime('now'))
      ON CONFLICT(portfolio_id) DO UPDATE SET
        daily_loss_halted=excluded.daily_loss_halted,
        weekly_loss_halted=excluded.weekly_loss_halted,
        drawdown_paused=excluded.drawdown_paused,
        drawdown_protection=excluded.drawdown_protection,
        data_stale_halted=excluded.data_stale_halted,
-       api_failure_count=excluded.api_failure_count,
-       circuit_breaker_active=excluded.circuit_breaker_active,
-       circuit_breaker_since=COALESCE(excluded.circuit_breaker_since, circuit_breaker_since),
-       last_fresh_price_at=COALESCE(excluded.last_fresh_price_at, last_fresh_price_at),
        last_updated=excluded.last_updated`,
     [portfolioId,
      state.dailyLossHalted   ? 1 : 0,
@@ -272,14 +376,10 @@ export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitc
      state.drawdownPaused    ? 1 : 0,
      state.drawdownProtection ? 1 : 0,
      state.dataStaleHalted   ? 1 : 0,
-     _apiFailureCount,
-     _circuitBreakerActive   ? 1 : 0,
-     _circuitBreakerSince,
-     _lastFreshPriceAt,
     ],
   ).catch(() => null);
 
-  // Log active kill-switches
+  // Logging
   if (state.drawdownProtection) {
     logger.warn({ job: 'kill-switch', portfolioId, drawdownPct: drawdownPct.toFixed(1),
       reason: 'PROTECTION MODE — new entries blocked, emergency liquidation eligible' });
@@ -296,6 +396,8 @@ export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitc
 
   return state;
 }
+
+// ─── Position-size multiplier ─────────────────────────────────────────────────
 
 /**
  * Compute position-size multiplier from kill-switch state.
@@ -315,17 +417,19 @@ export function killSwitchSizeMultiplier(state: KillSwitchState): number {
 }
 
 /**
- * Returns true if the circuit breaker blocks automated SELLs
- * (only hard stop-losses may fire when circuit breaker is active).
+ * Returns true if the circuit breaker blocks automated non-hard-stop SELLs.
+ * Only hard stop-losses (STOP_LOSS, TRAILING_STOP exit types) may fire.
  */
 export function circuitBreakerBlocksSell(state: KillSwitchState): boolean {
   return state.circuitBreakerActive;
 }
 
+// ─── Emergency liquidation ────────────────────────────────────────────────────
+
 /**
- * Emergency liquidation: close the N weakest positions when drawdown > 12%.
- * N = min(2, half of open positions rounded up).
- * Returns symbols closed.
+ * Close the N weakest positions when drawdown > 12%.
+ * N = min(2, ceil(holdings / 2)).
+ * The flag is cleared automatically in evaluateKillSwitch when drawdown recovers.
  */
 export async function executeEmergencyLiquidation(
   portfolioId: number,
@@ -337,7 +441,6 @@ export async function executeEmergencyLiquidation(
 ): Promise<string[]> {
   if (holdings.length === 0) return [];
 
-  // Sort by PnL% ascending (worst first)
   const sorted = [...holdings].sort((a, b) => {
     const pnlA = (a.currentPrice - a.avgBuyPrice) / a.avgBuyPrice;
     const pnlB = (b.currentPrice - b.avgBuyPrice) / b.avgBuyPrice;
@@ -366,7 +469,8 @@ export async function executeEmergencyLiquidation(
 
   if (closed.length > 0) {
     await run(
-      `UPDATE kill_switch_state SET emergency_liquidation_triggered=1, last_updated=datetime('now')
+      `UPDATE kill_switch_state
+       SET emergency_liquidation_triggered=1, last_updated=datetime('now')
        WHERE portfolio_id=?`,
       [portfolioId],
     ).catch(() => null);
@@ -375,8 +479,12 @@ export async function executeEmergencyLiquidation(
   return closed;
 }
 
+// ─── Kill-switch status API ───────────────────────────────────────────────────
+
 /**
- * Full kill-switch status for API response.
+ * Returns the last-persisted kill-switch state for a portfolio.
+ * Reads directly from DB — does NOT re-evaluate (evaluateKillSwitch handles that
+ * during each cron cycle). Safe to call on every frontend poll.
  */
 export async function getKillSwitchStatus(portfolioId: number): Promise<{
   portfolioId: number;
@@ -385,25 +493,59 @@ export async function getKillSwitchStatus(portfolioId: number): Promise<{
   reason: string;
   lastUpdated: string | null;
 }> {
-  const state = await evaluateKillSwitch(portfolioId);
-  const anyHalted = killSwitchSizeMultiplier(state) === 0;
+  const [portRow, global] = await Promise.all([
+    queryOne(
+      `SELECT daily_loss_halted, weekly_loss_halted, drawdown_paused, drawdown_protection,
+              consecutive_losses, cooldown_until, cooldown_active, data_stale_halted,
+              emergency_liquidation_triggered, last_cleared_at, last_updated
+       FROM kill_switch_state WHERE portfolio_id=?`,
+      [portfolioId],
+    ).catch(() => null),
+    readGlobalState(),
+  ]);
 
+  const cooldownUntil  = portRow?.cooldown_until ? String(portRow.cooldown_until) : null;
+  const cooldownExpired = cooldownUntil ? new Date() > new Date(cooldownUntil) : true;
+  const cooldownActive  = portRow ? Number(portRow.cooldown_active ?? 0) === 1 : false;
+
+  let dataStalenessMinutes = 0;
+  if (global.lastFreshPriceAt) {
+    const ms = Date.now() - new Date(global.lastFreshPriceAt).getTime();
+    dataStalenessMinutes = Math.floor(ms / 60_000);
+  }
+
+  const flags: KillSwitchState = {
+    dailyLossHalted:            portRow ? Number(portRow.daily_loss_halted  ?? 0) === 1 : false,
+    weeklyLossHalted:           portRow ? Number(portRow.weekly_loss_halted ?? 0) === 1 : false,
+    drawdownPaused:             portRow ? Number(portRow.drawdown_paused    ?? 0) === 1 : false,
+    drawdownProtection:         portRow ? Number(portRow.drawdown_protection ?? 0) === 1 : false,
+    consecutiveLossCooldown:    cooldownActive && !cooldownExpired,
+    consecutiveLosses:          portRow ? Number(portRow.consecutive_losses ?? 0) : 0,
+    cooldownUntil,
+    dataStaleHalted:            portRow ? Number(portRow.data_stale_halted  ?? 0) === 1 : false,
+    dataStalenessMinutes,
+    circuitBreakerActive:       global.circuitBreakerActive,
+    circuitBreakerSince:        global.circuitBreakerSince,
+    apiFailureCount:            global.apiFailureCount,
+    emergencyLiquidationTriggered: portRow ? Number(portRow.emergency_liquidation_triggered ?? 0) === 1 : false,
+    lastClearedAt:              portRow?.last_cleared_at ? String(portRow.last_cleared_at) : null,
+  };
+
+  const anyHalted = killSwitchSizeMultiplier(flags) === 0;
   const reasons: string[] = [];
-  if (state.dailyLossHalted)         reasons.push('Daily loss >1% NAV');
-  if (state.weeklyLossHalted)        reasons.push('Weekly loss >3% NAV (size halved)');
-  if (state.drawdownPaused)          reasons.push('Drawdown >8% NAV');
-  if (state.drawdownProtection)      reasons.push('Drawdown >12% NAV — protection mode');
-  if (state.consecutiveLossCooldown) reasons.push(`${state.consecutiveLosses} consecutive losses — cooldown until ${state.cooldownUntil}`);
-  if (state.dataStaleHalted)         reasons.push(`Data stale ${state.dataStalenessMinutes}min — prices frozen`);
-  if (state.circuitBreakerActive)    reasons.push(`Circuit breaker: ${state.apiFailureCount} API failures`);
-
-  const row = await queryOne('SELECT last_updated FROM kill_switch_state WHERE portfolio_id=?', [portfolioId]);
+  if (flags.dailyLossHalted)         reasons.push('Daily loss >1% NAV');
+  if (flags.weeklyLossHalted)        reasons.push('Weekly loss >3% NAV (size halved)');
+  if (flags.drawdownPaused)          reasons.push('Drawdown >8% NAV');
+  if (flags.drawdownProtection)      reasons.push('Drawdown >12% NAV — protection mode');
+  if (flags.consecutiveLossCooldown) reasons.push(`${flags.consecutiveLosses} consecutive losses — cooldown until ${flags.cooldownUntil}`);
+  if (flags.dataStaleHalted)         reasons.push(`Data stale ${flags.dataStalenessMinutes}min`);
+  if (flags.circuitBreakerActive)    reasons.push(`Circuit breaker: ${flags.apiFailureCount} API failures`);
 
   return {
     portfolioId,
-    flags: state,
+    flags,
     anyHalted,
     reason: reasons.join('; ') || 'All clear',
-    lastUpdated: row?.last_updated ? String(row.last_updated) : null,
+    lastUpdated: portRow?.last_updated ? String(portRow.last_updated) : null,
   };
 }
