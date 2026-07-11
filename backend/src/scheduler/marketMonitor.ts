@@ -107,7 +107,8 @@ async function runPortfolioTradingCycle(
     if (!signal || signal.price <= 0) continue;
     const lossRatio = (signal.price - h.avgBuyPrice) / h.avgBuyPrice;
     let shouldSell = false, reason = signal.reason;
-    let isHardStop = false;  // Phase 17 fix: explicit field, never string-derived
+    let isHardStop = false;      // Phase 17 fix: explicit field, never string-derived
+    let exitTypeForTrade: string | null = null;  // Phase 18: stamped on trades.exit_type
 
     // Phase 13: Update trailing stop as price rises (before exit evaluation)
     const marketRegimeForExit = await classifyMarketRegime().catch(() => null);
@@ -129,16 +130,17 @@ async function runPortfolioTradingCycle(
     );
     if (exitDecision.shouldExit && exitDecision.exitType !== null) {
       shouldSell = true;
-      isHardStop = exitDecision.isHardStop;  // STOP_LOSS / TRAILING_STOP = true; everything else = false
+      isHardStop = exitDecision.isHardStop;
+      exitTypeForTrade = exitDecision.exitType;
       reason = exitDecision.reason;
     }
 
     const isStopLoss = lossRatio < -stopLoss;
 
     if (isStopLoss) {
-      // Hard rule — no LLM involvement ever on stop-loss
       shouldSell = true;
-      isHardStop = true;  // portfolio-level % stop-loss is also a hard stop
+      isHardStop = true;
+      exitTypeForTrade = 'STOP_LOSS';
       reason = `Stop-loss: ${(lossRatio*100).toFixed(1)}%`;
     } else if (lossRatio > takeProfit && signal.action === 'SELL') {
       shouldSell = true;
@@ -224,6 +226,10 @@ async function runPortfolioTradingCycle(
         continue;
       }
       const sellTradeId = await executeTrade(portfolioId, h.symbol, h.companyName, 'SELL', h.quantity, signal.price, reason);
+      // Phase 18 [MAJOR fix]: stamp exit_type on the trade row for reliable audit queries
+      if (sellTradeId && exitTypeForTrade) {
+        void run('UPDATE trades SET exit_type=? WHERE id=?', [exitTypeForTrade, sellTradeId]).catch(() => null);
+      }
       // Resolve pattern outcome: mark the corresponding BUY pattern WIN/LOSS
       const sellPnlPct = ((signal.price - h.avgBuyPrice) / h.avgBuyPrice) * 100;
       void resolvePatternOutcome(portfolioId, h.symbol, sellPnlPct).catch(() => null);
@@ -240,7 +246,7 @@ async function runPortfolioTradingCycle(
 
   // Phase 13 + 17: Kill-switch check before any BUY activity
   // Re-use ksStateForSell if already evaluated (avoid double-evaluation)
-  const ksState = ksStateForSell ?? await evaluateKillSwitch(portfolioId).catch(() => ({ dailyLossHalted: false, weeklyLossHalted: false, drawdownPaused: false, drawdownProtection: false, consecutiveLossCooldown: false, consecutiveLosses: 0, cooldownUntil: null, dataStaleHalted: false, dataStalenessMinutes: 0, circuitBreakerActive: false, circuitBreakerSince: null, apiFailureCount: 0, emergencyLiquidationTriggered: false, lastClearedAt: null }));
+  const ksState = ksStateForSell ?? await evaluateKillSwitch(portfolioId).catch(() => ({ dailyLossHalted: false, weeklyLossHalted: false, drawdownPaused: false, drawdownProtection: false, consecutiveLossCooldown: false, consecutiveLosses: 0, cooldownUntil: null, dataStaleHalted: false, dataStalenessMinutes: 0, circuitBreakerActive: false, circuitBreakerSince: null, apiFailureCount: 0, emergencyLiquidationTriggered: false, drawdownProtectionSince: null, lastClearedAt: null }));
   const ksMult = killSwitchSizeMultiplier(ksState);
 
   // Phase 17: Emergency liquidation — fire when drawdownProtection is active and market is open

@@ -7,7 +7,7 @@ import Divider from '@mui/material/Divider';
 import Chip from '@mui/material/Chip';
 import Tooltip from '@mui/material/Tooltip';
 import { useAdaptiveReport } from '../../hooks/useAdaptiveReport.ts';
-import { useGetWalkForwardResultsQuery, useGetExpectancyReportQuery, useGetStrategyWalkForwardQuery } from '../../../../store/portfolios/portfolios.api.ts';
+import { useGetWalkForwardResultsQuery, useGetExpectancyReportQuery, useGetStrategyWalkForwardQuery, useGetAuditReportQuery, useGetDriftReportQuery } from '../../../../store/portfolios/portfolios.api.ts';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import type { MarketRegime } from '../../../../api/adaptive.api.types.ts';
@@ -37,6 +37,12 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
 
   const { data: strategyWF = [] } =
     useGetStrategyWalkForwardQuery(portfolioId!, { skip: portfolioId == null });
+
+  const { data: auditReport } =
+    useGetAuditReportQuery(portfolioId!, { skip: portfolioId == null });
+
+  const { data: driftReport } =
+    useGetDriftReportQuery(portfolioId!, { skip: portfolioId == null });
 
   if (isLoading) return <Box display="flex" justifyContent="center" py={3}><Spinner /></Box>;
   if (error || !report) return null;
@@ -279,6 +285,95 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
               </Box>
             </Box>
           )}
+        </Grid>
+      )}
+
+      {/* Today's Audit — Phase 18 */}
+      {portfolioId != null && auditReport && (
+        <Grid item xs={12}>
+          <Divider sx={{ mb: 2 }} />
+          <Typography variant="subtitle2" fontWeight={700} mb={1.5}>Today's Activity</Typography>
+          <Box display="flex" gap={2} flexWrap="wrap" p={1.5}
+            sx={{ bgcolor: 'rgba(255,255,255,0.03)', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+            {/* Trades */}
+            {([  
+              { label: 'Buys',      value: auditReport.trades.buys,             color: '#10b981' },
+              { label: 'Sells',     value: auditReport.trades.sells,            color: '#f59e0b' },
+              { label: 'Dedup blocked', value: auditReport.trades.dedupBlocked, color: 'text.secondary' },
+              { label: 'Emergency sells', value: auditReport.trades.emergencyLiquidations, color: auditReport.trades.emergencyLiquidations > 0 ? '#ef4444' : 'text.secondary' },
+              { label: 'Signals evaluated', value: auditReport.signals.evaluated, color: 'text.primary' },
+              { label: 'Vetoed',    value: auditReport.signals.vetoed,          color: auditReport.signals.vetoed > 0 ? '#f59e0b' : 'text.secondary' },
+              { label: 'Open positions', value: auditReport.openPositions,      color: 'text.primary' },
+              { label: 'Missing exit plans', value: auditReport.missingExitPlans, color: auditReport.missingExitPlans > 0 ? '#ef4444' : '#10b981' },
+              ...(auditReport.dailyPnlPct != null ? [{ label: 'Daily P&L', value: `${auditReport.dailyPnlPct >= 0 ? '+' : ''}${auditReport.dailyPnlPct.toFixed(2)}%`, color: auditReport.dailyPnlPct >= 0 ? '#10b981' : '#ef4444' }] : []),
+            ] as Array<{ label: string; value: number | string; color: string }>).map(({ label, value, color }) => (
+              <Box key={label}>
+                <Typography variant="caption" color="text.secondary" display="block">{label}</Typography>
+                <Typography variant="body2" fontWeight={700} sx={{ color }}>{value}</Typography>
+              </Box>
+            ))}
+          </Box>
+          {auditReport.killSwitchEvents.length > 0 && (
+            <Box mt={1} display="flex" gap={0.5} flexWrap="wrap">
+              {auditReport.killSwitchEvents.map(evt => (
+                <Box key={evt} sx={{ px: 0.75, py: 0.2, borderRadius: 0.5, bgcolor: 'rgba(239,68,68,0.08)',
+                  border: '1px solid rgba(239,68,68,0.25)', fontSize: '0.65rem', color: '#f87171' }}>
+                  {evt}
+                </Box>
+              ))}
+            </Box>
+          )}
+        </Grid>
+      )}
+
+      {/* Live vs Backtest Drift — Phase 18 */}
+      {portfolioId != null && driftReport && driftReport.metrics.length > 0 && (
+        <Grid item xs={12}>
+          <Divider sx={{ mb: 2 }} />
+          <Box display="flex" alignItems="center" gap={1.5} mb={1.5}>
+            <Typography variant="subtitle2" fontWeight={700}>Live vs Backtest Drift</Typography>
+            {driftReport.hasDrift && (
+              <Box sx={{ px: 0.75, py: 0.2, borderRadius: 0.5, bgcolor: 'rgba(245,158,11,0.1)',
+                border: '1px solid rgba(245,158,11,0.35)', fontSize: '0.65rem', color: '#f59e0b', fontWeight: 700 }}>
+                ⚠ Drift detected
+              </Box>
+            )}
+            <Typography variant="caption" color="text.secondary">
+              {driftReport.windowMonths}m live vs most recent WF window
+            </Typography>
+          </Box>
+          <Box sx={{ overflowX: 'auto' }}>
+            <Box display="flex" gap={1.5} flexWrap="wrap" mb={driftReport.driftFlags.length > 0 ? 1 : 0}>
+              {driftReport.metrics.map(m => (
+                <Box key={m.metric} p={1} sx={{
+                  minWidth: 120, borderRadius: 1, border: '1px solid',
+                  borderColor: m.flagged ? 'rgba(245,158,11,0.4)' : 'divider',
+                  bgcolor: m.flagged ? 'rgba(245,158,11,0.05)' : 'rgba(255,255,255,0.02)',
+                }}>
+                  <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>{m.metric}</Typography>
+                  <Box display="flex" gap={1.5} alignItems="baseline">
+                    <Tooltip title="Backtest">
+                      <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.72rem' }}>
+                        BT {m.backtest.toFixed(2)}
+                      </Typography>
+                    </Tooltip>
+                    <Tooltip title="Live">
+                      <Typography variant="body2" fontWeight={700} sx={{ fontSize: '0.72rem',
+                        color: m.flagged ? '#f59e0b' : m.delta >= 0 ? '#10b981' : '#ef4444' }}>
+                        Live {m.live.toFixed(2)}
+                      </Typography>
+                    </Tooltip>
+                  </Box>
+                  <Typography variant="caption" sx={{ color: m.flagged ? '#f59e0b' : m.delta >= 0 ? '#10b981' : '#ef4444', fontSize: '0.65rem' }}>
+                    {m.delta >= 0 ? '+' : ''}{m.delta.toFixed(2)} {m.flagged ? '⚠' : ''}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
+            {driftReport.driftFlags.map(flag => (
+              <Typography key={flag} variant="caption" color="warning.light" display="block" mt={0.25}>• {flag}</Typography>
+            ))}
+          </Box>
         </Grid>
       )}
     </Grid>

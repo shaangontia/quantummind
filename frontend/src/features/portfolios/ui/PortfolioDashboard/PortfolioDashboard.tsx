@@ -21,6 +21,7 @@ import { AdaptivePanel } from '../../../intelligence/ui/AdaptivePanel/AdaptivePa
 import { MarketRegimeBanner } from '../MarketRegimeBanner/index.ts';
 import { ModelGovernanceBanner } from '../ModelGovernanceBanner/index.ts';
 import { KillSwitchStatusBar } from '../KillSwitchStatusBar/index.ts';
+import { PortfolioModeChip } from '../PortfolioModeChip/index.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -88,6 +89,7 @@ export const PortfolioDashboard = () => {
           <Badge variant={riskColor(headerData.riskTolerance) as BadgeVariant}>
             {headerData.riskTolerance} Risk
           </Badge>
+          <PortfolioModeChip portfolioId={portfolioId} />
         </Box>
         <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
           {lastFetchedAt && (

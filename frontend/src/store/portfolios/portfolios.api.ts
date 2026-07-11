@@ -111,6 +111,48 @@ export interface KillSwitchStatus {
   lastUpdated: string;
 }
 
+// ─── Phase 18 Types (Mode / Audit / Drift) ───────────────────────────────────
+
+export type PortfolioModeValue = 'NORMAL' | 'COLD_START' | 'HALTED' | 'PROTECTION' | 'LIQUIDATION';
+
+export interface PortfolioMode {
+  portfolioId: number;
+  mode: PortfolioModeValue;
+  blockedActions: string[];
+  allowedActions: string[];
+  primaryReasonCode: string | null;
+  activeSince: string | null;
+  nextAutoClearCheckAt: string | null;
+  requiresManualIntervention: boolean;
+}
+
+export interface AuditReport {
+  date: string;
+  trades: { buys: number; sells: number; dedupBlocked: number; emergencyLiquidations: number; };
+  signals: { evaluated: number; skipped: number; vetoed: number; };
+  exits: { stopLoss: number; trailing: number; time: number; target: number; thesis: number; regime: number; };
+  killSwitchEvents: string[];
+  openPositions: number;
+  missingExitPlans: number;
+  dailyPnlPct: number | null;
+}
+
+export interface DriftWindow {
+  metric: string;
+  backtest: number;
+  live: number;
+  delta: number;
+  flagged: boolean;
+}
+
+export interface DriftReport {
+  portfolioId: number;
+  windowMonths: number;
+  driftFlags: string[];
+  metrics: DriftWindow[];
+  hasDrift: boolean;
+}
+
 // ─── Walk-Forward Types ─────────────────────────────────────────
 
 export interface StrategyBreakdown {
@@ -309,8 +351,22 @@ export const portfoliosApi = baseApi.injectEndpoints({
 
     getKillSwitch: builder.query<KillSwitchStatus, number>({
       query: id => ({ url: `/portfolios/${id}/kill-switch`, method: 'GET' }),
-      // 0 = always re-fetch on remount; safety panel must never serve stale data
       keepUnusedDataFor: 0,
+    }),
+
+    getPortfolioMode: builder.query<PortfolioMode, number>({
+      query: id => ({ url: `/portfolios/${id}/mode`, method: 'GET' }),
+      keepUnusedDataFor: 0,
+    }),
+
+    getAuditReport: builder.query<AuditReport, number>({
+      query: id => ({ url: `/portfolios/${id}/audit-report`, method: 'GET' }),
+      keepUnusedDataFor: 60,
+    }),
+
+    getDriftReport: builder.query<DriftReport, number>({
+      query: id => ({ url: `/portfolios/${id}/drift-report`, method: 'GET' }),
+      keepUnusedDataFor: 300,
     }),
 
   }),
@@ -335,4 +391,7 @@ export const {
   useGetModelGovernanceQuery,
   useGetStrategyWalkForwardQuery,
   useGetKillSwitchQuery,
+  useGetPortfolioModeQuery,
+  useGetAuditReportQuery,
+  useGetDriftReportQuery,
 } = portfoliosApi;

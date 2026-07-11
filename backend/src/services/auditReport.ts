@@ -55,9 +55,9 @@ export async function getDailyAuditReport(portfolioId: number): Promise<DailyAud
   today.setHours(0, 0, 0, 0);
   const todayStr = today.toISOString();
 
-  const [trades, signals, holdingsRaw, ksRow, snapshots, portfolio] = await Promise.all([
+  const [trades, signals, holdingsRaw, ksRow, snapshots, portfolio, dedupEvents, exitTypeCounts] = await Promise.all([
     query(
-      `SELECT action, reason FROM trades WHERE portfolio_id=? AND created_at >= ?`,
+      `SELECT action, exit_type FROM trades WHERE portfolio_id=? AND created_at >= ?`,
       [portfolioId, todayStr],
     ),
     query(
@@ -77,21 +77,38 @@ export async function getDailyAuditReport(portfolioId: number): Promise<DailyAud
       [portfolioId, todayStr],
     ),
     queryOne('SELECT current_cash FROM portfolios WHERE id=?', [portfolioId]),
+    // Phase 18 [MAJOR fix]: DEDUP_BLOCKED from trade_events, not from trade rows (never inserted)
+    query(
+      `SELECT COUNT(*) as cnt FROM trade_events
+       WHERE portfolio_id=? AND event_type='DEDUP_BLOCKED' AND created_at >= ?`,
+      [portfolioId, todayStr],
+    ).catch(() => [{ cnt: 0 }]),
+    // Phase 18 [MAJOR fix]: exit type counts from exit_type column, not string inspection
+    query(
+      `SELECT exit_type, COUNT(*) as cnt FROM trades
+       WHERE portfolio_id=? AND action='SELL' AND created_at >= ? AND exit_type IS NOT NULL
+       GROUP BY exit_type`,
+      [portfolioId, todayStr],
+    ).catch(() => []),
   ]);
 
   const buys  = trades.filter(t => t.action === 'BUY').length;
   const sells = trades.filter(t => t.action === 'SELL').length;
-  const dedupBlocked       = trades.filter(t => String(t.reason ?? '').includes('DEDUP_BLOCKED')).length;
-  const emergencyLiquidations = trades.filter(t => String(t.reason ?? '').includes('Emergency liquidation')).length;
+  const dedupBlocked       = Number(dedupEvents[0]?.cnt ?? 0);
+  const emergencyLiquidations = trades.filter(t => t.exit_type === 'EMERGENCY').length;
 
-  // Exit type breakdown from trade reasons
+  // Exit type breakdown from exit_type column (set explicitly in marketMonitor + killSwitch)
+  const exitTypeMap: Record<string, number> = {};
+  for (const row of exitTypeCounts) {
+    if (row.exit_type) exitTypeMap[String(row.exit_type)] = Number(row.cnt ?? 0);
+  }
   const exitCounts = {
-    stopLoss:          trades.filter(t => String(t.reason ?? '').includes('Stop-loss') || String(t.reason ?? '').includes('ATR stop')).length,
-    trailingStop:      trades.filter(t => String(t.reason ?? '').includes('Trailing stop')).length,
-    timeStop:          trades.filter(t => String(t.reason ?? '').includes('Time stop')).length,
-    profitTarget:      trades.filter(t => String(t.reason ?? '').includes('profit target')).length,
-    thesisInvalidated: trades.filter(t => String(t.reason ?? '').includes('thesis invalidated')).length,
-    regimeExit:        trades.filter(t => String(t.reason ?? '').includes('regime')).length,
+    stopLoss:          (exitTypeMap['STOP_LOSS'] ?? 0),
+    trailingStop:      (exitTypeMap['TRAILING_STOP'] ?? 0),
+    timeStop:          (exitTypeMap['TIME_STOP'] ?? 0),
+    profitTarget:      (exitTypeMap['PROFIT_TARGET'] ?? 0),
+    thesisInvalidated: (exitTypeMap['THESIS_INVALIDATED'] ?? 0),
+    regimeExit:        (exitTypeMap['REGIME_EXIT'] ?? 0),
   };
 
   const evaluated = signals.length;

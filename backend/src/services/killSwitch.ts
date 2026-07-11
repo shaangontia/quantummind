@@ -44,6 +44,7 @@ export type KillSwitchState = {
   circuitBreakerSince: string | null;
   apiFailureCount: number;
   emergencyLiquidationTriggered: boolean;
+  drawdownProtectionSince: string | null;  // Phase 18: when drawdown first crossed 12%
   lastClearedAt: string | null;
 };
 
@@ -259,7 +260,9 @@ export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitc
     circuitBreakerActive: global.circuitBreakerActive,
     circuitBreakerSince: global.circuitBreakerSince,
     apiFailureCount: global.apiFailureCount,
-    emergencyLiquidationTriggered: false, lastClearedAt: null,
+    emergencyLiquidationTriggered: false,
+    drawdownProtectionSince: null,
+    lastClearedAt: null,
   };
 
   if (peakNav <= 0 || currentNav <= 0) return nullState;
@@ -339,6 +342,23 @@ export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitc
 
   // Phase 17 MAJOR fix (Darth Reviewer): reset flag when drawdown recovers below threshold
   const drawdownProtection = drawdownPct > DRAWDOWN_PROTECT_PCT;
+
+  // Persist drawdown_protection_since: set when first crossing threshold, cleared on recovery
+  if (drawdownProtection) {
+    // Only write since-timestamp if not already set (i.e., just crossed threshold)
+    await run(
+      `UPDATE kill_switch_state
+       SET drawdown_protection_since = COALESCE(drawdown_protection_since, datetime('now'))
+       WHERE portfolio_id=? AND drawdown_protection_since IS NULL`,
+      [portfolioId],
+    ).catch(() => null);
+  } else {
+    await run(
+      `UPDATE kill_switch_state SET drawdown_protection_since=NULL WHERE portfolio_id=?`,
+      [portfolioId],
+    ).catch(() => null);
+  }
+
   if (!drawdownProtection && emergencyLiquidationTriggered) {
     // Store timestamp of the now-cleared event for audit trail, then reset the flag
     await run(
@@ -369,6 +389,7 @@ export async function evaluateKillSwitch(portfolioId: number): Promise<KillSwitc
     circuitBreakerSince:  global.circuitBreakerSince,
     apiFailureCount:      global.apiFailureCount,
     emergencyLiquidationTriggered,
+    drawdownProtectionSince: null,  // populated from DB read below
     lastClearedAt,
   };
 
@@ -475,7 +496,11 @@ export async function executeEmergencyLiquidation(
     const pnlPct = ((h.currentPrice - h.avgBuyPrice) / h.avgBuyPrice * 100).toFixed(1);
     const reason = `Emergency liquidation: drawdown >12% — closing weakest position (PnL: ${pnlPct}%)`;
     try {
-      await executeTradeFn(portfolioId, h.symbol, h.companyName, 'SELL', h.quantity, h.currentPrice, reason);
+      const emergencyTradeId = await executeTradeFn(portfolioId, h.symbol, h.companyName, 'SELL', h.quantity, h.currentPrice, reason);
+      // Stamp exit_type = 'EMERGENCY' for audit report queries
+      if (emergencyTradeId) {
+        void run('UPDATE trades SET exit_type=? WHERE id=?', ['EMERGENCY', emergencyTradeId]).catch(() => null);
+      }
       closed.push(h.symbol);
       logger.warn({ job: 'kill-switch', portfolioId, symbol: h.symbol, pnlPct, reason: 'EMERGENCY_SELL executed' });
     } catch (err) {
@@ -524,7 +549,7 @@ export function derivePortfolioMode(
       blockedActions: ['BUY', 'NON_HARD_STOP_SELL'],
       allowedActions: ['HARD_STOP_SELL', 'EMERGENCY_LIQUIDATION_SELL'],
       primaryReasonCode: 'DRAWDOWN_PROTECTION',
-      activeSince: ks.lastClearedAt,
+      activeSince: ks.drawdownProtectionSince,  // Phase 18 fix: when threshold was first crossed
       requiresManualIntervention: ks.emergencyLiquidationTriggered,
     };
   }
@@ -612,7 +637,7 @@ export async function getKillSwitchStatus(portfolioId: number): Promise<{
     queryOne(
       `SELECT daily_loss_halted, weekly_loss_halted, drawdown_paused, drawdown_protection,
               consecutive_losses, cooldown_until, cooldown_active, data_stale_halted,
-              emergency_liquidation_triggered, last_cleared_at, last_updated
+              emergency_liquidation_triggered, drawdown_protection_since, last_cleared_at, last_updated
        FROM kill_switch_state WHERE portfolio_id=?`,
       [portfolioId],
     ).catch(() => null),
@@ -643,7 +668,8 @@ export async function getKillSwitchStatus(portfolioId: number): Promise<{
     circuitBreakerSince:        global.circuitBreakerSince,
     apiFailureCount:            global.apiFailureCount,
     emergencyLiquidationTriggered: portRow ? Number(portRow.emergency_liquidation_triggered ?? 0) === 1 : false,
-    lastClearedAt:              portRow?.last_cleared_at ? String(portRow.last_cleared_at) : null,
+    drawdownProtectionSince: portRow?.drawdown_protection_since ? String(portRow.drawdown_protection_since) : null,
+    lastClearedAt:           portRow?.last_cleared_at ? String(portRow.last_cleared_at) : null,
   };
 
   const anyHalted = killSwitchSizeMultiplier(flags) === 0;

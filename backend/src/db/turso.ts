@@ -409,6 +409,26 @@ export async function runMigrations(): Promise<void> {
   // Phase 17 fix: audit trail for emergency liquidation resets
   try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN last_emergency_liquidation_at TEXT"); } catch (_) { /* exists */ }
   console.log('[DB] Migration: Phase 17 autonomous risk closure schema done');
+
+  // Phase 18: Autonomous Trading Verification schema
+  // exit_type on trades (STOP_LOSS | TRAILING_STOP | TIME_STOP | PROFIT_TARGET | THESIS_INVALIDATED | REGIME_EXIT | EMERGENCY)
+  try { await db.execute("ALTER TABLE trades ADD COLUMN exit_type TEXT"); } catch (_) { /* exists */ }
+  // drawdown_protection_since: when drawdown first crossed 12% threshold
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN drawdown_protection_since TEXT"); } catch (_) { /* exists */ }
+  // trade_events: structured audit log for events that don't produce a trade row (e.g. DEDUP_BLOCKED)
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS trade_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      action TEXT,
+      detail TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_te_portfolio_created ON trade_events(portfolio_id, created_at)');
+  } catch (_) { /* exists */ }
+  console.log('[DB] Migration: Phase 18 verification schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {
