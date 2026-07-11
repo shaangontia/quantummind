@@ -5,7 +5,7 @@ import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, i
 import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
-import { resolveSignalOutcomes } from '../services/adaptiveEngine.js';
+import { resolveSignalOutcomes, computeSectorAccuracy } from '../services/adaptiveEngine.js';
 import { geminiCycleFocus, geminiPortfolioInsight, geminiSellReview } from '../services/geminiService.js';
 import { recordSignalPattern, resolvePatternOutcome } from '../services/patternEngine.js';
 import { fetchAnnouncements } from '../services/newsService.js';
@@ -451,6 +451,8 @@ export function startScheduler(): void {
   // Runs at 20:00 IST on weekdays — 5+ hours after market close so exit prices are settled
   cron.schedule('0 20 * * 1-5', async () => {
     await resolveSignalOutcomes().catch(console.error);
+    // Update sector-level accuracy weights from resolved trade outcomes
+    await computeSectorAccuracy().catch(console.error);
     // Gemini portfolio health check for each active portfolio (best-effort, stored in RAG)
     try {
       const portfolios = await query('SELECT * FROM portfolios WHERE is_active = 1');

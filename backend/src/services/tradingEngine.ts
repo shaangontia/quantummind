@@ -12,7 +12,7 @@ import { logger } from '../lib/logger.js';
 import { getStockSentiment } from './newsService.js';
 import { getMLBoost, computeTrendIndicators } from './mlEngine.js';
 import { getGroqStockSentiment } from './groqService.js';
-import { getSignalWeights, getCurrentRegime, recordSignalForTracking, resolveGeminiSellDecisions } from './adaptiveEngine.js';
+import { getSignalWeights, getCurrentRegime, recordSignalForTracking, resolveGeminiSellDecisions, getSectorWeight, computeConsensusMultiplier } from './adaptiveEngine.js';
 import { geminiTradeVeto, geminiFundamentalAnalysis } from './geminiService.js';
 import { getFundamentalSnapshot, computeFundamentalVerdict } from './fundamentalService.js';
 import { getAdaptiveRSIBuy, getPatternConfidence, computeExpectedValue } from './patternEngine.js';
@@ -355,7 +355,7 @@ export async function generateSignal(
       else if (groq.score === -1){ sell += 1; notes.push(`Groq: ${groq.tradeImplication}`); }
     }
 
-    // Phase 12: Pattern confidence boost — multiply buy/sell scores by learned confidence
+    // Phase 12: Pattern confidence boost — multiply buy/sell scores by learned historical confidence
     const momentumForPattern = notes.some(n => n.includes('bullish') || n.includes('Momentum UP')) ? 'bullish'
       : notes.some(n => n.includes('bearish') || n.includes('Momentum DOWN')) ? 'bearish' : 'neutral';
     const patternConf = await getPatternConfidence(
@@ -367,6 +367,17 @@ export async function generateSignal(
       if (patternConf > 1.1)  notes.push(`Pattern confidence boost: ${patternConf.toFixed(2)}×`);
       if (patternConf < 0.95) notes.push(`Pattern confidence penalty: ${patternConf.toFixed(2)}×`);
     }
+
+    // Phase 12+: Sector weight — adaptive sector-level bias from historical win rates
+    const symbolSector = getSymbolSector(symbol);
+    const sectorWt = await getSectorWeight(symbolSector).catch(() => 1.0);
+    if (sectorWt !== 1.0) {
+      buy = buy * sectorWt;
+      if (sectorWt > 1.05) notes.push(`Sector weight boost (${symbolSector}): ${sectorWt.toFixed(2)}×`);
+      if (sectorWt < 0.95) notes.push(`Sector weight penalty (${symbolSector}): ${sectorWt.toFixed(2)}×`);
+    }
+
+    // Phase 12+: Consensus multiplier applied after fundamentals (see below, after fundamental gate)
 
     // Phase 13: Strategy classification (must run before regime gate)
     const near52WLow = (() => {
@@ -461,6 +472,22 @@ export async function generateSignal(
           reason: `EV gate: expected value ${evResult.ev.toFixed(2)}% below 1% threshold (${evResult.sampleCount} trades: P(win)=${(evResult.pWin*100).toFixed(0)}%, avgWin=${evResult.avgWinPct.toFixed(1)}%, avgLoss=${evResult.avgLossPct.toFixed(1)}%)`,
           price: q.price };
       }
+    }
+
+    // Phase 12+: Consensus multiplier — real-time independent signal agreement (runs post-fundamentals)
+    const groqDir = groqSentiment?.startsWith('BULLISH') ? 'bullish' : groqSentiment?.startsWith('BEARISH') ? 'bearish' : 'neutral';
+    const consensusMult = computeConsensusMultiplier({
+      rsiSignal:        rsiVal !== null && rsiVal < (t.rsiBuy ?? 35) ? 'bullish' : rsiVal !== null && rsiVal > 70 ? 'bearish' : 'neutral',
+      macdSignal:       (trend?.macd?.bullishCrossover ?? false) ? 'bullish' : (trend?.macd?.bearishCrossover ?? false) ? 'bearish' : 'neutral',
+      momentumSignal:   momentumForPattern,
+      newsSignal:       groqDir,
+      volumeSignal:     (q.volumeRatio ?? 1) > 1.5 ? 'bullish' : (q.volumeRatio ?? 1) < 0.5 ? 'bearish' : 'neutral',
+      fundamentalScore: fundamentalScore ?? 50,
+    });
+    if (consensusMult !== 1.0) {
+      buy = buy * consensusMult;
+      if (consensusMult > 1.05) notes.push(`Consensus boost: ${consensusMult.toFixed(2)}×`);
+      if (consensusMult < 0.97) notes.push(`Consensus penalty: ${consensusMult.toFixed(2)}×`);
     }
 
     if (topAction && portfolioCtx && topScore >= 5.5) {

@@ -320,3 +320,141 @@ export async function resolveGeminiSellDecisions(
     [outcome, realizedPnlPct, portfolioId, symbol],
   ).catch(() => null);
 }
+
+// ─── Sector-Level Accuracy Tracking ──────────────────────────────────────────
+
+export interface SectorPerformance {
+  sector: string;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgWinPct: number;
+  avgLossPct: number;
+  /** 0.85–1.20× — applied per-sector to bias signal scoring toward proven sectors */
+  sectorWeight: number;
+}
+
+/**
+ * Compute win rate and adaptive weight per sector from resolved signal_patterns.
+ * Requires ≥8 resolved BUY trades per sector before activating learned weight.
+ * Persists weights in signal_weights as `sector_<name>_weight`.
+ *
+ * Weight bands:
+ *   winRate > 0.60  → 1.20× (sector outperforms historically)
+ *   winRate 0.45–0.60 → 1.00× (neutral)
+ *   winRate < 0.45  → 0.85× (underperforming sector — reduce exposure bias)
+ */
+export async function computeSectorAccuracy(): Promise<SectorPerformance[]> {
+  const rows = await query(
+    `SELECT sector,
+            SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)  AS wins,
+            SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) AS losses,
+            AVG(CASE WHEN outcome='WIN'  THEN realized_pnl_pct ELSE NULL END) AS avgWinPct,
+            AVG(CASE WHEN outcome='LOSS' THEN realized_pnl_pct ELSE NULL END) AS avgLossPct
+     FROM signal_patterns
+     WHERE action='BUY' AND outcome IS NOT NULL AND sector IS NOT NULL AND sector != ''
+     GROUP BY sector
+     ORDER BY wins DESC`,
+    [],
+  );
+
+  const results: SectorPerformance[] = [];
+
+  for (const row of rows) {
+    const wins   = Number(row.wins   ?? 0);
+    const losses = Number(row.losses ?? 0);
+    const total  = wins + losses;
+    if (total === 0) continue;
+
+    const winRate    = wins / total;
+    const avgWinPct  = Number(row.avgWinPct  ?? 0);
+    const avgLossPct = Number(row.avgLossPct ?? 0);
+
+    // Only activate learned weight at ≥8 resolved sector trades to prevent overfitting
+    let sectorWeight = 1.0;
+    if (total >= 8) {
+      if (winRate > 0.60)       sectorWeight = 1.20;
+      else if (winRate < 0.45)  sectorWeight = 0.85;
+    }
+
+    const sector = String(row.sector);
+    results.push({ sector, wins, losses, winRate, avgWinPct, avgLossPct, sectorWeight });
+
+    const key = `sector_${sector.toLowerCase().replace(/[^a-z0-9]/g, '_')}_weight`;
+    await run(
+      'INSERT OR REPLACE INTO signal_weights (source, weight) VALUES (?, ?)',
+      [key, sectorWeight],
+    ).catch(() => null);
+  }
+
+  return results;
+}
+
+/**
+ * Retrieve the current sector weight for a given sector name.
+ * Falls back to 1.0 (neutral) when no data or insufficient sample size.
+ */
+export async function getSectorWeight(sector: string): Promise<number> {
+  if (!sector) return 1.0;
+  const key = `sector_${sector.toLowerCase().replace(/[^a-z0-9]/g, '_')}_weight`;
+  const row = await queryOne('SELECT weight FROM signal_weights WHERE source=?', [key]).catch(() => null);
+  return row ? Math.max(0.85, Math.min(1.20, Number(row.weight))) : 1.0;
+}
+
+// ─── Multi-Signal Consensus Multiplier ───────────────────────────────────────
+
+export interface ConsensusInput {
+  rsiSignal:        'bullish' | 'bearish' | 'neutral';
+  macdSignal:       'bullish' | 'bearish' | 'neutral';
+  momentumSignal:   'bullish' | 'bearish' | 'neutral';
+  newsSignal:       'bullish' | 'bearish' | 'neutral';
+  volumeSignal:     'bullish' | 'bearish' | 'neutral';
+  fundamentalScore: number;  // 0–100; ≥55 = bullish vote, <35 = bearish vote
+}
+
+/**
+ * Compute a consensus multiplier (0.92–1.12×) based on real-time independent signal agreement.
+ *
+ * Unlike patternEngine.getPatternConfidence() which looks at HISTORICAL outcomes,
+ * this function measures how many independent signals agree with the BUY direction RIGHT NOW.
+ *
+ * Bounded to [0.92, 1.12] to remain additive with patternConfidence [0.9, 1.15].
+ * Worst-case combined ceiling: 1.12 × 1.15 = 1.288 (vs old single multiplier 1.4).
+ *
+ * Thresholds:
+ *   ≥5 bullish votes → 1.12×  (near-unanimous)
+ *   ≥4 bullish votes → 1.08×
+ *   ≥3 bullish, ≤1 bearish → 1.04×
+ *   majority bearish (net < −25%) → 0.92× (counter-consensus penalty)
+ *   otherwise → 1.0× (neutral / mixed)
+ */
+export function computeConsensusMultiplier(input: ConsensusInput): number {
+  const { rsiSignal, macdSignal, momentumSignal, newsSignal, fundamentalScore, volumeSignal } = input;
+
+  let bullishCount = 0;
+  let bearishCount = 0;
+
+  const vote = (sig: string) => {
+    if (sig === 'bullish') bullishCount++;
+    else if (sig === 'bearish') bearishCount++;
+  };
+  vote(rsiSignal);
+  vote(macdSignal);
+  vote(momentumSignal);
+  vote(newsSignal);
+  vote(volumeSignal);
+  // Fundamental score as directional vote
+  if (fundamentalScore >= 55) bullishCount++;
+  else if (fundamentalScore < 35) bearishCount++;
+
+  const total = bullishCount + bearishCount;
+  if (total === 0) return 1.0;
+
+  const netBullishRatio = (bullishCount - bearishCount) / total;
+
+  if (bullishCount >= 5)                          return 1.12;
+  if (bullishCount >= 4)                          return 1.08;
+  if (bullishCount >= 3 && bearishCount <= 1)     return 1.04;
+  if (netBullishRatio < -0.25)                    return 0.92;
+  return 1.0;
+}
