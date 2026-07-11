@@ -51,6 +51,37 @@ export interface ModelGovernance {
   maxPositionPctOverride: number;
   maxTradesPerDayOverride: number;
   maxOpenPositionsOverride: number;
+  // Phase 16 enriched fields
+  promotionGaps?: {
+    nextStage: ModelStage;
+    labelsNeeded: number;
+    wfWindowsNeeded: number;
+    weakSignalsBlocked: boolean;
+  };
+  calibration?: {
+    available: boolean;
+    maxErrorPct: number | null;
+    activeBuckets: number;
+  };
+  activeRestrictions?: {
+    maxPositionPct: number;
+    maxTradesPerDay: number;
+    maxOpenPositions: number;
+  };
+}
+
+export interface StrategyWalkForwardWindow {
+  strategyType: string;
+  windowIndex: number;
+  testStart: string;
+  testEnd: string;
+  candidateCount: number;
+  winRate: number;
+  expectancyPct: number;
+  profitFactor: number;
+  maxConsecutiveLosses: number;
+  autoDisabled: boolean;
+  consecutiveNegativeWindows: number;
 }
 
 // ─── Walk-Forward Types ─────────────────────────────────────────
@@ -242,8 +273,11 @@ export const portfoliosApi = baseApi.injectEndpoints({
 
     getModelGovernance: builder.query<ModelGovernance, number>({
       query: id => ({ url: `/portfolios/${id}/model-governance`, method: 'GET' }),
-      // Re-fetch every 10 min — stage promotions happen nightly
       keepUnusedDataFor: 600,
+    }),
+
+    getStrategyWalkForward: builder.query<StrategyWalkForwardWindow[], number>({
+      query: id => ({ url: `/portfolios/${id}/strategy-walk-forward`, method: 'GET' }),
     }),
 
   }),
@@ -266,4 +300,5 @@ export const {
   useGetWalkForwardResultsQuery,
   useGetExpectancyReportQuery,
   useGetModelGovernanceQuery,
+  useGetStrategyWalkForwardQuery,
 } = portfoliosApi;

@@ -4,9 +4,10 @@ import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
 import LinearProgress from '@mui/material/LinearProgress';
 import Divider from '@mui/material/Divider';
+import Chip from '@mui/material/Chip';
 import Tooltip from '@mui/material/Tooltip';
 import { useAdaptiveReport } from '../../hooks/useAdaptiveReport.ts';
-import { useGetWalkForwardResultsQuery, useGetExpectancyReportQuery } from '../../../../store/portfolios/portfolios.api.ts';
+import { useGetWalkForwardResultsQuery, useGetExpectancyReportQuery, useGetStrategyWalkForwardQuery } from '../../../../store/portfolios/portfolios.api.ts';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import type { MarketRegime } from '../../../../api/adaptive.api.types.ts';
@@ -33,6 +34,9 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
 
   const { data: expectancy } =
     useGetExpectancyReportQuery(portfolioId!, { skip: portfolioId == null });
+
+  const { data: strategyWF = [] } =
+    useGetStrategyWalkForwardQuery(portfolioId!, { skip: portfolioId == null });
 
   if (isLoading) return <Box display="flex" justifyContent="center" py={3}><Spinner /></Box>;
   if (error || !report) return null;
@@ -104,6 +108,61 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
           </Typography>
         )}
       </Grid>
+
+      {/* Strategy-Level Walk-Forward */}
+      {portfolioId != null && strategyWF.length > 0 && (
+        <Grid item xs={12}>
+          <Divider sx={{ mb: 2 }} />
+          <Typography variant="subtitle2" fontWeight={700} mb={0.5}>Strategy Validation</Typography>
+          <Typography variant="caption" color="text.secondary" display="block" mb={1.5}>
+            Per-strategy expectancy from walk-forward windows. Strategies with 3 consecutive negative windows are auto-disabled.
+          </Typography>
+          <Box display="flex" gap={1.5} flexWrap="wrap">
+            {/* Dedupe: latest window per strategy */}
+            {Object.values(
+              strategyWF.reduce<Record<string, typeof strategyWF[0]>>((acc, w) => {
+                if (!acc[w.strategyType] || w.windowIndex > acc[w.strategyType].windowIndex) acc[w.strategyType] = w;
+                return acc;
+              }, {})
+            ).map(w => (
+              <Paper key={w.strategyType} elevation={0} sx={{
+                p: 1.25, minWidth: 150, border: '1px solid',
+                borderColor: w.autoDisabled ? 'error.dark' : 'divider',
+                borderLeft: `3px solid ${w.autoDisabled ? '#ef4444' : w.expectancyPct >= 1 ? '#10b981' : w.expectancyPct >= 0 ? '#f59e0b' : '#ef4444'}`,
+                opacity: w.autoDisabled ? 0.6 : 1,
+              }}>
+                <Box display="flex" alignItems="center" gap={0.75} mb={0.75}>
+                  <Typography variant="caption" fontWeight={700} sx={{ textTransform: 'capitalize' }}>
+                    {w.strategyType.replace(/_/g, ' ')}
+                  </Typography>
+                  {w.autoDisabled && (
+                    <Tooltip title={`Auto-disabled after ${w.consecutiveNegativeWindows} consecutive negative windows`}>
+                      <Chip label="DISABLED" size="small" color="error"
+                        sx={{ fontSize: '0.55rem', height: 16, '& .MuiChip-label': { px: 0.5 }, cursor: 'help' }} />
+                    </Tooltip>
+                  )}
+                </Box>
+                <Box display="grid" gridTemplateColumns="1fr 1fr" gap={0.5}>
+                  {[
+                    { label: 'Expectancy', value: `${w.expectancyPct >= 0 ? '+' : ''}${w.expectancyPct.toFixed(2)}%`,
+                      color: w.expectancyPct >= 1 ? '#10b981' : w.expectancyPct >= 0 ? '#f59e0b' : '#ef4444' },
+                    { label: 'Win',  value: fmtPct(w.winRate),
+                      color: w.winRate >= 0.55 ? '#10b981' : w.winRate >= 0.45 ? '#f59e0b' : '#ef4444' },
+                    { label: 'PF',   value: w.profitFactor.toFixed(2),
+                      color: w.profitFactor >= 1.5 ? '#10b981' : w.profitFactor >= 1 ? '#f59e0b' : '#ef4444' },
+                    { label: 'Candidates', value: String(w.candidateCount), color: 'text.secondary' },
+                  ].map(({ label, value, color }) => (
+                    <Box key={label}>
+                      <Typography variant="caption" color="text.secondary" display="block">{label}</Typography>
+                      <Typography variant="caption" fontWeight={700} sx={{ color }}>{value}</Typography>
+                    </Box>
+                  ))}
+                </Box>
+              </Paper>
+            ))}
+          </Box>
+        </Grid>
+      )}
 
       {/* Walk-Forward Validation */}
       {portfolioId != null && (
