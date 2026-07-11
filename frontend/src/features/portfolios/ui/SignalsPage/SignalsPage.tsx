@@ -2,6 +2,7 @@ import { useParams, Link } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Breadcrumbs from '@mui/material/Breadcrumbs';
+import Chip from '@mui/material/Chip';
 import Paper from '@mui/material/Paper';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
@@ -82,10 +83,37 @@ export const SignalsPage = () => {
                     <TableCell align="right">
                       <Typography variant="body2">{s.price_at_signal != null ? `₹${s.price_at_signal.toLocaleString('en-IN')}` : '—'}</Typography>
                     </TableCell>
-                    <TableCell sx={{ maxWidth: 260 }}>
+                    <TableCell sx={{ maxWidth: 280 }}>
                       <Typography variant="caption" color="text.secondary" display="block" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {s.reason ?? '—'}
                       </Typography>
+                      {/* Gate indicators from batch 2 */}
+                      {(s.regimeAllowed != null || s.liquidityOk != null) && (
+                        <Box display="flex" gap={0.5} mt={0.5} flexWrap="wrap">
+                          {s.regimeAllowed != null && (
+                            <Chip
+                              label={s.regimeAllowed ? '✅ Regime' : '🚫 Regime'}
+                              size="small"
+                              sx={{ fontSize: '0.6rem', height: 18, '& .MuiChip-label': { px: 0.5 },
+                                bgcolor: s.regimeAllowed ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+                                color: s.regimeAllowed ? '#34d399' : '#fca5a5',
+                                border: `1px solid ${s.regimeAllowed ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                              }}
+                            />
+                          )}
+                          {s.liquidityOk != null && (
+                            <Chip
+                              label={s.liquidityOk ? '✅ Liquid' : '🚫 Liquid'}
+                              size="small"
+                              sx={{ fontSize: '0.6rem', height: 18, '& .MuiChip-label': { px: 0.5 },
+                                bgcolor: s.liquidityOk ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+                                color: s.liquidityOk ? '#34d399' : '#fca5a5',
+                                border: `1px solid ${s.liquidityOk ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                              }}
+                            />
+                          )}
+                        </Box>
+                      )}
                       <GeminiRiskSummary
                         riskLevel={s.geminiRiskLevel}
                         redFlags={s.geminiRedFlags}
