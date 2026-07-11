@@ -17,7 +17,7 @@ interface FlagRow { key: keyof KillSwitchFlags; label: string; severity: 'error'
 
 const FLAG_ROWS: FlagRow[] = [
   { key: 'dailyLossHalted',            label: 'Daily loss >1% NAV — BUYs halted',        severity: 'error'   },
-  { key: 'weeklyLossHalted',           label: 'Weekly loss >3% NAV — sizes halved',       severity: 'error'   },
+  { key: 'weeklyLossHalted',           label: 'Weekly loss >3% NAV — sizes halved',       severity: 'warning' },
   { key: 'drawdownProtection',         label: 'Drawdown >12% — emergency liquidation',    severity: 'error'   },
   { key: 'drawdownPaused',             label: 'Drawdown >8% — new entries paused',        severity: 'warning' },
   { key: 'circuitBreakerActive',       label: 'Circuit breaker — 3 API failures',         severity: 'error'   },
@@ -30,7 +30,16 @@ const SEVERITY_COLOR = { error: '#ef4444', warning: '#f59e0b', info: '#3b82f6' }
 
 export const KillSwitchStatusBar = ({ portfolioId }: KillSwitchStatusBarProps) => {
   const [expanded, setExpanded] = useState(false);
-  const { data: ks } = useGetKillSwitchQuery(portfolioId, { pollingInterval: 60_000 });
+  const { data: ks, isError } = useGetKillSwitchQuery(portfolioId, { pollingInterval: 60_000 });
+
+  if (isError) {
+    return (
+      <Box display="flex" alignItems="center" gap={1} mb={1.5} px={0.5}>
+        <Box sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: '#f59e0b', flexShrink: 0 }} />
+        <Typography variant="caption" color="warning.light">⚠ Kill-switch status unavailable — exercise manual caution</Typography>
+      </Box>
+    );
+  }
 
   if (!ks) return null;
 
@@ -97,7 +106,7 @@ export const KillSwitchStatusBar = ({ portfolioId }: KillSwitchStatusBarProps) =
             </Box>
           ))}
           <Typography variant="caption" color="text.disabled" mt={0.5}>
-            Updated {new Date(ks.lastUpdated).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            Updated {ks.lastUpdated ? new Date(ks.lastUpdated).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Never'}
           </Typography>
         </Box>
       </Collapse>

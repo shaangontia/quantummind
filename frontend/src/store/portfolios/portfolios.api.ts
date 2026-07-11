@@ -309,8 +309,8 @@ export const portfoliosApi = baseApi.injectEndpoints({
 
     getKillSwitch: builder.query<KillSwitchStatus, number>({
       query: id => ({ url: `/portfolios/${id}/kill-switch`, method: 'GET' }),
-      // Poll every 60s during market hours to catch live flag changes
-      keepUnusedDataFor: 60,
+      // 0 = always re-fetch on remount; safety panel must never serve stale data
+      keepUnusedDataFor: 0,
     }),
 
   }),
