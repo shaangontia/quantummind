@@ -421,6 +421,134 @@ async function runPortfolioTradingCycle(
       continue;
     }
 
+    // Phase 19: Portfolio eligibility + utility scoring gate
+    // Runs AFTER global signal gates (direction, strength, liquidity) and BEFORE execution.
+    // Records evaluation for every candidate regardless of decision.
+    const liquidityScore19 = avgDTV != null ? computeLiquidityScore(avgDTV, allocationCapInr) : null;
+    const buySector19 = getSector19(symbol);
+    let policyEvaluationCandidateId19 = 0;
+    if (portfolioPolicy19 && policySnapshot19) {
+      const eligInput19: CandidateEligibilityInput = {
+        symbol,
+        strategyType:     (signal.strategyType ?? 'UNKNOWN') as any,
+        fundamentalScore: signal.fundamentalScore ?? null,
+        atrPct:           null,  // not exposed on TradeSignal; eligibility ATR gate uses null-safe skip
+        beta:             null,  // not available at signal time
+        liquidityScore:   liquidityScore19,
+        sector:           buySector19 || null,
+        eps:              null,  // not available at signal time
+        mlPwin:           signal.mlWinProbability ?? null,
+        evPct:            null,  // not exposed on TradeSignal; EV gate uses null-safe skip
+        marketRegime:     signal.marketRegimeLabel ?? 'UNKNOWN',
+      };
+      const eligResult19 = checkEligibility(eligInput19, portfolioPolicy19, portfolioExposure19, modelStage19);
+
+      // Record candidate first so we have an id for the evaluation row
+      policyEvaluationCandidateId19 = await recordCandidate({
+        portfolioId, symbol,
+        strategyType: signal.strategyType ?? null,
+        strategyConfidence: signal.strategyConfidence ?? null,
+        strategyReasonCodes: signal.strategyReasonCodes ?? null,
+        strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
+        strategySource: 'REAL_TIME_CLASSIFIER',
+        signalScore: signal.mlWinProbability ?? 0,
+        marketRegime: signal.marketRegimeLabel ?? null,
+        fundamentalScore: signal.fundamentalScore ?? null,
+        filtersPassed: ['score', 'direction', 'liquidity'],
+        filtersBlocked: eligResult19.eligible ? [] : eligResult19.rejectionReasons,
+        actionTaken: eligResult19.eligible ? 'EXECUTED' : 'VETOED',
+      });
+
+      if (!eligResult19.eligible) {
+        // Portfolio-specific veto — store evaluation and skip this symbol for THIS portfolio
+        void storePolicyEvaluation({
+          candidateId:          policyEvaluationCandidateId19,
+          portfolioId,
+          policyType:           portfolioPolicy19.policyType,
+          policyVersion:        portfolioPolicy19.policyVersion,
+          policySnapshotJson:   policySnapshot19,
+          riskLevel:            portfolioPolicy19.minFundamentalScore >= 65 ? 'low' : 'medium',
+          horizonDays:          portfolioPolicy19.labelHorizonDays,
+          targetReturnPct:      null,
+          strategyWeightsJson:  JSON.stringify(portfolioPolicy19.strategyWeights),
+          eligible:             false,
+          utilityScore:         null,
+          portfolioRank:        null,
+          decision:             'VETO',
+          selectionReason:      eligResult19.selectionReason,
+          rejectionReasonsJson: JSON.stringify(eligResult19.rejectionReasons),
+          expectedValuePct:     null,
+          portfolioAdjustedPwin: null,
+          strategyFitMultiplier: null,
+          horizonFitMultiplier:  null,
+          regimeFitMultiplier:   null,
+          volatilityPenalty:     null,
+          drawdownPenalty:       null,
+          sectorConcentrationPenalty: null,
+          liquidityPenalty:      null,
+          positionSizePct:       null,
+          maxPositionAllowedPct: null,
+          labelHorizonDays:     portfolioPolicy19.labelHorizonDays,
+          dataSource:           'LIVE_PAPER',
+        }).catch(() => null);
+        logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP',
+          reason: `Phase 19 policy veto: ${eligResult19.rejectionReasons.join('; ')}` });
+        continue;
+      }
+
+      // Eligible — compute utility and store BUY evaluation
+      const utilInput19: CandidateUtilityInput = {
+        symbol,
+        strategyType:         (signal.strategyType ?? 'UNKNOWN') as any,
+        evPct:                (signal.mlWinProbability ?? 0.52) * 2 - 1, // proxy: convert P(win) to rough EV
+        mlPwin:               signal.mlWinProbability ?? null,
+        atrPct:               2.0, // default when not exposed by signal
+        liquidityScore:       liquidityScore19 ?? 0.5,
+        sector:               buySector19 || null,
+        expectedHoldingDays:  estimateHoldingDays((signal.strategyType ?? 'UNKNOWN') as any),
+        marketRegime:         signal.marketRegimeLabel ?? 'UNKNOWN',
+      };
+      const utilComponents19 = computePortfolioUtility(utilInput19, portfolioPolicy19, portfolioExposure19);
+
+      void storePolicyEvaluation({
+        candidateId:          policyEvaluationCandidateId19,
+        portfolioId,
+        policyType:           portfolioPolicy19.policyType,
+        policyVersion:        portfolioPolicy19.policyVersion,
+        policySnapshotJson:   policySnapshot19,
+        riskLevel:            portfolioPolicy19.minFundamentalScore >= 65 ? 'low' : 'medium',
+        horizonDays:          portfolioPolicy19.labelHorizonDays,
+        targetReturnPct:      null,
+        strategyWeightsJson:  JSON.stringify(portfolioPolicy19.strategyWeights),
+        eligible:             true,
+        utilityScore:         utilComponents19.finalScore,
+        portfolioRank:        null, // individual ranking not tracked in sequential loop
+        decision:             'BUY',
+        selectionReason:      eligResult19.selectionReason,
+        rejectionReasonsJson: null,
+        expectedValuePct:     utilComponents19.expectedValuePct,
+        portfolioAdjustedPwin: signal.mlWinProbability ?? null,
+        strategyFitMultiplier: utilComponents19.strategyFitMultiplier,
+        horizonFitMultiplier:  utilComponents19.horizonFitMultiplier,
+        regimeFitMultiplier:   utilComponents19.regimeFitMultiplier,
+        volatilityPenalty:     utilComponents19.volatilityPenalty,
+        drawdownPenalty:       utilComponents19.drawdownPenalty,
+        sectorConcentrationPenalty: utilComponents19.sectorConcentrationPenalty,
+        liquidityPenalty:      utilComponents19.liquidityPenalty,
+        positionSizePct:       maxPosPct,
+        maxPositionAllowedPct: maxPosPct,
+        labelHorizonDays:     portfolioPolicy19.labelHorizonDays,
+        dataSource:           'LIVE_PAPER',
+      }).catch(() => null);
+
+      // If utility score is negative (setup genuinely bad for this portfolio), watch-only
+      if (utilComponents19.finalScore < 0) {
+        logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP',
+          reason: `Phase 19 utility skip: score=${utilComponents19.finalScore.toFixed(3)}` });
+        continue;
+      }
+    }
+
     signalCount++;
     logger.signal(portfolioId, symbol, signal.action, signal.strength, signal.reason, signal.price);
 
@@ -452,28 +580,35 @@ async function runPortfolioTradingCycle(
       // Phase 13: Register exit plan immediately after BUY (ATR stop, trailing stop, time stop)
       const riskAmountInr = refreshed.cashBalance * maxPosPct * 0.005; // 0.5% of NAV
       await registerExitPlan(portfolioId, symbol, signal.price, riskAmountInr).catch(() => null);
-      // Phase 15: Record EXECUTED candidate for ML training
+      // Phase 15/19: Update candidate with actual entry/stop/target prices
       const stopPrice  = signal.price * (1 - 0.015 * 1.5);
       const targetPrice = signal.price * (1 + 0.015 * 3);  // 2R target
-      void recordCandidate({
-        portfolioId, symbol,
-        strategyType: signal.strategyType ?? null,
-        strategyConfidence: signal.strategyConfidence ?? null,
-        strategyReasonCodes: signal.strategyReasonCodes ?? null,
-        strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
-        strategySource: 'REAL_TIME_CLASSIFIER',
-        signalScore: 0,
-        marketRegime: signal.marketRegimeLabel ?? null,
-        fundamentalScore: signal.fundamentalScore ?? null,
-        llmRiskLevel: (signal as any).geminiRiskLevel ?? null,
-        llmNewsEventType: (signal as any).geminiNewsEventType ?? null,
-        filtersPassed: ['score', 'liquidity', 'fundamental', 'regime'],
-        filtersBlocked: [],
-        actionTaken: 'EXECUTED',
-        entryPrice: signal.price,
-        stopPrice,
-        targetPrice,
-      }).catch(() => null);
+      if (policyEvaluationCandidateId19 > 0) {
+        // Update existing candidate row (already inserted in Phase 19 gate)
+        void run(
+          `UPDATE trade_candidates SET action_taken='EXECUTED', entry_price=?, stop_price=?, target_price=? WHERE id=?`,
+          [signal.price, stopPrice, targetPrice, policyEvaluationCandidateId19],
+        ).catch(() => null);
+      } else {
+        // Phase 19 not active (policy load failed) — insert candidate the old way
+        void recordCandidate({
+          portfolioId, symbol,
+          strategyType: signal.strategyType ?? null,
+          strategyConfidence: signal.strategyConfidence ?? null,
+          strategyReasonCodes: signal.strategyReasonCodes ?? null,
+          strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
+          strategySource: 'REAL_TIME_CLASSIFIER',
+          signalScore: signal.mlWinProbability ?? 0,
+          marketRegime: signal.marketRegimeLabel ?? null,
+          fundamentalScore: signal.fundamentalScore ?? null,
+          filtersPassed: ['score', 'liquidity', 'fundamental', 'regime'],
+          filtersBlocked: [],
+          actionTaken: 'EXECUTED',
+          entryPrice: signal.price,
+          stopPrice,
+          targetPrice,
+        }).catch(() => null);
+      }
       // Phase 13: Persist strategy type on holding
       if (signal.strategyType) {
         await run('UPDATE holdings SET strategy_type=? WHERE portfolio_id=? AND symbol=?',

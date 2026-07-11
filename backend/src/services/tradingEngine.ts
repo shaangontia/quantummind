@@ -79,6 +79,7 @@ export interface PortfolioSummary {
   targetReturnPct: number;
   riskTolerance: string;
   investmentHorizonMonths: number;
+  policyType: string;   // Phase 19: derived portfolio policy type
   holdings: HoldingSummary[];
 }
 
@@ -838,6 +839,7 @@ export async function getPortfolioSummary(portfolioId: number): Promise<Portfoli
     totalBrokerage,
     returnPct, targetReturnPct: Number(portfolio.target_return_pct),
     riskTolerance: portfolio.risk_tolerance as string, investmentHorizonMonths: Number(portfolio.investment_horizon_months),
+    policyType: (() => { try { const { derivePolicy } = require('./portfolioPolicy.js'); return derivePolicy({ risk_tolerance: portfolio.risk_tolerance, investment_horizon_months: portfolio.investment_horizon_months, target_return_pct: portfolio.target_return_pct, investment_goal: portfolio.investment_goal ?? 'growth', volatility_preference: portfolio.volatility_preference ?? 'medium' }).policyType; } catch { return 'MEDIUM_RISK_12M'; } })(),
     holdings: hSummaries,
   };
 }
