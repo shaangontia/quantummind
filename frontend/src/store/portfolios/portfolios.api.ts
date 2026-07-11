@@ -59,6 +59,31 @@ export interface WalkForwardWindow {
   maxDrawdownPct: number;
   totalTrades: number;
   strategyBreakdown: StrategyBreakdown[];
+  // Phase 15 additions
+  expectancyPct?: number;
+  profitFactor?: number;
+  maxConsecutiveLosses?: number;
+}
+
+// ─── Expectancy Label Summary ───────────────────────────────────────
+
+export interface ExpectancyReport {
+  totalCandidates: number;
+  labelledCandidates: number;
+  winRate: number;
+  avgWinPct: number;
+  avgLossPct: number;
+  expectancyPct: number;
+  profitFactor: number;
+  avgMaePct?: number;     // mean adverse excursion
+  avgMfePct?: number;     // mean favourable excursion
+  avgHoldDays?: number;
+  candidateBreakdown: Array<{
+    outcome: 'EXECUTED' | 'SKIPPED' | 'VETOED' | 'WEAK';
+    count: number;
+    winRate: number | null;
+    expectancyPct: number | null;
+  }>;
 }
 
 export const portfoliosApi = baseApi.injectEndpoints({
@@ -197,6 +222,10 @@ export const portfoliosApi = baseApi.injectEndpoints({
       query: id => ({ url: `/portfolios/${id}/walk-forward`, method: 'GET' }),
     }),
 
+    getExpectancyReport: builder.query<ExpectancyReport, number>({
+      query: id => ({ url: `/portfolios/${id}/expectancy`, method: 'GET' }),
+    }),
+
   }),
   overrideExisting: false,
 });
@@ -215,4 +244,5 @@ export const {
   useGetPortfolioBenchmarkQuery,
   useGetPortfolioSectorsQuery,
   useGetWalkForwardResultsQuery,
+  useGetExpectancyReportQuery,
 } = portfoliosApi;

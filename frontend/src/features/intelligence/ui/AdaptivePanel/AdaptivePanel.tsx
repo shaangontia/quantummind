@@ -6,7 +6,7 @@ import LinearProgress from '@mui/material/LinearProgress';
 import Divider from '@mui/material/Divider';
 import Tooltip from '@mui/material/Tooltip';
 import { useAdaptiveReport } from '../../hooks/useAdaptiveReport.ts';
-import { useGetWalkForwardResultsQuery } from '../../../../store/portfolios/portfolios.api.ts';
+import { useGetWalkForwardResultsQuery, useGetExpectancyReportQuery } from '../../../../store/portfolios/portfolios.api.ts';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import type { MarketRegime } from '../../../../api/adaptive.api.types.ts';
@@ -30,6 +30,9 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
 
   const { data: wfWindows = [], isLoading: wfLoading } =
     useGetWalkForwardResultsQuery(portfolioId!, { skip: portfolioId == null });
+
+  const { data: expectancy } =
+    useGetExpectancyReportQuery(portfolioId!, { skip: portfolioId == null });
 
   if (isLoading) return <Box display="flex" justifyContent="center" py={3}><Spinner /></Box>;
   if (error || !report) return null;
@@ -116,6 +119,27 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
               ⏳ Walk-forward results appear once ≥30 resolved trades exist (Phase 14)
             </Typography>
           )}
+          {/* Expectancy summary */}
+          {expectancy && expectancy.labelledCandidates >= 1 && (
+            <Box display="flex" gap={3} flexWrap="wrap" mb={2} p={1.5}
+              sx={{ bgcolor: 'rgba(255,255,255,0.03)', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              {([
+                { label: 'Expectancy/trade', value: `${expectancy.expectancyPct >= 0 ? '+' : ''}${expectancy.expectancyPct.toFixed(2)}%`,
+                  color: expectancy.expectancyPct >= 1 ? '#10b981' : expectancy.expectancyPct >= 0 ? '#f59e0b' : '#ef4444' },
+                { label: 'Win rate',  value: fmtPct(expectancy.winRate), color: expectancy.winRate >= 0.55 ? '#10b981' : '#f59e0b' },
+                { label: 'Avg win',   value: `+${expectancy.avgWinPct.toFixed(2)}%`,  color: '#10b981' },
+                { label: 'Avg loss',  value: `-${Math.abs(expectancy.avgLossPct).toFixed(2)}%`, color: '#ef4444' },
+                { label: 'Profit factor', value: expectancy.profitFactor.toFixed(2),
+                  color: expectancy.profitFactor >= 1.5 ? '#10b981' : expectancy.profitFactor >= 1 ? '#f59e0b' : '#ef4444' },
+                { label: 'Labelled', value: `${expectancy.labelledCandidates} / ${expectancy.totalCandidates}`, color: 'text.secondary' },
+              ] as Array<{ label: string; value: string; color: string }>).map(({ label, value, color }) => (
+                <Box key={label}>
+                  <Typography variant="caption" color="text.secondary" display="block">{label}</Typography>
+                  <Typography variant="body2" fontWeight={700} sx={{ color }}>{value}</Typography>
+                </Box>
+              ))}
+            </Box>
+          )}
           {!wfLoading && wfWindows.length > 0 && (
             <Box sx={{ overflowX: 'auto' }}>
               <Box display="flex" gap={1.5} pb={1} minWidth="max-content">
@@ -127,7 +151,7 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
                     <Typography variant="caption" color="text.secondary" display="block" mb={0.75} noWrap>
                       {fmtDate(w.testStart)} – {fmtDate(w.testEnd)}
                     </Typography>
-                    <Box display="grid" gridTemplateColumns="1fr 1fr" gap={0.5}>
+                    <Box display="grid" gridTemplateColumns="1fr 1fr" gap={0.5} mb={0.5}>
                       <Tooltip title="Win Rate">
                         <Box>
                           <Typography variant="caption" color="text.secondary" display="block">Win</Typography>
@@ -159,6 +183,22 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
                           <Typography variant="body2" fontWeight={700}>{w.totalTrades}</Typography>
                         </Box>
                       </Tooltip>
+                      {w.expectancyPct != null && (
+                        <Tooltip title="Expectancy per trade (after costs)">
+                          <Box sx={{ gridColumn: 'span 2' }}>
+                            <Typography variant="caption" color="text.secondary" display="block">Expectancy</Typography>
+                            <Typography variant="body2" fontWeight={700}
+                              sx={{ color: w.expectancyPct >= 1 ? '#10b981' : w.expectancyPct >= 0 ? '#f59e0b' : '#ef4444' }}>
+                              {w.expectancyPct >= 0 ? '+' : ''}{w.expectancyPct.toFixed(2)}%
+                              {w.profitFactor != null && (
+                                <Typography component="span" variant="caption" color="text.secondary" ml={0.5}>
+                                  (PF {w.profitFactor.toFixed(2)})
+                                </Typography>
+                              )}
+                            </Typography>
+                          </Box>
+                        </Tooltip>
+                      )}
                     </Box>
                     {w.strategyBreakdown.length > 0 && (
                       <Box mt={1} display="flex" gap={0.5} flexWrap="wrap">
