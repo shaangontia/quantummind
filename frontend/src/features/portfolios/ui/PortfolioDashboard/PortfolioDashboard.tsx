@@ -19,6 +19,7 @@ import { BenchmarkChart } from '../BenchmarkChart/BenchmarkChart.tsx';
 import { NewsFeed } from '../../../news/ui/NewsFeed/NewsFeed.tsx';
 import { AdaptivePanel } from '../../../intelligence/ui/AdaptivePanel/AdaptivePanel.tsx';
 import { MarketRegimeBanner } from '../MarketRegimeBanner/index.ts';
+import { ModelGovernanceBanner } from '../ModelGovernanceBanner/index.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -118,6 +119,7 @@ export const PortfolioDashboard = () => {
       </Box>
 
       {/* Market regime banner — Phase 13, self-hides if backend hasn't shipped field */}
+      <ModelGovernanceBanner portfolioId={portfolioId} />
       <MarketRegimeBanner regime={headerData.marketRegime} />
 
       {/* Stats */}

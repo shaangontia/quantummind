@@ -39,6 +39,20 @@ export interface SectorAllocation {
   symbols: string[];
 }
 
+// ─── Model Governance Types ────────────────────────────────────────────
+
+export type ModelStage = 'CANDIDATE' | 'SHADOW' | 'ADVISORY' | 'PRODUCTION';
+
+export interface ModelGovernance {
+  stage: ModelStage;
+  isColdStart: boolean;
+  trueLabelCount: number;
+  positiveWFWindows: number;
+  maxPositionPctOverride: number;
+  maxTradesPerDayOverride: number;
+  maxOpenPositionsOverride: number;
+}
+
 // ─── Walk-Forward Types ─────────────────────────────────────────
 
 export interface StrategyBreakdown {
@@ -226,6 +240,12 @@ export const portfoliosApi = baseApi.injectEndpoints({
       query: id => ({ url: `/portfolios/${id}/expectancy`, method: 'GET' }),
     }),
 
+    getModelGovernance: builder.query<ModelGovernance, number>({
+      query: id => ({ url: `/portfolios/${id}/model-governance`, method: 'GET' }),
+      // Re-fetch every 10 min — stage promotions happen nightly
+      keepUnusedDataFor: 600,
+    }),
+
   }),
   overrideExisting: false,
 });
@@ -245,4 +265,5 @@ export const {
   useGetPortfolioSectorsQuery,
   useGetWalkForwardResultsQuery,
   useGetExpectancyReportQuery,
+  useGetModelGovernanceQuery,
 } = portfoliosApi;
