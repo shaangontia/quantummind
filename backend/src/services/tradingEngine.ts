@@ -19,6 +19,7 @@ import { getAdaptiveRSIBuy, getPatternConfidence, computeExpectedValue } from '.
 import { getWinProbability } from './mlProbabilityModel.js';
 import { classifyStrategy, isStrategyAllowed } from './strategyClassifier.js';
 import { classifyMarketRegime } from './regimeEngine.js';
+import { getDisabledStrategies } from './strategyWalkForward.js';
 
 export interface TradeSignal {
   symbol: string;
@@ -403,6 +404,7 @@ export async function generateSignal(
     });
 
     // Phase 13: Market regime gate — block strategies not allowed in current regime
+    // Phase 16: Also block strategies auto-disabled by walk-forward evidence
     const marketRegime = await classifyMarketRegime().catch(() => null);
     if (buy > sell && buy >= 3) {
       const regimeAllowed = marketRegime
@@ -410,6 +412,16 @@ export async function generateSignal(
         : true;
       if (!regimeAllowed) {
         return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Strategy ${strategyResult.type} blocked in ${marketRegime?.label} regime`, price: q.price };
+      }
+
+      // Walk-forward auto-disable gate
+      if (portfolioCtx?.portfolioId) {
+        const disabledStrategies = await getDisabledStrategies(portfolioCtx.portfolioId).catch(() => new Set<string>());
+        if (disabledStrategies.has(strategyResult.type)) {
+          return { symbol, action: 'HOLD', strength: 'WEAK',
+            reason: `Strategy ${strategyResult.type} auto-disabled: negative expectancy ≥ 3 consecutive WF windows`,
+            price: q.price };
+        }
       }
     }
 

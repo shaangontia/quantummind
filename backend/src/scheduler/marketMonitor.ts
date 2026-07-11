@@ -545,9 +545,11 @@ export function startScheduler(): void {
     await trainModel().catch(console.error);
     // Phase 14: Run walk-forward validation for each active portfolio
     const { runWalkForward } = await import('../services/walkForwardEngine.js');
+    const { runStrategyWalkForward } = await import('../services/strategyWalkForward.js');
     const wfPortfolios = await query('SELECT id FROM portfolios WHERE is_active=1').catch(() => []);
     for (const p of wfPortfolios) {
       await runWalkForward(Number(p.id)).catch(console.error);
+      await runStrategyWalkForward(Number(p.id)).catch(console.error);
     }
     // Gemini portfolio health check for each active portfolio (best-effort, stored in RAG)
     try {

@@ -29,6 +29,18 @@ export interface ModelGovernanceState {
   maxPositionPctOverride: number | null;   // null = use normal sizing
   maxTradesPerDayOverride: number | null;
   maxOpenPositionsOverride: number | null;
+  // Phase 16: Explainability — why not promoted?
+  promotionGaps: {
+    labelsNeeded: number;         // 0 when met
+    wfWindowsNeeded: number;      // 0 when met
+    nextStage: ModelStage;
+    weakSignalsBlocked: boolean;
+  };
+  calibration: {
+    available: boolean;
+    maxErrorPct: number | null;
+    activeBuckets: number;
+  };
 }
 
 const THRESHOLDS = {
@@ -73,14 +85,28 @@ export async function evaluateModelGovernance(portfolioId: number): Promise<Mode
 
   const isColdStart = stage === 'CANDIDATE' || stage === 'SHADOW';
 
+  // Compute "why not promoted" gaps
+  const nextStage: ModelStage = stage === 'CANDIDATE' ? 'SHADOW'
+    : stage === 'SHADOW' ? 'ADVISORY'
+    : stage === 'ADVISORY' ? 'PRODUCTION' : 'RETIRED';
+  const nextThresh = THRESHOLDS[nextStage as keyof typeof THRESHOLDS] ?? THRESHOLDS.PRODUCTION;
+  const labelsNeeded = Math.max(0, nextThresh.labels - labelCount);
+  const wfWindowsNeeded = Math.max(0, nextThresh.wfWindows - posWFWindows);
+
+  const calibrationSummary = await getCalibrationSummary('buy_win_probability_v1').catch(() => ({
+    available: false, maxErrorPct: null, activeBuckets: 0,
+  }));
+
   const state: ModelGovernanceState = {
     stage,
     trueLabelCount: labelCount,
     positiveWFWindows: posWFWindows,
     isColdStart,
-    maxPositionPctOverride: isColdStart ? 0.01 : null,      // 1% NAV cap in cold start
+    maxPositionPctOverride: isColdStart ? 0.01 : null,
     maxTradesPerDayOverride: isColdStart ? 2 : null,
     maxOpenPositionsOverride: isColdStart ? 5 : null,
+    promotionGaps: { labelsNeeded, wfWindowsNeeded, nextStage, weakSignalsBlocked: isColdStart },
+    calibration: calibrationSummary,
   };
 
   // Persist
@@ -129,19 +155,38 @@ export async function getModelGovernanceState(portfolioId: number): Promise<Mode
       maxPositionPctOverride: 0.01,
       maxTradesPerDayOverride: 2,
       maxOpenPositionsOverride: 5,
+      promotionGaps: { labelsNeeded: 200, wfWindowsNeeded: 1, nextStage: 'SHADOW', weakSignalsBlocked: true },
+      calibration: { available: false, maxErrorPct: null, activeBuckets: 0 },
     };
     _stateCache.set(portfolioId, { state: defaultState, ts: Date.now() });
     return defaultState;
   }
 
+  const loadedStage = (row.lifecycle_stage as ModelStage) ?? 'CANDIDATE';
+  const loadedLabels = Number(row.true_label_count ?? 0);
+  const loadedWF = Number(row.positive_wf_windows ?? 0);
+  const loadedCold = Boolean(row.is_cold_start);
+  const loadedNextStage: ModelStage = loadedStage === 'CANDIDATE' ? 'SHADOW'
+    : loadedStage === 'SHADOW' ? 'ADVISORY'
+    : loadedStage === 'ADVISORY' ? 'PRODUCTION' : 'RETIRED';
+  const loadedNextThresh = THRESHOLDS[loadedNextStage as keyof typeof THRESHOLDS] ?? THRESHOLDS.PRODUCTION;
+  const loadedCalib = await getCalibrationSummary('buy_win_probability_v1').catch(() => ({ available: false, maxErrorPct: null, activeBuckets: 0 }));
+
   const state: ModelGovernanceState = {
-    stage: (row.lifecycle_stage as ModelStage) ?? 'CANDIDATE',
-    trueLabelCount: Number(row.true_label_count ?? 0),
-    positiveWFWindows: Number(row.positive_wf_windows ?? 0),
-    isColdStart: Boolean(row.is_cold_start),
-    maxPositionPctOverride: row.is_cold_start ? 0.01 : null,
-    maxTradesPerDayOverride: row.is_cold_start ? 2 : null,
-    maxOpenPositionsOverride: row.is_cold_start ? 5 : null,
+    stage: loadedStage,
+    trueLabelCount: loadedLabels,
+    positiveWFWindows: loadedWF,
+    isColdStart: loadedCold,
+    maxPositionPctOverride: loadedCold ? 0.01 : null,
+    maxTradesPerDayOverride: loadedCold ? 2 : null,
+    maxOpenPositionsOverride: loadedCold ? 5 : null,
+    promotionGaps: {
+      labelsNeeded: Math.max(0, loadedNextThresh.labels - loadedLabels),
+      wfWindowsNeeded: Math.max(0, loadedNextThresh.wfWindows - loadedWF),
+      nextStage: loadedNextStage,
+      weakSignalsBlocked: loadedCold,
+    },
+    calibration: loadedCalib,
   };
 
   _stateCache.set(portfolioId, { state, ts: Date.now() });
@@ -149,12 +194,11 @@ export async function getModelGovernanceState(portfolioId: number): Promise<Mode
 }
 
 /**
- * Compute calibration for the current model and persist buckets.
- * Grouped by predicted P(win) bands: 0-0.55, 0.55-0.60, 0.60-0.65, 0.65-0.70, 0.70+
+ * Phase 16: Compute calibration buckets for the model.
+ * Groups trade_candidates by prediction_pwin bands and compares with actual win rate.
+ * Alert if calibration error > 15% in any populated bucket.
  */
 export async function computeCalibration(modelName: string): Promise<void> {
-  // We need candidates that have both a stored predicted P(win) and a resolved label
-  // For now: use signal_patterns resolved outcomes as proxy until prediction logging is added
   const bands = [
     { low: 0.50, high: 0.55 },
     { low: 0.55, high: 0.60 },
@@ -163,6 +207,71 @@ export async function computeCalibration(modelName: string): Promise<void> {
     { low: 0.70, high: 1.01 },
   ];
 
-  // Placeholder: log empty calibration row until prediction column is added to trade_candidates
-  logger.info({ job: 'calibration', modelName, bandCount: bands.length, reason: 'Calibration scaffold ready — awaiting prediction_pwin column on trade_candidates' });
+  for (const band of bands) {
+    const rows = await query(
+      `SELECT prediction_pwin, target_hit_before_stop as win_int,
+              cost_adjusted_return_pct as ret
+       FROM trade_candidates
+       WHERE action_taken='EXECUTED'
+         AND label_type='TARGET_BEFORE_STOP' AND label_status='FINAL'
+         AND prediction_pwin >= ? AND prediction_pwin < ?
+         AND prediction_pwin IS NOT NULL
+         AND target_hit_before_stop IS NOT NULL`,
+      [band.low, band.high],
+    ).catch(() => []);
+
+    if (rows.length === 0) continue;
+
+    const winCount = rows.filter(r => Number(r.win_int) === 1).length;
+    const actualWinRate = winCount / rows.length;
+    const predictedAvg = rows.reduce((s, r) => s + Number(r.prediction_pwin ?? 0), 0) / rows.length;
+    const calibrationError = Math.abs(predictedAvg - actualWinRate);
+
+    const winRets  = rows.filter(r => Number(r.win_int) === 1).map(r => Number(r.ret ?? 0));
+    const lossRets = rows.filter(r => Number(r.win_int) === 0).map(r => Math.abs(Number(r.ret ?? 0)));
+    const avgWin  = winRets.length  > 0 ? winRets.reduce((a, b) => a + b, 0) / winRets.length : 0;
+    const avgLoss = lossRets.length > 0 ? lossRets.reduce((a, b) => a + b, 0) / lossRets.length : 0;
+    const expectancy = actualWinRate * avgWin - (1 - actualWinRate) * avgLoss - 0.4;
+
+    const grossW = winRets.reduce((a, b) => a + b, 0);
+    const grossL = lossRets.reduce((a, b) => a + b, 0);
+    const profitFactor = grossL > 0 ? grossW / grossL : null;
+
+    await run(
+      `INSERT INTO model_calibration_buckets
+         (model_name, bucket_low, bucket_high, sample_count, predicted_avg,
+          actual_win_rate, calibration_error, expectancy_pct, profit_factor)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [modelName, band.low, band.high, rows.length, predictedAvg,
+       actualWinRate, calibrationError, expectancy, profitFactor],
+    ).catch(() => null);
+
+    if (calibrationError > 0.15) {
+      logger.warn({ job: 'calibration', modelName, band: `${band.low}-${band.high}`,
+        predictedAvg: (predictedAvg * 100).toFixed(1) + '%',
+        actualWinRate: (actualWinRate * 100).toFixed(1) + '%',
+        error: (calibrationError * 100).toFixed(1) + '%',
+        reason: 'CALIBRATION ALERT: error > 15%' });
+    }
+  }
+
+  logger.info({ job: 'calibration', modelName, reason: 'Calibration buckets updated' });
+}
+
+/**
+ * Get latest calibration data for the governance API.
+ */
+export async function getCalibrationSummary(modelName: string): Promise<{
+  available: boolean; maxErrorPct: number | null; activeBuckets: number;
+}> {
+  const rows = await query(
+    `SELECT calibration_error FROM model_calibration_buckets
+     WHERE model_name=? AND sample_count >= 5
+     ORDER BY evaluated_at DESC LIMIT 10`,
+    [modelName],
+  ).catch(() => []);
+
+  if (rows.length === 0) return { available: false, maxErrorPct: null, activeBuckets: 0 };
+  const maxError = Math.max(...rows.map(r => Number(r.calibration_error)));
+  return { available: true, maxErrorPct: maxError * 100, activeBuckets: rows.length };
 }

@@ -9,6 +9,7 @@ import { deriveRiskLevel } from '../../services/riskClassifier.js';
 import { getWalkForwardResults } from '../../services/walkForwardEngine.js';
 import { getLabelSummary } from '../../services/labelGenerator.js';
 import { getModelGovernanceState } from '../../services/modelLifecycle.js';
+import { getStrategyWFResults } from '../../services/strategyWalkForward.js';
 import { classifyMarketRegime } from '../../services/regimeEngine.js';
 
 const router = Router();
@@ -240,6 +241,14 @@ router.get('/portfolios/:id/model-governance', verifyAuth, verifyOwner, async (r
   if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
   const state = await getModelGovernanceState(pid).catch(() => null);
   return res.json({ success: true, data: state });
+});
+
+// ─── Phase 16: Strategy-level walk-forward ───────────────────────────────────
+router.get('/portfolios/:id/strategy-walk-forward', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  const pid = parseIntParam(req.params.id);
+  if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+  const results = await getStrategyWFResults(pid).catch(() => []);
+  return res.json({ success: true, data: results });
 });
 
 // ─── Phase 13: Market regime ──────────────────────────────────────────────────

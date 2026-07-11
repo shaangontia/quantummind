@@ -350,6 +350,46 @@ export async function runMigrations(): Promise<void> {
     )`);
   } catch (_) { /* exists */ }
   console.log('[DB] Migration: Phase 16 model governance schema done');
+
+  // Phase 16 task 4+5: strategy-level WF + calibration + prediction_pwin
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN prediction_pwin REAL"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN model_version TEXT"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN label_status TEXT DEFAULT 'PENDING'"); } catch (_) { /* exists */ }
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS strategy_wf_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id INTEGER,
+      strategy_type TEXT NOT NULL,
+      test_start TEXT NOT NULL,
+      test_end TEXT NOT NULL,
+      candidate_count INTEGER DEFAULT 0,
+      win_rate REAL,
+      expectancy_pct REAL,
+      profit_factor REAL,
+      max_consecutive_losses INTEGER DEFAULT 0,
+      avg_mae_pct REAL,
+      avg_mfe_pct REAL,
+      auto_disabled INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_swf_strategy ON strategy_wf_results(portfolio_id, strategy_type, test_start)');
+  } catch (_) { /* exists */ }
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS model_calibration_buckets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model_name TEXT NOT NULL,
+      bucket_low REAL NOT NULL,
+      bucket_high REAL NOT NULL,
+      sample_count INTEGER DEFAULT 0,
+      predicted_avg REAL,
+      actual_win_rate REAL,
+      calibration_error REAL,
+      expectancy_pct REAL,
+      profit_factor REAL,
+      evaluated_at TEXT DEFAULT (datetime('now'))
+    )`);
+  } catch (_) { /* exists */ }
+  console.log('[DB] Migration: Phase 16 strategy WF + calibration schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

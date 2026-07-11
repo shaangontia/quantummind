@@ -85,12 +85,14 @@ function extractFeatures(row: {
 export async function trainModel(): Promise<ModelState | null> {
   // Phase 16: Only train on TARGET_BEFORE_STOP labels (not proxy labels)
   // Falls back to signal_patterns proxy when insufficient true labels
+  // Phase 16: Only train on TARGET_BEFORE_STOP labels with FINAL status
   let rows = await query(
     `SELECT rsi_value, volume_ratio, market_regime, strategy_type, fundamental_score,
             target_hit_before_stop AS outcome_int
      FROM trade_candidates
      WHERE action_taken='EXECUTED'
        AND label_type='TARGET_BEFORE_STOP'
+       AND label_status='FINAL'
        AND target_hit_before_stop IS NOT NULL
      ORDER BY evaluated_at DESC LIMIT 2000`,
   ).then(r => r.map(x => ({ ...x, outcome: x.outcome_int === 1 ? 'WIN' : 'LOSS' }))).catch(() => []);

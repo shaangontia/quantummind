@@ -42,6 +42,8 @@ export interface CandidateRecord {
   entryPrice?: number | null;
   stopPrice?: number | null;
   targetPrice?: number | null;
+  predictionPwin?: number | null;  // Phase 16: ML win probability at evaluation time
+  modelVersion?: string | null;
 }
 
 /**
@@ -54,8 +56,8 @@ export async function recordCandidate(c: CandidateRecord): Promise<void> {
        (portfolio_id, symbol, strategy_type, signal_score, rsi_value, volume_ratio,
         market_regime, fundamental_score, atr_pct, dma20_pct, dma50_pct, dist_52w_low_pct,
         llm_risk_level, llm_news_event_type, filters_passed, filters_blocked, action_taken,
-        entry_price, stop_price, target_price)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        entry_price, stop_price, target_price, prediction_pwin, model_version)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       c.portfolioId, c.symbol,
       c.strategyType ?? null, c.signalScore,
@@ -68,6 +70,8 @@ export async function recordCandidate(c: CandidateRecord): Promise<void> {
       c.entryPrice ?? null,
       c.stopPrice ?? null,
       c.targetPrice ?? null,
+      c.predictionPwin ?? null,
+      c.modelVersion ?? 'buy_win_probability_v1',
     ],
   ).catch(() => null); // never throw — candidate recording is best-effort
 }
