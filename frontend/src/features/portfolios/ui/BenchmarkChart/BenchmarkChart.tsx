@@ -1,3 +1,6 @@
+import Box from '@mui/material/Box';
+import Typography from '@mui/material/Typography';
+import Chip from '@mui/material/Chip';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine,
@@ -5,17 +8,14 @@ import {
 import { useGetPortfolioBenchmarkQuery } from '../../../../store/portfolios/index.ts';
 import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
-import './BenchmarkChart.css';
 
 interface Props { portfolioId: number; }
 
-const DOT_STYLE        = { r: 0 };
-const ACTIVE_DOT_STYLE = { r: 4 };
+const DOT        = { r: 0 };
+const ACTIVE_DOT = { r: 4 };
 
 export const BenchmarkChart = ({ portfolioId }: Props) => {
-  const { data, isLoading, isError } = useGetPortfolioBenchmarkQuery(portfolioId, {
-    pollingInterval: 10 * 60_000,
-  });
+  const { data, isLoading, isError } = useGetPortfolioBenchmarkQuery(portfolioId, { pollingInterval: 10 * 60_000 });
 
   if (isLoading) return <SkeletonBlock height={260} borderRadius={8} />;
   if (isError || !data) return (
@@ -25,20 +25,24 @@ export const BenchmarkChart = ({ portfolioId }: Props) => {
     <EmptyState icon="📊" title="No benchmark data yet" description="Benchmark comparison will appear after the first few cron cycles." />
   );
 
-  const alpha      = data.alpha;
-  const alphaColor = alpha >= 0 ? '#10b981' : '#ef4444';
+  const alpha       = data.alpha;
+  const alphaColor  = alpha >= 0 ? 'success' : 'error';
+  const alphaLabel  = `${alpha >= 0 ? '+' : ''}${alpha.toFixed(2)}%`;
 
   return (
-    <div className="benchmark-wrap">
-      <div className="benchmark-alpha-row">
-        <span className="benchmark-alpha-label">Alpha vs Nifty 50</span>
-        <span className="benchmark-alpha-value" style={{ color: alphaColor }}>
-          {alpha >= 0 ? '+' : ''}{alpha.toFixed(2)}%
-        </span>
-        <span className="benchmark-alpha-hint">
-          {alpha >= 0 ? '📈 Outperforming the index' : '📉 Underperforming the index'}
-        </span>
-      </div>
+    <Box>
+      <Box display="flex" alignItems="center" gap={1.5} mb={2}>
+        <Typography variant="body2" color="text.secondary">Alpha vs Nifty 50</Typography>
+        <Chip
+          label={alphaLabel}
+          size="small"
+          color={alphaColor}
+          sx={{ fontWeight: 700 }}
+        />
+        <Typography variant="caption" color="text.secondary">
+          {alpha >= 0 ? '📈 Outperforming' : '📉 Underperforming'} the index
+        </Typography>
+      </Box>
 
       <ResponsiveContainer width="100%" height={240}>
         <LineChart data={data.data} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
@@ -51,11 +55,11 @@ export const BenchmarkChart = ({ portfolioId }: Props) => {
             contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: '0.82rem' }}
           />
           <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: '0.8rem' }} />
-          <Line type="monotone" dataKey="portfolioReturn" name="My Portfolio" stroke="#8b5cf6" strokeWidth={2.5} dot={DOT_STYLE} activeDot={ACTIVE_DOT_STYLE} />
-          <Line type="monotone" dataKey="nifty50Return"   name="Nifty 50"    stroke="#10b981" strokeWidth={1.5} strokeDasharray="4 2" dot={DOT_STYLE} activeDot={ACTIVE_DOT_STYLE} />
-          <Line type="monotone" dataKey="nifty500Return"  name="Nifty 500"   stroke="#64748b" strokeWidth={1.5} strokeDasharray="4 2" dot={DOT_STYLE} activeDot={ACTIVE_DOT_STYLE} />
+          <Line type="monotone" dataKey="portfolioReturn" name="My Portfolio" stroke="#8b5cf6" strokeWidth={2.5} dot={DOT} activeDot={ACTIVE_DOT} />
+          <Line type="monotone" dataKey="nifty50Return"   name="Nifty 50"    stroke="#10b981" strokeWidth={1.5} strokeDasharray="4 2" dot={DOT} activeDot={ACTIVE_DOT} />
+          <Line type="monotone" dataKey="nifty500Return"  name="Nifty 500"   stroke="#64748b" strokeWidth={1.5} strokeDasharray="4 2" dot={DOT} activeDot={ACTIVE_DOT} />
         </LineChart>
       </ResponsiveContainer>
-    </div>
+    </Box>
   );
 };

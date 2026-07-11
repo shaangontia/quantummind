@@ -1,9 +1,12 @@
-import './Spinner.css';
+import CircularProgress from '@mui/material/CircularProgress';
+import Box from '@mui/material/Box';
 
 interface SpinnerProps {
   size?: number;
 }
 
 export const Spinner = ({ size = 24 }: SpinnerProps) => (
-  <span className="spinner" style={{ width: size, height: size }} role="status" aria-label="Loading" />
+  <Box display="flex" alignItems="center" justifyContent="center">
+    <CircularProgress size={size} thickness={4} />
+  </Box>
 );

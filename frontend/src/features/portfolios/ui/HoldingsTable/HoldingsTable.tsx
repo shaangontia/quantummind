@@ -1,4 +1,15 @@
 import { memo } from 'react';
+import Box from '@mui/material/Box';
+import Paper from '@mui/material/Paper';
+import Typography from '@mui/material/Typography';
+import Table from '@mui/material/Table';
+import TableBody from '@mui/material/TableBody';
+import TableCell from '@mui/material/TableCell';
+import TableContainer from '@mui/material/TableContainer';
+import TableHead from '@mui/material/TableHead';
+import TableRow from '@mui/material/TableRow';
+import Tooltip from '@mui/material/Tooltip';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { useGetPortfolioSummaryQuery } from '../../../../store/portfolios/index.ts';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
@@ -9,16 +20,6 @@ import { useMarketPolling } from '../../hooks/useMarketPolling.ts';
 import type { SummaryHolding } from '../../../../api/portfolio.api.types.ts';
 import type { HoldingsTableProps } from './HoldingsTable.types.ts';
 
-/**
- * Owns its own RTK Query subscription — shares the same cache entry as
- * PortfolioStats (RTK Query deduplicates the network request) but only
- * re-renders when the holdings slice changes.
- * Polls during NSE market hours only.
- */
-/**
- * Memoized — re-renders only when the holdings slice of the summary cache changes.
- * Parent (PortfolioDashboard) re-renders do not propagate here.
- */
 export const HoldingsTable = memo(({ portfolioId }: HoldingsTableProps) => {
   const pollingInterval = useMarketPolling();
 
@@ -32,16 +33,16 @@ export const HoldingsTable = memo(({ portfolioId }: HoldingsTableProps) => {
 
   if (isLoading) {
     return (
-      <div className="card">
-        <h2 className="section-title">Current Holdings</h2>
+      <Paper elevation={0} sx={{ p: 2.5, mb: 2 }}>
+        <Typography variant="h6" fontWeight={700} mb={2}>Current Holdings</Typography>
         <SkeletonBlock height={200} borderRadius={8} />
-      </div>
+      </Paper>
     );
   }
 
   return (
-    <div className="card">
-      <h2 className="section-title">Current Holdings</h2>
+    <Paper elevation={0} sx={{ p: 2.5, mb: 2 }}>
+      <Typography variant="h6" fontWeight={700} mb={2}>Current Holdings</Typography>
       {!holdings || holdings.length === 0 ? (
         <EmptyState
           icon="💼"
@@ -49,77 +50,82 @@ export const HoldingsTable = memo(({ portfolioId }: HoldingsTableProps) => {
           description="The AI will build positions on the next trading cycle."
         />
       ) : (
-        <div className="table-wrapper">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Company</th>
-                <th>Strategy</th>
-                <th className="text-right">Qty</th>
-                <th className="text-right">Avg Buy Price</th>
-                <th className="text-right">Current Price</th>
-                <th className="text-right">Value</th>
-                <th className="text-right">P&L</th>
-                <th className="text-right">Return</th>
-                <th>Exit Rules</th>
-              </tr>
-            </thead>
-            <tbody>
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Symbol</TableCell>
+                <TableCell>Company</TableCell>
+                <TableCell>Strategy</TableCell>
+                <TableCell align="right">Qty</TableCell>
+                <TableCell align="right">Avg Buy</TableCell>
+                <TableCell align="right">Current</TableCell>
+                <TableCell align="right">Value</TableCell>
+                <TableCell align="right">P&amp;L</TableCell>
+                <TableCell align="right">Return</TableCell>
+                <TableCell>Exit Rules</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
               {holdings.map((h: SummaryHolding) => (
-                <tr key={h.symbol}>
-                  <td><strong>{h.symbol}</strong></td>
-                  <td>{h.companyName}</td>
-                  <td>
-                    <StrategyTypeBadge strategy={h.strategyType} />
-                    {h.asmGsmFlag && (
-                      <span title="ASM/GSM surveillance flag" style={{ marginLeft: 4, color: '#ef4444', fontSize: '0.72rem' }}>⚠ ASM</span>
-                    )}
-                    {h.liquidityWarning && (
-                      <span title="Low liquidity warning" style={{ marginLeft: 4, color: '#f59e0b', fontSize: '0.72rem' }}>💧</span>
-                    )}
-                  </td>
-                  <td className="text-right">{h.quantity}</td>
-                  <td className="text-right">{formatINR(h.avgBuyPrice)}</td>
-                  <td className="text-right">
-                    {formatINR(h.currentPrice)}
-                    {h.priceStatus === 'STALE' && (
-                      <span
-                        title="Price data is stale — not used for trade execution"
-                        style={{ marginLeft: 4, color: '#f59e0b', fontSize: '0.75rem' }}
-                      >
-                        ⚠
-                      </span>
-                    )}
-                  </td>
-                  <td className="text-right">{formatINR(h.currentValue)}</td>
-                  <td
-                    className="text-right"
-                    style={{ color: h.pnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}
-                  >
-                    {h.pnl >= 0 ? '+' : ''}{formatINR(h.pnl)}
-                  </td>
-                  <td
-                    className="text-right"
-                    style={{ color: h.pnlPct >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}
-                  >
-                    {formatPct(h.pnlPct)}
-                  </td>
-                  <td>
+                <TableRow key={h.symbol}>
+                  <TableCell><Typography fontWeight={700} variant="body2">{h.symbol}</Typography></TableCell>
+                  <TableCell>
+                    <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 160 }}>{h.companyName}</Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Box display="flex" alignItems="center" gap={0.5} flexWrap="wrap">
+                      <StrategyTypeBadge strategy={h.strategyType} />
+                      {h.asmGsmFlag && (
+                        <Tooltip title="ASM/GSM surveillance flag">
+                          <Box component="span" sx={{ fontSize: '0.68rem', color: 'error.main', fontWeight: 700 }}>⚠ ASM</Box>
+                        </Tooltip>
+                      )}
+                      {h.liquidityWarning && (
+                        <Tooltip title="Low liquidity warning">
+                          <WarningAmberIcon sx={{ fontSize: '0.9rem', color: 'warning.main' }} />
+                        </Tooltip>
+                      )}
+                    </Box>
+                  </TableCell>
+                  <TableCell align="right"><Typography variant="body2">{h.quantity}</Typography></TableCell>
+                  <TableCell align="right"><Typography variant="body2">{formatINR(h.avgBuyPrice)}</Typography></TableCell>
+                  <TableCell align="right">
+                    <Box display="flex" alignItems="center" justifyContent="flex-end" gap={0.5}>
+                      <Typography variant="body2">{formatINR(h.currentPrice)}</Typography>
+                      {h.priceStatus === 'STALE' && (
+                        <Tooltip title="Price data is stale — not used for trade execution">
+                          <WarningAmberIcon sx={{ fontSize: '0.85rem', color: 'warning.main' }} />
+                        </Tooltip>
+                      )}
+                    </Box>
+                  </TableCell>
+                  <TableCell align="right"><Typography variant="body2">{formatINR(h.currentValue)}</Typography></TableCell>
+                  <TableCell align="right">
+                    <Typography variant="body2" fontWeight={700} color={h.pnl >= 0 ? 'success.main' : 'error.main'}>
+                      {h.pnl >= 0 ? '+' : ''}{formatINR(h.pnl)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell align="right">
+                    <Typography variant="body2" fontWeight={700} color={h.pnlPct >= 0 ? 'success.main' : 'error.main'}>
+                      {formatPct(h.pnlPct)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
                     <HoldingExitRules
                       atrStopPrice={h.atrStopPrice}
                       trailingStopPrice={h.trailingStopPrice}
                       timeStopDate={h.timeStopDate}
                       riskAmountInr={h.riskAmountInr}
                     />
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </TableContainer>
       )}
-    </div>
+    </Paper>
   );
 });
 

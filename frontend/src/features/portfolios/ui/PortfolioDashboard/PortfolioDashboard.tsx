@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
+import Box from '@mui/material/Box';
+import Paper from '@mui/material/Paper';
+import Typography from '@mui/material/Typography';
+import Button from '@mui/material/Button';
+import Breadcrumbs from '@mui/material/Breadcrumbs';
+import Grid from '@mui/material/Grid';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import LockIcon from '@mui/icons-material/Lock';
+import EditIcon from '@mui/icons-material/Edit';
 import { useGetPortfolioSummaryQuery, useGetPortfoliosQuery } from '../../../../store/portfolios/index.ts';
 import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx';
 import { PortfolioStats } from '../PortfolioStats/index.ts';
@@ -17,15 +26,7 @@ import { useGetCurrentUserQuery } from '../../../../store/auth/index.ts';
 import { riskColor } from '../../model/portfolios.utils.ts';
 import { isNSEMarketOpen } from '../../model/portfolios.marketHours.ts';
 import type { BadgeVariant } from '../../../../shared/ui/Badge/Badge.tsx';
-import './PortfolioDashboard.css';
 
-/**
- * Orchestrator — owns layout and header state only.
- * Each section (stats, holdings, performance, benchmark, sectors)
- * owns its own RTK Query subscription and market-hours polling.
- * RTK Query deduplicates network requests across components sharing the
- * same query key, so there is still only ONE request per endpoint.
- */
 export const PortfolioDashboard = () => {
   const { id } = useParams<{ id: string }>();
   const portfolioId = Number(id);
@@ -34,21 +35,15 @@ export const PortfolioDashboard = () => {
   const [isEditOpen, setIsEditOpen] = useState(false);
   const { data: currentUser } = useGetCurrentUserQuery();
 
-  // Pull the full Portfolio object from the list cache — already fetched on the portfolios page.
-  // selectFromResult prevents this component re-rendering when OTHER portfolios change.
   const { data: portfolio } = useGetPortfoliosQuery(undefined, {
     selectFromResult: ({ data }) => ({ data: data?.find(p => p.id === portfolioId) }),
   });
 
-  // Header-level subscription — drives initial loading/error states, provides refetch for the
-  // manual refresh button, and shares the cache entry with PortfolioStats + HoldingsTable
-  // (RTK Query deduplication: zero extra network cost).
   const { data: headerData, isLoading, error, refetch, fulfilledTimeStamp } =
     useGetPortfolioSummaryQuery(portfolioId);
 
   const lastFetchedAt = fulfilledTimeStamp ? new Date(fulfilledTimeStamp) : null;
 
-  // Defer low-priority panels (news, AI, benchmark, sector) until after first paint
   const [showSecondary, setShowSecondary] = useState(false);
   const deferRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -57,7 +52,7 @@ export const PortfolioDashboard = () => {
   }, []);
 
   if (isLoading) {
-    return <div className="center-page"><Spinner size={40} /></div>;
+    return <Box display="flex" alignItems="center" justifyContent="center" minHeight="60vh"><Spinner size={40} /></Box>;
   }
 
   if (error || !headerData) {
@@ -66,92 +61,103 @@ export const PortfolioDashboard = () => {
         icon="⚠"
         title="Failed to load portfolio"
         description={error ? ('error' in error ? String(error.error) : 'Failed to load') : 'Portfolio not found'}
-        action={<button className="btn btn-ghost" onClick={() => navigate('/')}>← Back</button>}
+        action={<Button variant="outlined" onClick={() => navigate('/')}>← Back</Button>}
       />
     );
   }
 
-  return (
-    <div className="dashboard">
-      {/* Breadcrumb */}
-      <div className="breadcrumb">
-        <Link to="/" className="breadcrumb-link">Portfolios</Link>
-        <span>›</span>
-        <span>{headerData.name}</span>
-      </div>
+  const canEdit = portfolio && currentUser && (currentUser.isAdmin || portfolio.owner_id === currentUser.id);
+  const isLocked = Boolean(portfolio?.trade_count);
 
-      {/* Header */}
-      <div className="dashboard-header">
-        <div>
-          <div className="dashboard-title-row">
-            <h1 className="dashboard-title">{headerData.name}</h1>
-            <Badge variant={riskColor(headerData.riskTolerance) as BadgeVariant}>
-              {headerData.riskTolerance} Risk
-            </Badge>
-          </div>
-        </div>
-        <div className="dashboard-actions">
+  return (
+    <Box>
+      {/* Breadcrumbs */}
+      <Breadcrumbs sx={{ mb: 2, fontSize: '0.8rem' }}>
+        <Box component={Link} to="/" sx={{ color: 'text.secondary', '&:hover': { color: 'text.primary' } }}>
+          Portfolios
+        </Box>
+        <Typography variant="body2" color="text.primary">{headerData.name}</Typography>
+      </Breadcrumbs>
+
+      {/* Dashboard header */}
+      <Box display="flex" alignItems="flex-start" justifyContent="space-between" mb={2.5} gap={2} flexWrap="wrap">
+        <Box display="flex" alignItems="center" gap={1.5} flexWrap="wrap">
+          <Typography variant="h5" fontWeight={700}>{headerData.name}</Typography>
+          <Badge variant={riskColor(headerData.riskTolerance) as BadgeVariant}>
+            {headerData.riskTolerance} Risk
+          </Badge>
+        </Box>
+        <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
           {lastFetchedAt && (
-            <span style={{ fontSize: '0.75rem', color: '#64748b', alignSelf: 'center' }}>
+            <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
               {isNSEMarketOpen()
                 ? `Live · ${lastFetchedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
                 : `Closed · ${lastFetchedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`}
-            </span>
+            </Typography>
           )}
-          <button className="btn btn-ghost" onClick={() => void refetch()} title="Refresh prices">
-            ↻ Refresh
-          </button>
-          {portfolio && currentUser && (currentUser.isAdmin || portfolio.owner_id === currentUser.id) && (
-            <button
-              className="btn btn-ghost"
+          <Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={() => void refetch()}>
+            Refresh
+          </Button>
+          {canEdit && (
+            <Button
+              size="small" variant="outlined"
+              startIcon={isLocked ? <LockIcon sx={{ fontSize: '0.9rem !important' }} /> : <EditIcon sx={{ fontSize: '0.9rem !important' }} />}
               onClick={() => setIsEditOpen(true)}
-              title={portfolio.trade_count ? 'Strategy locked — only name & description editable' : 'Edit portfolio settings'}
+              title={isLocked ? 'Strategy locked — only name & description editable' : 'Edit portfolio settings'}
             >
-              {portfolio.trade_count ? '🔒' : '✏'} Edit
-            </button>
+              Edit
+            </Button>
           )}
-          <Link to={`/portfolios/${portfolioId}/signals`} className="btn btn-ghost">Signals</Link>
-          <Link to={`/portfolios/${portfolioId}/trades`} className="btn btn-ghost">Audit Log</Link>
-        </div>
-      </div>
+          <Button size="small" variant="outlined" component={Link} to={`/portfolios/${portfolioId}/signals`}>
+            Signals
+          </Button>
+          <Button size="small" variant="outlined" component={Link} to={`/portfolios/${portfolioId}/trades`}>
+            Audit Log
+          </Button>
+        </Box>
+      </Box>
 
-      {/* Market regime indicator — Phase 13, renders nothing until backend ships */}
+      {/* Market regime banner — Phase 13, self-hides if backend hasn't shipped field */}
       <MarketRegimeBanner regime={headerData.marketRegime} />
 
-      {/* Stats — independent subscription, polls during market hours */}
+      {/* Stats */}
       <PortfolioStats portfolioId={portfolioId} />
 
-      {/* Performance chart — independent subscription */}
+      {/* Performance chart */}
       <PerformanceChart portfolioId={portfolioId} />
 
-      {/* Holdings table — independent subscription, polls during market hours */}
+      {/* Holdings table */}
       <HoldingsTable portfolioId={portfolioId} />
 
-      {/* Low-priority panels — deferred 300 ms, static after load */}
+      {/* Secondary panels — deferred */}
       {showSecondary && (
-        <div className="two-col-cards">
-          <div className="card">
-            <h2 className="section-title">vs Market Benchmark</h2>
-            <BenchmarkChart portfolioId={portfolioId} />
-          </div>
-          <div className="card">
-            <h2 className="section-title">Sector Allocation</h2>
-            <SectorAllocationChart portfolioId={portfolioId} />
-          </div>
-        </div>
+        <Grid container spacing={2} mb={2}>
+          <Grid item xs={12} lg={7}>
+            <Paper elevation={0} sx={{ p: 2.5 }}>
+              <Typography variant="h6" fontWeight={700} mb={2}>vs Market Benchmark</Typography>
+              <BenchmarkChart portfolioId={portfolioId} />
+            </Paper>
+          </Grid>
+          <Grid item xs={12} lg={5}>
+            <Paper elevation={0} sx={{ p: 2.5 }}>
+              <Typography variant="h6" fontWeight={700} mb={2}>Sector Allocation</Typography>
+              <SectorAllocationChart portfolioId={portfolioId} />
+            </Paper>
+          </Grid>
+        </Grid>
       )}
 
       {showSecondary && (
-        <div className="card">
-          <h2 className="section-title">AI Intelligence Engine</h2>
+        <Paper elevation={0} sx={{ p: 2.5, mb: 2 }}>
+          <Typography variant="h6" fontWeight={700} mb={2}>AI Intelligence Engine</Typography>
           <AdaptivePanel />
-        </div>
+        </Paper>
       )}
 
       {showSecondary && (
-        <div className="card">
+        <Paper elevation={0} sx={{ p: 2.5, mb: 2 }}>
           <NewsFeed compact />
-        </div>
+        </Paper>
       )}
 
       {portfolio && isEditOpen && (
@@ -161,6 +167,6 @@ export const PortfolioDashboard = () => {
           onSaved={() => setIsEditOpen(false)}
         />
       )}
-    </div>
+    </Box>
   );
 };

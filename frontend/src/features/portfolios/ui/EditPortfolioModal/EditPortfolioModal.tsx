@@ -1,4 +1,26 @@
 import { useState } from 'react';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
+import Box from '@mui/material/Box';
+import Grid from '@mui/material/Grid';
+import TextField from '@mui/material/TextField';
+import Select from '@mui/material/Select';
+import MenuItem from '@mui/material/MenuItem';
+import InputLabel from '@mui/material/InputLabel';
+import FormControl from '@mui/material/FormControl';
+import Chip from '@mui/material/Chip';
+import Typography from '@mui/material/Typography';
+import Button from '@mui/material/Button';
+import Alert from '@mui/material/Alert';
+import Paper from '@mui/material/Paper';
+import Slider from '@mui/material/Slider';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
+import CloseIcon from '@mui/icons-material/Close';
+import LockIcon from '@mui/icons-material/Lock';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { useGetPortfolioEditStateQuery, useUpdatePortfolioMutation } from '../../../../store/portfolios/index.ts';
 import type {
   EditableField,
@@ -11,10 +33,6 @@ import type {
 } from '../../../../api/portfolio.api.types.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { SkeletonBlock } from '../../../../shared/ui/SkeletonBlock/SkeletonBlock.tsx';
-import { editModalStyles as s } from './EditPortfolioModal.styles.ts';
-import '../../ui/CreatePortfolioModal/CreatePortfolioModal.css';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface EditPortfolioModalProps {
   portfolio: Portfolio;
@@ -22,27 +40,22 @@ interface EditPortfolioModalProps {
   onSaved: (updated: Portfolio) => void;
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
 const SECTORS = ['IT', 'Banking', 'Pharma', 'Auto', 'FMCG', 'Energy', 'Infra', 'Telecom', 'Metals', 'Realty'];
+const CAPS    = ['Small Cap', 'Mid Cap', 'Large Cap'];
 
 const STATE_BANNER: Record<PortfolioLifecycleState, { color: string; bg: string; border: string; icon: string; label: string }> = {
-  VIRGIN:        { color: '#10b981', bg: 'rgba(16,185,129,0.08)',  border: 'rgba(16,185,129,0.3)',  icon: '🌱', label: 'New portfolio — all fields editable' },
-  ACTIVE:        { color: '#f59e0b', bg: 'rgba(245,158,11,0.08)', border: 'rgba(245,158,11,0.3)',  icon: '⚡', label: 'Active portfolio — strategy changes queue to next cycle' },
-  MATURE:        { color: '#8b5cf6', bg: 'rgba(139,92,246,0.08)', border: 'rgba(139,92,246,0.3)',  icon: '🔒', label: 'Mature portfolio — risk tolerance locked (AI thesis is set)' },
-  DRAWDOWN_HALT: { color: '#ef4444', bg: 'rgba(239,68,68,0.08)',  border: 'rgba(239,68,68,0.3)',   icon: '⛔', label: 'Drawdown halt — strategy locked until recovery' },
-  ARCHIVED:      { color: '#64748b', bg: 'rgba(100,116,139,0.08)', border: 'rgba(100,116,139,0.3)', icon: '📦', label: 'Archived — no edits allowed' },
+  VIRGIN:        { color: '#10b981', bg: 'rgba(16,185,129,0.08)',   border: 'rgba(16,185,129,0.3)',   icon: '🌱', label: 'New portfolio — all fields editable' },
+  ACTIVE:        { color: '#f59e0b', bg: 'rgba(245,158,11,0.08)',  border: 'rgba(245,158,11,0.3)',   icon: '⚡', label: 'Active — strategy changes queue to next cycle' },
+  MATURE:        { color: '#8b5cf6', bg: 'rgba(139,92,246,0.08)',  border: 'rgba(139,92,246,0.3)',   icon: '🔒', label: 'Mature — risk tolerance locked (AI thesis is set)' },
+  DRAWDOWN_HALT: { color: '#ef4444', bg: 'rgba(239,68,68,0.08)',   border: 'rgba(239,68,68,0.3)',    icon: '⛔', label: 'Drawdown halt — strategy locked until recovery' },
+  ARCHIVED:      { color: '#64748b', bg: 'rgba(100,116,139,0.08)', border: 'rgba(100,116,139,0.3)',  icon: '📦', label: 'Archived — no edits allowed' },
 };
 
 const LOCK_REASON: Record<PortfolioLifecycleState, string> = {
-  VIRGIN:        '',
-  ACTIVE:        'Cannot change while portfolio is active.',
-  MATURE:        'Locked — AI has calibrated its position thesis after 20+ trades.',
-  DRAWDOWN_HALT: 'Locked during drawdown halt. Recover the portfolio first.',
-  ARCHIVED:      'Portfolio is archived.',
+  VIRGIN: '', ACTIVE: 'Cannot change while portfolio is active.',
+  MATURE: 'Locked — AI calibrated thesis after 20+ trades.',
+  DRAWDOWN_HALT: 'Locked during drawdown halt.', ARCHIVED: 'Portfolio is archived.',
 };
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const parseJsonArray = (raw: string | string[] | null | undefined): string[] => {
   if (!raw) return [];
@@ -51,12 +64,9 @@ const parseJsonArray = (raw: string | string[] | null | undefined): string[] => 
 };
 
 const toFormState = (p: Portfolio): Required<UpdatePortfolioPayload> => ({
-  name: p.name,
-  description: p.description ?? '',
-  initialCapital: p.initial_capital,
-  riskTolerance: p.risk_tolerance,
-  investmentHorizonMonths: p.investment_horizon_months,
-  targetReturnPct: p.target_return_pct,
+  name: p.name, description: p.description ?? '',
+  initialCapital: p.initial_capital, riskTolerance: p.risk_tolerance,
+  investmentHorizonMonths: p.investment_horizon_months, targetReturnPct: p.target_return_pct,
   rebalanceFrequency: (p.rebalance_frequency ?? 'Monthly') as RebalanceFrequency,
   preferredSectors: parseJsonArray(p.preferred_sectors as string),
   preferredCaps: parseJsonArray(p.preferred_caps as string),
@@ -65,93 +75,51 @@ const toFormState = (p: Portfolio): Required<UpdatePortfolioPayload> => ({
   maxDrawdownPct: p.max_drawdown_pct ?? 20,
 });
 
-// ─── Field state helpers ──────────────────────────────────────────────────────
-
 const useFieldState = (editState: PortfolioEditState | undefined) => {
-  const isLocked  = (field: EditableField) => editState?.editability.locked.includes(field) ?? false;
-  const isWarn    = (field: EditableField) => editState?.editability.warn.includes(field)   ?? false;
-
-  const warnStyle = (field: EditableField): React.CSSProperties =>
-    isWarn(field) ? { borderColor: '#f59e0b', boxShadow: '0 0 0 1px rgba(245,158,11,0.4)' } : {};
-
-  const lockedStyle: React.CSSProperties = { opacity: 0.45, cursor: 'not-allowed' };
-
-  const fieldStyle = (field: EditableField): React.CSSProperties =>
-    isLocked(field) ? lockedStyle : warnStyle(field);
-
-  return { isLocked, isWarn, fieldStyle };
+  const isLocked = (field: EditableField) => editState?.editability.locked.includes(field) ?? false;
+  const isWarn   = (field: EditableField) => editState?.editability.warn.includes(field)   ?? false;
+  return { isLocked, isWarn };
 };
 
-// ─── Subcomponents ────────────────────────────────────────────────────────────
-
-const LockBadge = ({ reason }: { reason: string }) => (
-  <span title={reason} className="field-badge">🔒</span>
+const FieldAdornment = ({ locked, warned, reason }: { locked: boolean; warned: boolean; reason: string }) => (
+  <>
+    {locked && <Tooltip title={reason}><LockIcon sx={{ fontSize: '0.9rem', color: 'text.disabled', ml: 0.5 }} /></Tooltip>}
+    {warned && !locked && <Tooltip title="Changes apply at next cron cycle (≤5 min). Existing positions are not force-liquidated."><WarningAmberIcon sx={{ fontSize: '0.9rem', color: 'warning.main', ml: 0.5 }} /></Tooltip>}
+  </>
 );
-
-const WarnBadge = () => (
-  <span
-    title="Strategy changes apply at next cron cycle (≤5 min). Existing positions are not force-liquidated."
-    className="field-badge"
-  >
-    ⚠️
-  </span>
-);
-
-// ─── Main component ───────────────────────────────────────────────────────────
 
 export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfolioModalProps) => {
   const pid = portfolio.id;
-
-  const [form, setForm]             = useState<Required<UpdatePortfolioPayload>>(toFormState(portfolio));
-  const [error, setError]           = useState<string | null>(null);
+  const [form,       setForm]       = useState<Required<UpdatePortfolioPayload>>(toFormState(portfolio));
+  const [error,      setError]      = useState<string | null>(null);
   const [fieldError, setFieldError] = useState<Partial<Record<EditableField, string>>>({});
 
-  // RTK Query — edit-state (drives field locking/warning)
   const { data: editState, isLoading: stateLoading } = useGetPortfolioEditStateQuery(pid);
-
-  // RTK Query — update mutation
   const [updatePortfolio, { isLoading }] = useUpdatePortfolioMutation();
 
-  const { isLocked, isWarn, fieldStyle } = useFieldState(editState);
-  const lockReason = LOCK_REASON[editState?.state ?? 'ACTIVE'];
+  const { isLocked, isWarn } = useFieldState(editState);
+  const lockReason   = LOCK_REASON[editState?.state ?? 'ACTIVE'];
   const capitalFloor = editState?.editability.capitalFloor ?? 0;
-  const isArchived = editState?.state === 'ARCHIVED';
+  const isArchived   = editState?.state === 'ARCHIVED';
+  const isStrategyLocked = (editState?.meta.tradeCount ?? 0) > 0;
 
-  const toggleSector = (sector: string) => {
-    if (isLocked('preferredSectors')) return;
+  const toggleTag = (field: 'preferredCaps' | 'preferredSectors', value: string) => {
+    if (isLocked(field as EditableField)) return;
     setForm(f => ({
       ...f,
-      preferredSectors: f.preferredSectors?.includes(sector)
-        ? f.preferredSectors.filter(s => s !== sector)
-        : [...(f.preferredSectors ?? []), sector],
-    }));
-  };
-
-  const toggleCap = (cap: string) => {
-    if (isLocked('preferredCaps')) return;
-    setForm(f => ({
-      ...f,
-      preferredCaps: f.preferredCaps?.includes(cap)
-        ? f.preferredCaps.filter(c => c !== cap)
-        : [...(f.preferredCaps ?? []), cap],
+      [field]: f[field]?.includes(value) ? f[field]!.filter(v => v !== value) : [...(f[field] ?? []), value],
     }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name.trim()) { setError('Portfolio name is required'); return; }
-
-    // Client-side capital floor guard
     if (form.initialCapital < capitalFloor) {
-      setFieldError(prev => ({ ...prev, capitalReduction: `Capital cannot go below ₹${capitalFloor.toLocaleString('en-IN')} (invested value)` }));
+      setFieldError(prev => ({ ...prev, capitalReduction: `Capital cannot go below ₹${capitalFloor.toLocaleString('en-IN')}` }));
       return;
     }
-
-    setError(null);
-    setFieldError({});
-
+    setError(null); setFieldError({});
     try {
-      // RTK Query mutation — handles cache invalidation + optimistic updates via onQueryStarted
       const updated = await updatePortfolio({ id: pid, payload: form }).unwrap();
       onSaved(updated);
     } catch (err: unknown) {
@@ -159,7 +127,7 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
       if (msg.includes('CAPITAL_FLOOR_BREACH')) {
         setFieldError(prev => ({ ...prev, capitalReduction: `Capital cannot go below ₹${capitalFloor.toLocaleString('en-IN')}` }));
       } else if (msg.includes('DRAWDOWN_LOCK')) {
-        setError(`Changes blocked — portfolio is in drawdown halt (${editState?.meta.drawdownPct.toFixed(1)}% down). Resolve the drawdown first.`);
+        setError(`Changes blocked — portfolio is in drawdown halt (${editState?.meta.drawdownPct.toFixed(1)}% down).`);
       } else if (msg.includes('MATURE_LOCK')) {
         setError('This field is locked after 20+ trade executions.');
       } else {
@@ -172,302 +140,192 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
   const banner = editState ? STATE_BANNER[editState.state] : null;
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal-box">
-        <div className="modal-header">
-          <h2>Edit Portfolio</h2>
-          <button className="modal-close" onClick={onClose}>✕</button>
-        </div>
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth PaperProps={{ component: 'form', onSubmit: handleSubmit }}>
+      <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        Edit Portfolio
+        <IconButton size="small" onClick={onClose}><CloseIcon fontSize="small" /></IconButton>
+      </DialogTitle>
 
-        <form className="modal-form" onSubmit={handleSubmit}>
-          {/* State banner */}
-          {stateLoading && <SkeletonBlock height={40} borderRadius={8} />}
-          {banner && (
-            <div style={{ ...s.lifecycleBanner, background: banner.bg, border: `1px solid ${banner.border}`, color: banner.color }}>
-              <span>{banner.icon}</span>
-              <span>{banner.label}</span>
-              {editState?.meta.tradeCount !== undefined && editState.meta.tradeCount > 0 && (
-                <span style={s.lifecycleBannerMeta}>
-                  {editState.meta.holdingsCount} holdings · {editState.meta.tradeCount} trades
-                  {editState.meta.drawdownPct > 0 && ` · ${editState.meta.drawdownPct.toFixed(1)}% drawdown`}
-                </span>
-              )}
-            </div>
-          )}
+      <DialogContent dividers sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, pt: 2.5 }}>
+        {/* Lifecycle state banner */}
+        {stateLoading && <SkeletonBlock height={44} borderRadius={8} />}
+        {banner && (
+          <Paper elevation={0} sx={{ p: 1.5, background: banner.bg, border: `1px solid ${banner.border}`, display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Typography>{banner.icon}</Typography>
+            <Typography variant="body2" sx={{ color: banner.color, flex: 1 }}>{banner.label}</Typography>
+            {editState && editState.meta.tradeCount > 0 && (
+              <Typography variant="caption" color="text.secondary">
+                {editState.meta.holdingsCount} holdings · {editState.meta.tradeCount} trades
+              </Typography>
+            )}
+          </Paper>
+        )}
 
-          {/* Name & Description — always free */}
-          <div className="form-group">
-            <label htmlFor="ep-name">Portfolio Name *</label>
-            <input id="ep-name" type="text" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className="form-input" required />
-          </div>
+        {/* Name & Description — always free */}
+        <TextField label="Portfolio Name *" required fullWidth
+          value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+        <TextField label="Description" fullWidth
+          value={form.description ?? ''} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+          placeholder="Optional" />
 
-          <div className="form-group">
-            <label htmlFor="ep-desc">Description</label>
-            <input id="ep-desc" type="text" value={form.description ?? ''} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Optional" className="form-input" />
-          </div>
-
-          {/* Strategy fields — locked once any trade has executed */}
-          {editState && editState.meta.tradeCount > 0 ? (
-            <div style={s.tradeLockNotice}>
-              <span>🔒</span>
-              <span>
-                Strategy locked — trading has begun ({editState.meta.tradeCount} trade{editState.meta.tradeCount !== 1 ? 's' : ''} executed).
-                Only name and description can be changed.
-              </span>
-            </div>
-          ) : (
+        {/* Strategy fields — locked once trading has begun */}
+        {isStrategyLocked ? (
+          <Alert severity="info" icon={<LockIcon />}>
+            Strategy locked — {editState?.meta.tradeCount} trades executed. Only name and description can be changed.
+          </Alert>
+        ) : (
           <>
-          {/* Capital & Target Return */}
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="ep-capital">
-                Capital (₹)
-                {isLocked('capitalReduction') && capitalDelta < 0 && <LockBadge reason={lockReason} />}
-              </label>
-              <input
-                id="ep-capital"
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={form.initialCapital || ''}
-                onChange={e => {
-                  const digits = e.target.value.replace(/\D/g, '');
-                  const val = digits ? parseInt(digits, 10) : 0;
-                  setForm(f => ({ ...f, initialCapital: val }));
-                  if (val >= capitalFloor) setFieldError(prev => ({ ...prev, capitalReduction: undefined }));
-                }}
-                onFocus={e => e.target.select()}
-                className="form-input"
-                style={form.initialCapital < capitalFloor ? { borderColor: '#ef4444' } : {}}
-              />
-              {capitalDelta !== 0 && (
-                <p style={capitalDelta > 0 ? s.capitalDeltaPositive : s.capitalDeltaNegative}>
-                  {capitalDelta > 0
-                    ? `+₹${capitalDelta.toLocaleString('en-IN')} will be added to available cash`
-                    : `⚠ Capital reduction — floor is ₹${capitalFloor.toLocaleString('en-IN')}`}
-                </p>
-              )}
-              {fieldError.capitalReduction && <p style={s.capitalFieldError}>⚠ {fieldError.capitalReduction}</p>}
-              {capitalFloor > 0 && <p style={s.capitalFloorHint}>Min: ₹{capitalFloor.toLocaleString('en-IN')} (invested value)</p>}
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="ep-target">
-                Target Return (%)
-                {isWarn('targetReturnPct') && <WarnBadge />}
-                {isLocked('targetReturnPct') && <LockBadge reason={lockReason} />}
-              </label>
-              <input
-                id="ep-target"
-                type="number"
-                min={1}
-                // No max cap — user sets their own ambition; model will adjust signal thresholds accordingly
-                step={0.5}
-                value={form.targetReturnPct}
-                onChange={e => setForm(f => ({ ...f, targetReturnPct: Number(e.target.value) }))}
-                className="form-input"
-                disabled={isLocked('targetReturnPct')}
-                style={fieldStyle('targetReturnPct')}
-              />
-            </div>
-          </div>
-
-          {/* Risk & Horizon */}
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="ep-risk">
-                Risk Tolerance
-                {isWarn('riskTolerance') && <WarnBadge />}
-                {isLocked('riskTolerance') && <LockBadge reason={lockReason} />}
-              </label>
-              <select
-                id="ep-risk"
-                value={form.riskTolerance}
-                onChange={e => setForm(f => ({ ...f, riskTolerance: e.target.value as RiskTolerance }))}
-                className="form-input"
-                disabled={isLocked('riskTolerance')}
-                style={fieldStyle('riskTolerance')}
-              >
-                <option value="Low">Low (Conservative)</option>
-                <option value="Medium">Medium (Balanced)</option>
-                <option value="High">High (Aggressive)</option>
-                <option value="Very High">Very High (Speculative)</option>
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="ep-horizon">
-                Investment Horizon (months)
-                {isWarn('investmentHorizonMonths') && <WarnBadge />}
-                {isLocked('investmentHorizonMonths') && <LockBadge reason={lockReason} />}
-              </label>
-              <input
-                id="ep-horizon"
-                type="number"
-                min={1}
-                max={120}
-                value={form.investmentHorizonMonths}
-                onChange={e => setForm(f => ({ ...f, investmentHorizonMonths: Number(e.target.value) }))}
-                className="form-input"
-                disabled={isLocked('investmentHorizonMonths')}
-                style={fieldStyle('investmentHorizonMonths')}
-              />
-            </div>
-          </div>
-
-          {/* Rebalance */}
-          <div className="form-group">
-            <label htmlFor="ep-rebalance">
-              Rebalance Frequency
-              {isWarn('rebalanceFrequency') && <WarnBadge />}
-              {isLocked('rebalanceFrequency') && <LockBadge reason={lockReason} />}
-            </label>
-            <select
-              id="ep-rebalance"
-              value={form.rebalanceFrequency}
-              onChange={e => setForm(f => ({ ...f, rebalanceFrequency: e.target.value as RebalanceFrequency }))}
-              className="form-input"
-              disabled={isLocked('rebalanceFrequency')}
-              style={fieldStyle('rebalanceFrequency')}
-            >
-              <option value="Weekly">Weekly</option>
-              <option value="Monthly">Monthly</option>
-              <option value="Quarterly">Quarterly</option>
-            </select>
-          </div>
-
-          {/* Market Cap */}
-          <div className="form-group">
-            <label>
-              Market Cap Focus
-              {isWarn('preferredCaps') && <WarnBadge />}
-              {isLocked('preferredCaps') && <LockBadge reason={lockReason} />}
-            </label>
-            <div className="sectors-grid" style={isLocked('preferredCaps') ? { opacity: 0.45, pointerEvents: 'none' } : {}}>
-              {['Small Cap', 'Mid Cap', 'Large Cap'].map(cap => (
-                <button
-                  key={cap}
-                  type="button"
-                  className={`sector-chip ${form.preferredCaps?.includes(cap) ? 'selected' : ''}`}
-                  onClick={() => toggleCap(cap)}
-                  disabled={isLocked('preferredCaps')}
-                >
-                  {cap}
-                </button>
-              ))}
-            </div>
-            <p style={s.capHint}>
-              {form.preferredCaps?.length ? `AI will allocate ~50% to ${form.preferredCaps.join(' + ')}` : 'No restriction — AI invests across all market caps freely'}
-            </p>
-          </div>
-
-          {/* Sectors */}
-          <div className="form-group">
-            <label>
-              Preferred Sectors
-              {isWarn('preferredSectors') && <WarnBadge />}
-              {isLocked('preferredSectors') && <LockBadge reason={lockReason} />}
-            </label>
-            <div className="sectors-grid" style={isLocked('preferredSectors') ? { opacity: 0.45, pointerEvents: 'none' as const } : undefined}>
-              {SECTORS.map(sector => (
-                <button
-                  key={sector}
-                  type="button"
-                  className={`sector-chip ${form.preferredSectors?.includes(sector) ? 'selected' : ''}`}
-                  onClick={() => toggleSector(sector)}
-                  disabled={isLocked('preferredSectors')}
-                >
-                  {sector}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Advanced Risk */}
-          <div className="form-group">
-            <label style={s.labelRow}>
-              <span>Advanced Risk Settings</span>
-              <span style={s.labelHint}>AI uses these to tune signal thresholds</span>
-            </label>
-            <div className="two-col-form">
-              <div>
-                <label className="sublabel">
-                  Volatility Preference
-                  {isWarn('volatilityPreference') && <WarnBadge />}
-                  {isLocked('volatilityPreference') && <LockBadge reason={lockReason} />}
-                </label>
-                <select
-                  className="form-input"
-                  value={form.volatilityPreference}
-                  onChange={e => setForm(f => ({ ...f, volatilityPreference: e.target.value as 'low' | 'medium' | 'high' }))}
-                  disabled={isLocked('volatilityPreference')}
-                  style={fieldStyle('volatilityPreference')}
-                >
-                  <option value="low">Low — Capital preservation</option>
-                  <option value="medium">Medium — Balanced</option>
-                  <option value="high">High — Aggressive growth</option>
-                </select>
-              </div>
-              <div>
-                <label className="sublabel">
-                  Investment Goal
-                  {isWarn('investmentGoal') && <WarnBadge />}
-                  {isLocked('investmentGoal') && <LockBadge reason={lockReason} />}
-                </label>
-                <select
-                  className="form-input"
-                  value={form.investmentGoal}
-                  onChange={e => setForm(f => ({ ...f, investmentGoal: e.target.value as 'growth' | 'income' | 'retirement' }))}
-                  disabled={isLocked('investmentGoal')}
-                  style={fieldStyle('investmentGoal')}
-                >
-                  <option value="growth">Growth — Maximize returns</option>
-                  <option value="income">Income — Dividend focus</option>
-                  <option value="retirement">Retirement — Long-term stable</option>
-                </select>
-              </div>
-            </div>
-
-            <div style={s.drawdownSection}>
-              <label className="sublabel">
-                Max Drawdown Tolerance (%)
-                {isWarn('maxDrawdownPct') && <WarnBadge />}
-                {isLocked('maxDrawdownPct') && <LockBadge reason={lockReason} />}
-              </label>
-              <div style={s.drawdownSliderRow}>
-                <input
-                  type="range"
-                  min={5}
-                  max={50}
-                  step={5}
-                  value={form.maxDrawdownPct}
-                  onChange={e => setForm(f => ({ ...f, maxDrawdownPct: Number(e.target.value) }))}
-                  disabled={isLocked('maxDrawdownPct')}
-                  style={isLocked('maxDrawdownPct') ? s.drawdownSliderDisabled : s.drawdownSlider}
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  label="Capital (₹)" fullWidth
+                  value={form.initialCapital || ''}
+                  error={!!fieldError.capitalReduction || form.initialCapital < capitalFloor}
+                  helperText={
+                    fieldError.capitalReduction
+                      ? `⚠ ${fieldError.capitalReduction}`
+                      : capitalDelta !== 0
+                        ? capitalDelta > 0 ? `+₹${capitalDelta.toLocaleString('en-IN')} added to cash` : `⚠ Floor: ₹${capitalFloor.toLocaleString('en-IN')}`
+                        : capitalFloor > 0 ? `Min: ₹${capitalFloor.toLocaleString('en-IN')}` : undefined
+                  }
+                  onChange={e => {
+                    const digits = e.target.value.replace(/\D/g, '');
+                    const val = digits ? parseInt(digits, 10) : 0;
+                    setForm(f => ({ ...f, initialCapital: val }));
+                    if (val >= capitalFloor) setFieldError(prev => ({ ...prev, capitalReduction: undefined }));
+                  }}
+                  onFocus={e => e.target.select()}
+                  inputProps={{ inputMode: 'numeric' }}
                 />
-                <span style={(form.maxDrawdownPct ?? 20) > 30 ? s.drawdownValueDanger : s.drawdownValue}>
-                  {form.maxDrawdownPct ?? 20}%
-                </span>
-              </div>
-              <p style={s.drawdownHint}>
-                AI pauses trading if portfolio drops more than {form.maxDrawdownPct ?? 20}% from its peak
-              </p>
-            </div>
-          </div>
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  label={<Box display="flex" alignItems="center">Target Return (%) <FieldAdornment locked={isLocked('targetReturnPct')} warned={isWarn('targetReturnPct')} reason={lockReason} /></Box>}
+                  type="number" fullWidth inputProps={{ min: 1, step: 0.5 }}
+                  value={form.targetReturnPct}
+                  disabled={isLocked('targetReturnPct')}
+                  onChange={e => setForm(f => ({ ...f, targetReturnPct: Number(e.target.value) }))}
+                />
+              </Grid>
+            </Grid>
 
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6}>
+                <FormControl fullWidth disabled={isLocked('riskTolerance')}>
+                  <InputLabel>Risk Tolerance</InputLabel>
+                  <Select label="Risk Tolerance" value={form.riskTolerance}
+                    onChange={e => setForm(f => ({ ...f, riskTolerance: e.target.value as RiskTolerance }))}>
+                    {['Low', 'Medium', 'High', 'Very High'].map(r => <MenuItem key={r} value={r}>{r}</MenuItem>)}
+                  </Select>
+                </FormControl>
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField label="Horizon (months)" type="number" fullWidth
+                  inputProps={{ min: 1, max: 120 }}
+                  value={form.investmentHorizonMonths}
+                  disabled={isLocked('investmentHorizonMonths')}
+                  onChange={e => setForm(f => ({ ...f, investmentHorizonMonths: Number(e.target.value) }))}
+                />
+              </Grid>
+            </Grid>
+
+            <FormControl fullWidth disabled={isLocked('rebalanceFrequency')}>
+              <InputLabel>Rebalance Frequency</InputLabel>
+              <Select label="Rebalance Frequency" value={form.rebalanceFrequency}
+                onChange={e => setForm(f => ({ ...f, rebalanceFrequency: e.target.value as RebalanceFrequency }))}>
+                <MenuItem value="Weekly">Weekly</MenuItem>
+                <MenuItem value="Monthly">Monthly</MenuItem>
+                <MenuItem value="Quarterly">Quarterly</MenuItem>
+              </Select>
+            </FormControl>
+
+            {/* Market cap */}
+            <Box>
+              <Typography variant="caption" color="text.secondary" display="block" mb={1}>Market Cap Focus</Typography>
+              <Box display="flex" gap={1} flexWrap="wrap" sx={isLocked('preferredCaps') ? { opacity: 0.45, pointerEvents: 'none' } : {}}>
+                {CAPS.map(cap => (
+                  <Chip key={cap} label={cap} size="small" clickable
+                    color={form.preferredCaps?.includes(cap) ? 'primary' : 'default'}
+                    variant={form.preferredCaps?.includes(cap) ? 'filled' : 'outlined'}
+                    onClick={() => toggleTag('preferredCaps', cap)}
+                  />
+                ))}
+              </Box>
+              <Typography variant="caption" color="text.secondary" mt={0.5} display="block">
+                {form.preferredCaps?.length ? `~50% allocated to ${form.preferredCaps.join(' + ')}` : 'No restriction'}
+              </Typography>
+            </Box>
+
+            {/* Sectors */}
+            <Box>
+              <Typography variant="caption" color="text.secondary" display="block" mb={1}>Preferred Sectors</Typography>
+              <Box display="flex" gap={1} flexWrap="wrap" sx={isLocked('preferredSectors') ? { opacity: 0.45, pointerEvents: 'none' } : {}}>
+                {SECTORS.map(s => (
+                  <Chip key={s} label={s} size="small" clickable
+                    color={form.preferredSectors?.includes(s) ? 'primary' : 'default'}
+                    variant={form.preferredSectors?.includes(s) ? 'filled' : 'outlined'}
+                    onClick={() => toggleTag('preferredSectors', s)}
+                  />
+                ))}
+              </Box>
+            </Box>
+
+            {/* Advanced risk */}
+            <Box>
+              <Typography variant="subtitle2" fontWeight={600} mb={1.5}>Advanced Risk Settings</Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={12} sm={6}>
+                  <FormControl fullWidth size="small" disabled={isLocked('volatilityPreference')}>
+                    <InputLabel>Volatility Preference</InputLabel>
+                    <Select label="Volatility Preference" value={form.volatilityPreference}
+                      onChange={e => setForm(f => ({ ...f, volatilityPreference: e.target.value as 'low' | 'medium' | 'high' }))}>
+                      <MenuItem value="low">Low — Capital preservation</MenuItem>
+                      <MenuItem value="medium">Medium — Balanced</MenuItem>
+                      <MenuItem value="high">High — Aggressive growth</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <FormControl fullWidth size="small" disabled={isLocked('investmentGoal')}>
+                    <InputLabel>Investment Goal</InputLabel>
+                    <Select label="Investment Goal" value={form.investmentGoal}
+                      onChange={e => setForm(f => ({ ...f, investmentGoal: e.target.value as 'growth' | 'income' | 'retirement' }))}>
+                      <MenuItem value="growth">Growth</MenuItem>
+                      <MenuItem value="income">Income</MenuItem>
+                      <MenuItem value="retirement">Retirement</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+              </Grid>
+              <Box mt={2}>
+                <Typography variant="caption" color="text.secondary" display="block" mb={1}>
+                  Max Drawdown Tolerance: <strong style={{ color: (form.maxDrawdownPct ?? 20) > 30 ? '#ef4444' : '#e2e8f0' }}>{form.maxDrawdownPct ?? 20}%</strong>
+                </Typography>
+                <Slider min={5} max={50} step={5}
+                  disabled={isLocked('maxDrawdownPct')}
+                  value={form.maxDrawdownPct ?? 20}
+                  onChange={(_, v) => setForm(f => ({ ...f, maxDrawdownPct: v as number }))}
+                  marks valueLabelDisplay="auto"
+                  sx={{ color: (form.maxDrawdownPct ?? 20) > 30 ? 'error.main' : 'primary.main' }}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  AI pauses if portfolio drops more than {form.maxDrawdownPct ?? 20}% from peak
+                </Typography>
+              </Box>
+            </Box>
           </>
-          )}
+        )}
 
-          {error && <div className="form-error">⚠ {error}</div>}
+        {error && <Alert severity="error">{error}</Alert>}
+      </DialogContent>
 
-          <div className="modal-footer">
-            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={isLoading}>Cancel</button>
-            <button type="submit" className="btn btn-primary" disabled={isLoading || isArchived}>
-              {isLoading ? <Spinner size={16} /> : 'Save Changes'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button variant="outlined" onClick={onClose} disabled={isLoading}>Cancel</Button>
+        <Button type="submit" variant="contained" disabled={isLoading || isArchived}
+          startIcon={isLoading ? <Spinner size={16} /> : undefined}>
+          {isLoading ? 'Saving…' : 'Save Changes'}
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 };
