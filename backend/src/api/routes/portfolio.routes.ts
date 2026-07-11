@@ -6,7 +6,8 @@ import { executeTrade } from '../../services/tradingEngine.js';
 import { cache, TTL } from '../../lib/cache.js';
 import { parseIntParam, portfolioCreateSchema, portfolioPatchSchema } from './helpers.js';
 import { deriveRiskLevel } from '../../services/riskClassifier.js';
-import { getWalkForwardResults, runWalkForward } from '../../services/walkForwardEngine.js';
+import { getWalkForwardResults } from '../../services/walkForwardEngine.js';
+import { getLabelSummary } from '../../services/labelGenerator.js';
 import { classifyMarketRegime } from '../../services/regimeEngine.js';
 
 const router = Router();
@@ -224,6 +225,12 @@ router.get('/portfolios/:id/walk-forward', verifyAuth, verifyOwner, async (req: 
   if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
   const results = await getWalkForwardResults(pid).catch(() => []);
   return res.json({ success: true, data: results });
+});
+
+// ─── Phase 15: Candidate expectancy summary ──────────────────────────────────
+router.get('/portfolios/:id/expectancy', verifyAuth, verifyOwner, async (_req: Request, res: Response) => {
+  const summary = await getLabelSummary().catch(() => null);
+  return res.json({ success: true, data: summary });
 });
 
 // ─── Phase 13: Market regime ──────────────────────────────────────────────────

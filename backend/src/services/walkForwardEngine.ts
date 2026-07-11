@@ -34,38 +34,61 @@ export interface WalkForwardResult {
   maxDrawdownPct: number;
   avgHoldDays: number;
   strategyBreakdown: Record<string, { trades: number; winRate: number }>;
+  // Phase 15: Expectancy metrics
+  expectancyPct: number;    // win_rate × avg_win - loss_rate × avg_loss - costs
+  avgWinPct: number;
+  avgLossPct: number;
+  profitFactor: number | null; // total_wins / total_losses (gross)
+  maxConsecutiveLosses: number;
+  embargoDays: number;      // recorded for audit
 }
 
+const EMBARGO_TRADING_DAYS = 20; // ~4 calendar weeks
+const CALENDAR_DAYS_PER_TRADING_DAY = 1.4; // approximation
+
 /**
- * Generate walk-forward windows from the earliest available data to today.
- * Train: 12 months, Test: 3 months, Stride: 3 months.
+ * Phase 15: Generate purged walk-forward windows with embargo gap.
+ *
+ * Uses EXPANDING train window (all history to train_end) rather than rolling,
+ * so older regime data is preserved. A 20-trading-day embargo (~28 calendar days)
+ * is inserted between train_end and test_start to prevent label leakage from
+ * overlapping forward-return periods.
+ *
+ * Structure:
+ *   Train: dataStart → trainEnd (expanding)
+ *   Embargo: trainEnd → embargoEnd (20 trading days ≈ 28 calendar days)
+ *   Test: embargoEnd → testEnd (3 months)
+ *   Stride: 3 months forward
  */
 export function generateWindows(
   dataStartDate: Date,
   endDate: Date = new Date(),
-  trainMonths = 12,
   testMonths = 3,
 ): WalkForwardWindow[] {
   const windows: WalkForwardWindow[] = [];
-  let testStart = new Date(dataStartDate);
-  testStart.setMonth(testStart.getMonth() + trainMonths);
+  const embargoDays = Math.ceil(EMBARGO_TRADING_DAYS * CALENDAR_DAYS_PER_TRADING_DAY);
 
-  while (testStart < endDate) {
-    const trainStart = new Date(testStart);
-    trainStart.setMonth(trainStart.getMonth() - trainMonths);
+  // First test window starts at: dataStart + 6 months minimum train period + embargo
+  let trainEnd = new Date(dataStartDate);
+  trainEnd.setMonth(trainEnd.getMonth() + 6); // minimum 6 months training data
 
-    const testEnd = new Date(testStart);
+  while (true) {
+    const embargoEnd = new Date(trainEnd);
+    embargoEnd.setDate(embargoEnd.getDate() + embargoDays);
+
+    const testEnd = new Date(embargoEnd);
     testEnd.setMonth(testEnd.getMonth() + testMonths);
-    if (testEnd > endDate) testEnd.setTime(endDate.getTime());
+    if (testEnd > endDate) break;
 
     windows.push({
-      trainStart: trainStart.toISOString().slice(0, 10),
-      trainEnd:   testStart.toISOString().slice(0, 10),
-      testStart:  testStart.toISOString().slice(0, 10),
+      trainStart: dataStartDate.toISOString().slice(0, 10),
+      trainEnd:   trainEnd.toISOString().slice(0, 10),
+      testStart:  embargoEnd.toISOString().slice(0, 10),
       testEnd:    testEnd.toISOString().slice(0, 10),
     });
 
-    testStart.setMonth(testStart.getMonth() + testMonths);
+    // Stride: advance trainEnd by testMonths
+    trainEnd.setMonth(trainEnd.getMonth() + testMonths);
   }
   return windows;
 }
@@ -123,6 +146,24 @@ async function evaluateWindow(
     strategyBreakdown[k] = { trades: v.trades, winRate: v.trades > 0 ? v.wins / v.trades : 0 };
   }
 
+  // Expectancy metrics
+  const winReturns  = rows.filter(r => r.outcome === 'WIN').map(r => Number(r.realized_pnl_pct ?? 0));
+  const lossReturns = rows.filter(r => r.outcome === 'LOSS').map(r => Number(r.realized_pnl_pct ?? 0));
+  const avgWinPct  = winReturns.length  > 0 ? winReturns.reduce((a, b) => a + b, 0)  / winReturns.length  : 0;
+  const avgLossPct = lossReturns.length > 0 ? Math.abs(lossReturns.reduce((a, b) => a + b, 0) / lossReturns.length) : 0;
+  const expectancyPct = winRate * avgWinPct - (1 - winRate) * avgLossPct - 0.4; // 0.4% costs
+
+  const grossWins  = winReturns.reduce((a, b)  => a + b, 0);
+  const grossLoss  = lossReturns.reduce((a, b) => a + Math.abs(b), 0);
+  const profitFactor = grossLoss > 0 ? grossWins / grossLoss : null;
+
+  // Max consecutive losses
+  let maxConsecLoss = 0, consecLoss = 0;
+  for (const r of rows) {
+    if (r.outcome === 'LOSS') { consecLoss++; if (consecLoss > maxConsecLoss) maxConsecLoss = consecLoss; }
+    else consecLoss = 0;
+  }
+
   return {
     trainStart: win.trainStart, trainEnd: win.trainEnd,
     testStart: win.testStart,   testEnd: win.testEnd,
@@ -130,8 +171,14 @@ async function evaluateWindow(
     winRate,
     sharpeRatio,
     maxDrawdownPct: maxDd * 100,
-    avgHoldDays: 5, // placeholder — actual hold days need created_at + sell trade join
+    avgHoldDays: 5, // placeholder
     strategyBreakdown,
+    expectancyPct,
+    avgWinPct,
+    avgLossPct,
+    profitFactor,
+    maxConsecutiveLosses: maxConsecLoss,
+    embargoDays: 20,
   };
 }
 
@@ -202,5 +249,6 @@ export async function getWalkForwardResults(portfolioId: number): Promise<WalkFo
     maxDrawdownPct: Number(r.max_drawdown_pct),
     avgHoldDays: Number(r.avg_hold_days),
     strategyBreakdown: (() => { try { return JSON.parse(String(r.strategy_breakdown ?? '{}')); } catch { return {}; } })(),
+    expectancyPct: 0, avgWinPct: 0, avgLossPct: 0, profitFactor: null, maxConsecutiveLosses: 0, embargoDays: 20,
   }));
 }

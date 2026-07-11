@@ -283,6 +283,43 @@ export async function runMigrations(): Promise<void> {
   // features_json column on signal_patterns
   try { await db.execute('ALTER TABLE signal_patterns ADD COLUMN features_json TEXT'); } catch (_) { /* already exists */ }
   console.log('[DB] Migration: Phase 14 ML model schema done');
+
+  // Phase 15: Candidate recorder schema
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS trade_candidates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      evaluated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      strategy_type TEXT,
+      signal_score REAL,
+      rsi_value REAL,
+      volume_ratio REAL,
+      market_regime TEXT,
+      fundamental_score REAL,
+      atr_pct REAL,
+      dma20_pct REAL,
+      dma50_pct REAL,
+      dist_52w_low_pct REAL,
+      llm_risk_level TEXT,
+      llm_news_event_type TEXT,
+      filters_passed TEXT,
+      filters_blocked TEXT,
+      action_taken TEXT NOT NULL DEFAULT 'EVALUATED',
+      entry_price REAL,
+      stop_price REAL,
+      target_price REAL,
+      target_hit_before_stop INTEGER,
+      max_adverse_excursion_pct REAL,
+      max_favorable_excursion_pct REAL,
+      actual_hold_days INTEGER,
+      cost_adjusted_return_pct REAL,
+      label_generated_at TEXT
+    )`);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_trade_candidates_symbol ON trade_candidates(symbol, evaluated_at)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_trade_candidates_action ON trade_candidates(action_taken, evaluated_at)');
+  } catch (_) { /* already exists */ }
+  console.log('[DB] Migration: Phase 15 candidate recorder schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

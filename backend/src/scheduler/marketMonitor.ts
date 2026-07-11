@@ -12,6 +12,7 @@ import { fetchAnnouncements } from '../services/newsService.js';
 import { evaluateKillSwitch, killSwitchSizeMultiplier } from '../services/killSwitch.js';
 import { registerExitPlan, evaluateExits, updateTrailingStop } from '../services/exitEngine.js';
 import { classifyMarketRegime } from '../services/regimeEngine.js';
+import { recordCandidate } from '../services/candidateRecorder.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -273,13 +274,48 @@ async function runPortfolioTradingCycle(
     const signal = await generateSignal(symbol, riskTolerance, volatilityPref, investmentGoal,
       { totalNAV: refreshed.totalValue, cashBalance: refreshed.cashBalance,
         holdings: refreshed.holdings.length, sectorExposurePct: buySectorPct, proposedPositionPct });
-    if (!signal || signal.action !== 'BUY' || signal.strength === 'WEAK') continue;
+    // Phase 15: Record WEAK / HOLD signals as candidates for ML training
+    if (!signal || signal.action !== 'BUY') {
+      if (signal) {
+        void recordCandidate({
+          portfolioId, symbol,
+          strategyType: signal.strategyType ?? null,
+          signalScore: 0,
+          rsiValue: null, volumeRatio: null,
+          marketRegime: signal.marketRegimeLabel ?? null,
+          fundamentalScore: signal.fundamentalScore ?? null,
+          filtersPassed: [], filtersBlocked: ['score_or_direction'],
+          actionTaken: 'WEAK',
+        }).catch(() => null);
+      }
+      continue;
+    }
+    if (signal.strength === 'WEAK') {
+      void recordCandidate({
+        portfolioId, symbol,
+        strategyType: signal.strategyType ?? null,
+        signalScore: 0,
+        marketRegime: signal.marketRegimeLabel ?? null,
+        fundamentalScore: signal.fundamentalScore ?? null,
+        filtersPassed: [], filtersBlocked: ['weak_score'],
+        actionTaken: 'WEAK',
+      }).catch(() => null);
+      continue;
+    }
 
     // Phase 13: Liquidity gate — avg daily traded value must be ≥ 20× intended trade size
     const allocationCapInr = refreshed.totalValue * maxPosPct;
     const avgDTV = await getAvgDailyTradedValue(symbol).catch(() => null);
     if (avgDTV !== null && avgDTV < allocationCapInr * 20) {
       logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP', reason: `Liquidity gate: avg DTV ₹${(avgDTV/1e7).toFixed(1)}Cr < 20× trade size` });
+      void recordCandidate({
+        portfolioId, symbol,
+        strategyType: signal.strategyType ?? null,
+        signalScore: 0,
+        marketRegime: signal.marketRegimeLabel ?? null,
+        filtersPassed: ['score', 'direction'], filtersBlocked: ['liquidity_gate'],
+        actionTaken: 'SKIPPED',
+      }).catch(() => null);
       continue;
     }
 
@@ -314,6 +350,24 @@ async function runPortfolioTradingCycle(
       // Phase 13: Register exit plan immediately after BUY (ATR stop, trailing stop, time stop)
       const riskAmountInr = refreshed.cashBalance * maxPosPct * 0.005; // 0.5% of NAV
       await registerExitPlan(portfolioId, symbol, signal.price, riskAmountInr).catch(() => null);
+      // Phase 15: Record EXECUTED candidate for ML training
+      const stopPrice  = signal.price * (1 - 0.015 * 1.5);
+      const targetPrice = signal.price * (1 + 0.015 * 3);  // 2R target
+      void recordCandidate({
+        portfolioId, symbol,
+        strategyType: signal.strategyType ?? null,
+        signalScore: 0,
+        marketRegime: signal.marketRegimeLabel ?? null,
+        fundamentalScore: signal.fundamentalScore ?? null,
+        llmRiskLevel: (signal as any).geminiRiskLevel ?? null,
+        llmNewsEventType: (signal as any).geminiNewsEventType ?? null,
+        filtersPassed: ['score', 'liquidity', 'fundamental', 'regime'],
+        filtersBlocked: [],
+        actionTaken: 'EXECUTED',
+        entryPrice: signal.price,
+        stopPrice,
+        targetPrice,
+      }).catch(() => null);
       // Phase 13: Persist strategy type on holding
       if (signal.strategyType) {
         await run('UPDATE holdings SET strategy_type=? WHERE portfolio_id=? AND symbol=?',
@@ -453,6 +507,9 @@ export function startScheduler(): void {
     await resolveSignalOutcomes().catch(console.error);
     // Update sector-level accuracy weights from resolved trade outcomes
     await computeSectorAccuracy().catch(console.error);
+    // Phase 15: Generate target-before-stop labels for closed candidates
+    const { generateLabels } = await import('../services/labelGenerator.js');
+    await generateLabels().catch(console.error);
     // Phase 14: Retrain ML probability model on updated resolved patterns
     const { trainModel } = await import('../services/mlProbabilityModel.js');
     await trainModel().catch(console.error);
