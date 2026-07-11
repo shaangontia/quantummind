@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "npm --prefix backend install && npm --prefix backend run build && npm --prefix frontend install && npm --prefix frontend run build",
+  "buildCommand": "rm -rf frontend/dist backend/dist && npm --prefix backend install && npm --prefix backend run build && npm --prefix frontend install && npm --prefix frontend run build",
   "outputDirectory": "frontend/dist",
   "functions": {
     "api/index.ts": {
