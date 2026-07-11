@@ -11,6 +11,7 @@ import { getLabelSummary } from '../../services/labelGenerator.js';
 import { getModelGovernanceState } from '../../services/modelLifecycle.js';
 import { getStrategyWFResults } from '../../services/strategyWalkForward.js';
 import { classifyMarketRegime } from '../../services/regimeEngine.js';
+import { getKillSwitchStatus } from '../../services/killSwitch.js';
 
 const router = Router();
 
@@ -249,6 +250,14 @@ router.get('/portfolios/:id/strategy-walk-forward', verifyAuth, verifyOwner, asy
   if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
   const results = await getStrategyWFResults(pid).catch(() => []);
   return res.json({ success: true, data: results });
+});
+
+// ─── Phase 17: Kill-switch status ───────────────────────────────────────────
+router.get('/portfolios/:id/kill-switch', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  const pid = parseIntParam(req.params.id);
+  if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+  const status = await getKillSwitchStatus(pid).catch(() => null);
+  return res.json({ success: true, data: status });
 });
 
 // ─── Phase 13: Market regime ──────────────────────────────────────────────────

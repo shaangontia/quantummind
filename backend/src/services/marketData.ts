@@ -1,5 +1,6 @@
 import https from 'https';
 import { memCache } from '../lib/cache.js';
+import { recordApiSuccess, recordApiFailure } from './killSwitch.js';
 
 export interface StockQuote {
   symbol: string;
@@ -208,11 +209,21 @@ const TWELVE_DATA_CACHE_TTL = 270; // 4.5 min — slightly under the 5-min cron 
  */
 export async function warmTwelveDataCache(nseSymbols: string[]): Promise<void> {
   if (!process.env.TWELVE_DATA_API_KEY || nseSymbols.length === 0) return;
-  const batchMap = await batchQuoteTwelveData(nseSymbols);
-  for (const [symbol, quote] of batchMap) {
-    memCache.set(`${TWELVE_DATA_CACHE_PREFIX}${symbol}`, quote, TWELVE_DATA_CACHE_TTL);
+  try {
+    const batchMap = await batchQuoteTwelveData(nseSymbols);
+    for (const [symbol, quote] of batchMap) {
+      memCache.set(`${TWELVE_DATA_CACHE_PREFIX}${symbol}`, quote, TWELVE_DATA_CACHE_TTL);
+    }
+    if (batchMap.size > 0) {
+      recordApiSuccess();  // Phase 17: data freshness signal
+    } else {
+      recordApiFailure();  // Phase 17: empty batch = API issue
+    }
+    console.log(`[MarketData] twelve_data cache warmed: ${batchMap.size}/${nseSymbols.length} symbols`);
+  } catch (err) {
+    recordApiFailure();  // Phase 17: exception = API failure
+    console.warn('[MarketData] warmTwelveDataCache failed:', String(err));
   }
-  console.log(`[MarketData] twelve_data cache warmed: ${batchMap.size}/${nseSymbols.length} symbols`);
 }
 
 async function getQuoteTwelveData(nseSymbol: string): Promise<StockQuote | null> {
@@ -521,17 +532,25 @@ export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]
 
   // Prefer Twelve Data batch (one API call for all symbols — preserves daily quota)
   if (process.env.TWELVE_DATA_API_KEY) {
-    const batchMap = await batchQuoteTwelveData(nseSymbols);
-    if (batchMap.size > 0) {
-      // Fill in any missing symbols via individual fallback calls
-      const missing = nseSymbols.filter(s => !batchMap.has(s));
-      if (missing.length > 0) {
-        const fallbacks = await Promise.allSettled(missing.map(getQuote));
-        for (const r of fallbacks) {
-          if (r.status === 'fulfilled') batchMap.set(r.value.symbol, r.value);
+    try {
+      const batchMap = await batchQuoteTwelveData(nseSymbols);
+      if (batchMap.size > 0) {
+        recordApiSuccess();  // Phase 17: successful price fetch
+        // Fill in any missing symbols via individual fallback calls
+        const missing = nseSymbols.filter(s => !batchMap.has(s));
+        if (missing.length > 0) {
+          const fallbacks = await Promise.allSettled(missing.map(getQuote));
+          for (const r of fallbacks) {
+            if (r.status === 'fulfilled') batchMap.set(r.value.symbol, r.value);
+          }
         }
+        return nseSymbols.map(s => batchMap.get(s)).filter(Boolean) as StockQuote[];
+      } else {
+        recordApiFailure();  // Phase 17: empty batch
       }
-      return nseSymbols.map(s => batchMap.get(s)).filter(Boolean) as StockQuote[];
+    } catch (err) {
+      recordApiFailure();  // Phase 17: exception
+      console.warn('[MarketData] getMultipleQuotes twelve_data error:', String(err));
     }
   }
 
@@ -542,6 +561,9 @@ export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]
     if (r.status === 'fulfilled') quotes.push(r.value);
     else console.warn('[MarketData] getMultipleQuotes error:', r.reason);
   }
+  // Record success/failure based on yahoo fallback results too
+  if (quotes.length > 0) recordApiSuccess();
+  else recordApiFailure();
   return quotes;
 }
 

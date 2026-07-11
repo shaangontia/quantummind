@@ -390,6 +390,23 @@ export async function runMigrations(): Promise<void> {
     )`);
   } catch (_) { /* exists */ }
   console.log('[DB] Migration: Phase 16 strategy WF + calibration schema done');
+
+  // Phase 17: Autonomous Risk Closure — kill-switch extensions
+  // Consecutive-loss cooldown fields
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN consecutive_losses INTEGER DEFAULT 0"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN cooldown_until TEXT"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN cooldown_active INTEGER DEFAULT 0"); } catch (_) { /* exists */ }
+  // Data staleness fields
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN last_fresh_price_at TEXT"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN data_stale_halted INTEGER DEFAULT 0"); } catch (_) { /* exists */ }
+  // Circuit breaker (broker/API failure)
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN api_failure_count INTEGER DEFAULT 0"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN circuit_breaker_active INTEGER DEFAULT 0"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN circuit_breaker_since TEXT"); } catch (_) { /* exists */ }
+  // Emergency liquidation tracking
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN emergency_liquidation_triggered INTEGER DEFAULT 0"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE kill_switch_state ADD COLUMN last_cleared_at TEXT"); } catch (_) { /* exists */ }
+  console.log('[DB] Migration: Phase 17 autonomous risk closure schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

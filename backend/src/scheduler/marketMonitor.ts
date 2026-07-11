@@ -9,7 +9,7 @@ import { resolveSignalOutcomes, computeSectorAccuracy } from '../services/adapti
 import { geminiCycleFocus, geminiPortfolioInsight, geminiSellReview } from '../services/geminiService.js';
 import { recordSignalPattern, resolvePatternOutcome } from '../services/patternEngine.js';
 import { fetchAnnouncements } from '../services/newsService.js';
-import { evaluateKillSwitch, killSwitchSizeMultiplier } from '../services/killSwitch.js';
+import { evaluateKillSwitch, killSwitchSizeMultiplier, circuitBreakerBlocksSell, executeEmergencyLiquidation, recordTradeOutcome } from '../services/killSwitch.js';
 import { registerExitPlan, evaluateExits, updateTrailingStop } from '../services/exitEngine.js';
 import { classifyMarketRegime } from '../services/regimeEngine.js';
 import { recordCandidate } from '../services/candidateRecorder.js';
@@ -88,6 +88,9 @@ async function runPortfolioTradingCycle(
     targetReturnPct: summary.targetReturnPct,
     portfolioId,  // enables BUY veto recording in generateSignal for Gemini learning
   };
+
+  // Phase 17: evaluate kill-switch state once before sell scan (for circuit-breaker check)
+  const ksStateForSell = await evaluateKillSwitch(portfolioId).catch(() => null);
 
   let sellSignalCount = 0;
   // Sell scan
@@ -201,6 +204,15 @@ async function runPortfolioTradingCycle(
     logger.signal(portfolioId, h.symbol, signal.action, signal.strength, signal.reason, signal.price);
 
     if (shouldSell) {
+      // Phase 17: Circuit breaker blocks non-hard-stop SELLs (only ATR/hard stop-loss allowed)
+      const isCbActive = circuitBreakerBlocksSell(ksStateForSell ?? { circuitBreakerActive: false } as any);
+      const isHardStop = reason.includes('Stop-loss') || reason.includes('ATR stop hit') || reason.includes('Trailing stop hit');
+      if (isCbActive && !isHardStop) {
+        logger.warn({ job: 'market-cycle', portfolioId, symbol: h.symbol, phase: 'execution', action: 'SKIP',
+          reason: 'Circuit breaker active — only hard stop-loss SELLs allowed' });
+        continue;
+      }
+
       sellSignalCount++;
       await run('INSERT INTO market_signals (portfolio_id,symbol,signal_type,strength,reason,price_at_signal,acted_upon) VALUES (?,?,?,?,?,?,1)',
         [portfolioId, h.symbol, 'SELL', signal.strength, reason, signal.price]);
@@ -212,6 +224,8 @@ async function runPortfolioTradingCycle(
       // Resolve pattern outcome: mark the corresponding BUY pattern WIN/LOSS
       const sellPnlPct = ((signal.price - h.avgBuyPrice) / h.avgBuyPrice) * 100;
       void resolvePatternOutcome(portfolioId, h.symbol, sellPnlPct).catch(() => null);
+      // Phase 17: Consecutive-loss tracking
+      void recordTradeOutcome(portfolioId, sellPnlPct < 0).catch(() => null);
     }
   }
 
@@ -221,9 +235,30 @@ async function runPortfolioTradingCycle(
   let tradeCount = 0, signalCount = sellSignalCount;
   if (refreshed.cashBalance < 10000) return { trades: tradeCount, signals: signalCount };
 
-  // Phase 13: Kill-switch check before any BUY activity
-  const ksState = await evaluateKillSwitch(portfolioId).catch(() => ({ dailyLossHalted: false, weeklyLossHalted: false, drawdownPaused: false, drawdownProtection: false }));
+  // Phase 13 + 17: Kill-switch check before any BUY activity
+  // Re-use ksStateForSell if already evaluated (avoid double-evaluation)
+  const ksState = ksStateForSell ?? await evaluateKillSwitch(portfolioId).catch(() => ({ dailyLossHalted: false, weeklyLossHalted: false, drawdownPaused: false, drawdownProtection: false, consecutiveLossCooldown: false, consecutiveLosses: 0, cooldownUntil: null, dataStaleHalted: false, dataStalenessMinutes: 0, circuitBreakerActive: false, circuitBreakerSince: null, apiFailureCount: 0, emergencyLiquidationTriggered: false, lastClearedAt: null }));
   const ksMult = killSwitchSizeMultiplier(ksState);
+
+  // Phase 17: Emergency liquidation — fire when drawdownProtection is active and market is open
+  if ((ksState as any).drawdownProtection && marketOpen && !ksState.emergencyLiquidationTriggered) {
+    const holdingsForLiquidation = refreshed.holdings.map(h => ({
+      symbol: h.symbol,
+      companyName: h.companyName ?? h.symbol,
+      quantity: h.quantity,
+      avgBuyPrice: h.avgBuyPrice,
+      currentPrice: h.currentPrice,
+    }));
+    const closed = await executeEmergencyLiquidation(
+      portfolioId, holdingsForLiquidation,
+      (pid, sym, co, action, qty, price, rsn) => executeTrade(pid, sym, co, action, qty, price, rsn),
+    ).catch(() => []);
+    if (closed.length > 0) {
+      logger.warn({ job: 'market-cycle', portfolioId, phase: 'execution',
+        closed, reason: 'Drawdown >12% — weakest positions closed' });
+    }
+  }
+
   if (ksMult === 0) {
     logger.info({ job: 'market-cycle', portfolioId, phase: 'execution', action: 'SKIP', reason: 'Kill-switch active: no new BUYs this cycle' });
     return { trades: tradeCount, signals: signalCount };
