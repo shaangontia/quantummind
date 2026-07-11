@@ -453,6 +453,15 @@ export function startScheduler(): void {
     await resolveSignalOutcomes().catch(console.error);
     // Update sector-level accuracy weights from resolved trade outcomes
     await computeSectorAccuracy().catch(console.error);
+    // Phase 14: Retrain ML probability model on updated resolved patterns
+    const { trainModel } = await import('../services/mlProbabilityModel.js');
+    await trainModel().catch(console.error);
+    // Phase 14: Run walk-forward validation for each active portfolio
+    const { runWalkForward } = await import('../services/walkForwardEngine.js');
+    const wfPortfolios = await query('SELECT id FROM portfolios WHERE is_active=1').catch(() => []);
+    for (const p of wfPortfolios) {
+      await runWalkForward(Number(p.id)).catch(console.error);
+    }
     // Gemini portfolio health check for each active portfolio (best-effort, stored in RAG)
     try {
       const portfolios = await query('SELECT * FROM portfolios WHERE is_active = 1');

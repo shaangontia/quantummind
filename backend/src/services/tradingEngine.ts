@@ -16,6 +16,7 @@ import { getSignalWeights, getCurrentRegime, recordSignalForTracking, resolveGem
 import { geminiTradeVeto, geminiFundamentalAnalysis } from './geminiService.js';
 import { getFundamentalSnapshot, computeFundamentalVerdict } from './fundamentalService.js';
 import { getAdaptiveRSIBuy, getPatternConfidence, computeExpectedValue } from './patternEngine.js';
+import { getWinProbability } from './mlProbabilityModel.js';
 import { classifyStrategy, isStrategyAllowed } from './strategyClassifier.js';
 import { classifyMarketRegime } from './regimeEngine.js';
 
@@ -31,6 +32,7 @@ export interface TradeSignal {
   fundamentalReasoning?: string;
   strategyType?: string;
   marketRegimeLabel?: string;
+  mlWinProbability?: number;
 }
 
 export interface HoldingSummary {
@@ -465,11 +467,28 @@ export async function generateSignal(
     }
 
     // Phase 13: Expected Value gate — block BUY when EV < 1% after costs (requires 15+ resolved trades)
+    // Phase 14: ML Win Probability gate — block BUY when P(win) < 52% and model is trained
     if (topAction === 'BUY') {
-      const evResult = await computeExpectedValue(symbol, strategyResult.type).catch(() => null);
+      const [evResult, winProb] = await Promise.all([
+        computeExpectedValue(symbol, strategyResult.type).catch(() => null),
+        getWinProbability({
+          rsiValue: rsiVal,
+          volumeRatio: q.volumeRatio,
+          marketRegime: marketRegime?.label ?? null,
+          strategyType: strategyResult.type,
+          fundamentalScore: fundamentalScore,
+        }).catch(() => null),
+      ]);
+
       if (evResult?.sufficient && !evResult.meetsThreshold) {
         return { symbol, action: 'HOLD', strength: 'WEAK',
           reason: `EV gate: expected value ${evResult.ev.toFixed(2)}% below 1% threshold (${evResult.sampleCount} trades: P(win)=${(evResult.pWin*100).toFixed(0)}%, avgWin=${evResult.avgWinPct.toFixed(1)}%, avgLoss=${evResult.avgLossPct.toFixed(1)}%)`,
+          price: q.price };
+      }
+
+      if (winProb?.modelAvailable && !winProb.meetsThreshold) {
+        return { symbol, action: 'HOLD', strength: 'WEAK',
+          reason: `ML gate: P(win)=${(winProb.pWin*100).toFixed(1)}% < 52% threshold (${winProb.sampleCount} training samples)`,
           price: q.price };
       }
     }

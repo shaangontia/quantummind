@@ -6,6 +6,8 @@ import { executeTrade } from '../../services/tradingEngine.js';
 import { cache, TTL } from '../../lib/cache.js';
 import { parseIntParam, portfolioCreateSchema, portfolioPatchSchema } from './helpers.js';
 import { deriveRiskLevel } from '../../services/riskClassifier.js';
+import { getWalkForwardResults, runWalkForward } from '../../services/walkForwardEngine.js';
+import { classifyMarketRegime } from '../../services/regimeEngine.js';
 
 const router = Router();
 
@@ -214,6 +216,20 @@ router.get('/risk/classify', (req: Request, res: Response) => {
   const volatilityPreference    = req.query.volatilityPreference    ? String(req.query.volatilityPreference)    : undefined;
   const result = deriveRiskLevel({ targetReturnPct, investmentHorizonMonths, maxDrawdownPct, volatilityPreference });
   res.json({ success: true, data: result });
+});
+
+// ─── Phase 14: Walk-forward results ──────────────────────────────────────────
+router.get('/portfolios/:id/walk-forward', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  const pid = parseIntParam(req.params.id);
+  if (pid === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+  const results = await getWalkForwardResults(pid).catch(() => []);
+  return res.json({ success: true, data: results });
+});
+
+// ─── Phase 13: Market regime ──────────────────────────────────────────────────
+router.get('/market-regime', async (_req: Request, res: Response) => {
+  const regime = await classifyMarketRegime().catch(() => null);
+  return res.json({ success: true, data: regime ?? { label: 'NEUTRAL', niftyVs50Dma: 'unavailable', niftyVs200Dma: 'unavailable' } });
 });
 
 export default router;

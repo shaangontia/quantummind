@@ -247,6 +247,42 @@ export async function runMigrations(): Promise<void> {
   // Phase 13: EV tracking on signal_patterns
   try { await db.execute('ALTER TABLE signal_patterns ADD COLUMN expected_value REAL'); } catch (_) { /* already exists */ }
   console.log('[DB] Migration: Phase 13 exit engine + kill-switch schema done');
+
+  // Phase 14: ML probability model schema
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS ml_model_weights (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model_name TEXT NOT NULL,
+      trained_at TEXT NOT NULL DEFAULT (datetime('now')),
+      sample_count INTEGER NOT NULL,
+      feature_names TEXT NOT NULL,
+      weights TEXT NOT NULL,
+      bias REAL NOT NULL DEFAULT 0,
+      accuracy REAL,
+      precision_score REAL,
+      recall_score REAL
+    )`);
+  } catch (_) { /* already exists */ }
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS walk_forward_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id INTEGER,
+      train_start TEXT NOT NULL,
+      train_end TEXT NOT NULL,
+      test_start TEXT NOT NULL,
+      test_end TEXT NOT NULL,
+      total_trades INTEGER DEFAULT 0,
+      win_rate REAL,
+      sharpe_ratio REAL,
+      max_drawdown_pct REAL,
+      avg_hold_days REAL,
+      strategy_breakdown TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+  } catch (_) { /* already exists */ }
+  // features_json column on signal_patterns
+  try { await db.execute('ALTER TABLE signal_patterns ADD COLUMN features_json TEXT'); } catch (_) { /* already exists */ }
+  console.log('[DB] Migration: Phase 14 ML model schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {
