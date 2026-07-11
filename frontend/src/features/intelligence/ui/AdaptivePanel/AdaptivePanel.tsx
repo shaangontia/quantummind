@@ -313,67 +313,103 @@ export const AdaptivePanel = ({ portfolioId }: AdaptivePanelProps) => {
               </Box>
             ))}
           </Box>
-          {(auditReport.killSwitchEvents ?? []).length > 0 && (
-            <Box mt={1} display="flex" gap={0.5} flexWrap="wrap">
-              {(auditReport.killSwitchEvents ?? []).map(evt => (
-                <Box key={evt} sx={{ px: 0.75, py: 0.2, borderRadius: 0.5, bgcolor: 'rgba(239,68,68,0.08)',
-                  border: '1px solid rgba(239,68,68,0.25)', fontSize: '0.65rem', color: '#f87171' }}>
-                  {evt}
-                </Box>
-              ))}
-            </Box>
-          )}
+          {(() => {
+            const ksEvts = auditReport.killSwitchEvents ?? {};
+            const activeEvts = [
+              ksEvts.dailyHalt            && 'Daily loss halt',
+              ksEvts.weeklyHalt           && 'Weekly loss halt',
+              ksEvts.drawdownPause        && 'Drawdown pause',
+              ksEvts.drawdownProtection   && 'Drawdown protection',
+              ksEvts.consecutiveLossCooldown && 'Consecutive loss cooldown',
+              ksEvts.dataStaleHalt        && 'Data stale halt',
+              ksEvts.circuitBreaker       && 'Circuit breaker',
+            ].filter(Boolean) as string[];
+            return activeEvts.length > 0 ? (
+              <Box mt={1} display="flex" gap={0.5} flexWrap="wrap">
+                {activeEvts.map(evt => (
+                  <Box key={evt} sx={{ px: 0.75, py: 0.2, borderRadius: 0.5, bgcolor: 'rgba(239,68,68,0.08)',
+                    border: '1px solid rgba(239,68,68,0.25)', fontSize: '0.65rem', color: '#f87171' }}>
+                    {evt}
+                  </Box>
+                ))}
+              </Box>
+            ) : null;
+          })()}
         </Grid>
       )}
 
       {/* Live vs Backtest Drift — Phase 18 */}
-      {portfolioId != null && driftReport && driftReport.metrics.length > 0 && (
+      {portfolioId != null && driftReport && (
         <Grid item xs={12}>
           <Divider sx={{ mb: 2 }} />
           <Box display="flex" alignItems="center" gap={1.5} mb={1.5}>
             <Typography variant="subtitle2" fontWeight={700}>Live vs Backtest Drift</Typography>
-            {driftReport.hasDrift && (
+            {driftReport.drift.isSignificant && (
               <Box sx={{ px: 0.75, py: 0.2, borderRadius: 0.5, bgcolor: 'rgba(245,158,11,0.1)',
                 border: '1px solid rgba(245,158,11,0.35)', fontSize: '0.65rem', color: '#f59e0b', fontWeight: 700 }}>
                 ⚠ Drift detected
               </Box>
             )}
-            <Typography variant="caption" color="text.secondary">
-              {driftReport.windowMonths}m live vs most recent WF window
-            </Typography>
+            <Typography variant="caption" color="text.secondary">3m live vs most recent WF window</Typography>
           </Box>
-          <Box sx={{ overflowX: 'auto' }}>
-            <Box display="flex" gap={1.5} flexWrap="wrap" mb={(driftReport.driftFlags ?? []).length > 0 ? 1 : 0}>
-              {(driftReport.metrics ?? []).map(m => (
-                <Box key={m.metric} p={1} sx={{
-                  minWidth: 120, borderRadius: 1, border: '1px solid',
-                  borderColor: m.flagged ? 'rgba(245,158,11,0.4)' : 'divider',
-                  bgcolor: m.flagged ? 'rgba(245,158,11,0.05)' : 'rgba(255,255,255,0.02)',
-                }}>
-                  <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>{m.metric}</Typography>
-                  <Box display="flex" gap={1.5} alignItems="baseline">
-                    <Tooltip title="Backtest">
-                      <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.72rem' }}>
-                        BT {m.backtest.toFixed(2)}
-                      </Typography>
-                    </Tooltip>
-                    <Tooltip title="Live">
-                      <Typography variant="body2" fontWeight={700} sx={{ fontSize: '0.72rem',
-                        color: m.flagged ? '#f59e0b' : m.delta >= 0 ? '#10b981' : '#ef4444' }}>
-                        Live {m.live.toFixed(2)}
-                      </Typography>
-                    </Tooltip>
-                  </Box>
-                  <Typography variant="caption" sx={{ color: m.flagged ? '#f59e0b' : m.delta >= 0 ? '#10b981' : '#ef4444', fontSize: '0.65rem' }}>
-                    {m.delta >= 0 ? '+' : ''}{m.delta.toFixed(2)} {m.flagged ? '⚠' : ''}
-                  </Typography>
-                </Box>
-              ))}
-            </Box>
-            {(driftReport.driftFlags ?? []).map(flag => (
-              <Typography key={flag} variant="caption" color="warning.light" display="block" mt={0.25}>• {flag}</Typography>
-            ))}
-          </Box>
+          {/* Live vs Backtest metric cards */}
+          {(() => {
+            const lv = driftReport.live;
+            const bt = driftReport.backtest;
+            const dr = driftReport.drift;
+            const metricRows = [
+              { key: 'Win rate', live: lv.winRate, bt: bt.winRate, delta: dr.winRateDrift, fmt: (v: number) => `${v.toFixed(1)}%` },
+              { key: 'Expectancy', live: lv.expectancyPct, bt: bt.expectancyPct, delta: dr.expectancyDrift, fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` },
+              { key: 'Profit factor', live: lv.profitFactor, bt: bt.profitFactor, delta: dr.profitFactorDrift, fmt: (v: number) => v.toFixed(2) },
+            ].filter(r => r.live != null || r.bt != null);
+            return metricRows.length === 0 ? (
+              <Typography variant="caption" color="text.secondary">⏳ Drift metrics appear once ≥5 resolved live trades exist</Typography>
+            ) : (
+              <Box display="flex" gap={1.5} flexWrap="wrap" mb={(dr.driftFlags ?? []).length > 0 ? 1 : 0}>
+                {metricRows.map(m => {
+                  const flagged = m.delta != null && Math.abs(m.delta) > 15;
+                  return (
+                    <Box key={m.key} p={1} sx={{
+                      minWidth: 130, borderRadius: 1, border: '1px solid',
+                      borderColor: flagged ? 'rgba(245,158,11,0.4)' : 'divider',
+                      bgcolor: flagged ? 'rgba(245,158,11,0.05)' : 'rgba(255,255,255,0.02)',
+                    }}>
+                      <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>{m.key}</Typography>
+                      <Box display="flex" gap={1.5} alignItems="baseline">
+                        {m.bt != null && (
+                          <Tooltip title="Backtest">
+                            <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.72rem' }}>
+                              BT {m.fmt(m.bt)}
+                            </Typography>
+                          </Tooltip>
+                        )}
+                        {m.live != null && (
+                          <Tooltip title="Live (3m)">
+                            <Typography variant="body2" fontWeight={700} sx={{ fontSize: '0.72rem',
+                              color: flagged ? '#f59e0b' : (m.delta ?? 0) >= 0 ? '#10b981' : '#ef4444' }}>
+                              Live {m.fmt(m.live)}
+                            </Typography>
+                          </Tooltip>
+                        )}
+                      </Box>
+                      {m.delta != null && (
+                        <Typography variant="caption" sx={{ color: flagged ? '#f59e0b' : m.delta >= 0 ? '#10b981' : '#ef4444', fontSize: '0.65rem' }}>
+                          {m.delta >= 0 ? '+' : ''}{m.delta.toFixed(2)} {flagged ? '⚠' : ''}
+                        </Typography>
+                      )}
+                    </Box>
+                  );
+                })}
+              </Box>
+            );
+          })()}
+          {(driftReport.drift.driftFlags ?? []).map(flag => (
+            <Typography key={flag} variant="caption" color="warning.light" display="block" mt={0.25}>• {flag}</Typography>
+          ))}
+          <Typography variant="caption" color="text.disabled" display="block" mt={0.5}>
+            Live trades: {driftReport.live.resolvedTrades}
+            {driftReport.backtest.windowStart && ` · Backtest: ${new Date(driftReport.backtest.windowStart).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' })} – ${new Date(driftReport.backtest.windowEnd!).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' })}`}
+          </Typography>
         </Grid>
       )}
     </Grid>

@@ -128,29 +128,53 @@ export interface PortfolioMode {
 
 export interface AuditReport {
   date: string;
+  portfolioId: number;
   trades: { buys: number; sells: number; dedupBlocked: number; emergencyLiquidations: number; };
   signals: { evaluated: number; skipped: number; vetoed: number; };
-  exits: { stopLoss: number; trailing: number; time: number; target: number; thesis: number; regime: number; };
-  killSwitchEvents: string[];
+  exits: { stopLoss: number; trailingStop: number; timeStop: number; profitTarget: number; thesisInvalidated: number; regimeExit: number; };
+  killSwitchEvents: {
+    dailyHalt: boolean;
+    weeklyHalt: boolean;
+    drawdownPause: boolean;
+    drawdownProtection: boolean;
+    consecutiveLossCooldown: boolean;
+    dataStaleHalt: boolean;
+    circuitBreaker: boolean;
+  };
   openPositions: number;
   missingExitPlans: number;
+  cashBalance?: number;
+  totalNAV?: number;
   dailyPnlPct: number | null;
 }
 
-export interface DriftWindow {
-  metric: string;
-  backtest: number;
-  live: number;
-  delta: number;
-  flagged: boolean;
+export interface DriftLive {
+  resolvedTrades: number;
+  winRate: number | null;
+  expectancyPct: number | null;
+  profitFactor: number | null;
+}
+
+export interface DriftBacktest {
+  windowStart: string | null;
+  windowEnd: string | null;
+  winRate: number | null;
+  expectancyPct: number | null;
+  profitFactor: number | null;
 }
 
 export interface DriftReport {
   portfolioId: number;
-  windowMonths: number;
-  driftFlags: string[];
-  metrics: DriftWindow[];
-  hasDrift: boolean;
+  period: { start: string; end: string };
+  live: DriftLive;
+  backtest: DriftBacktest;
+  drift: {
+    winRateDrift: number | null;
+    expectancyDrift: number | null;
+    profitFactorDrift: number | null;
+    isSignificant: boolean;
+    driftFlags: string[];
+  };
 }
 
 // ─── Walk-Forward Types ─────────────────────────────────────────
