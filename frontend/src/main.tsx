@@ -8,6 +8,7 @@ import CssBaseline from '@mui/material/CssBaseline';
 import { store } from './store/store.ts';
 import { router } from './router.tsx';
 import { theme } from './styles/theme.ts';
+import './styles/global.css'; // CSS custom properties used by legacy sx fallbacks
 
 const queryClient = new QueryClient({
   defaultOptions: {

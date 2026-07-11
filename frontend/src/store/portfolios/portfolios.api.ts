@@ -84,6 +84,33 @@ export interface StrategyWalkForwardWindow {
   consecutiveNegativeWindows: number;
 }
 
+// ─── Kill-Switch Types (Phase 17) ─────────────────────────────────────────────
+
+export interface KillSwitchFlags {
+  dailyLossHalted: boolean;
+  weeklyLossHalted: boolean;
+  drawdownPaused: boolean;
+  drawdownProtection: boolean;
+  consecutiveLossCooldown: boolean;
+  consecutiveLosses: number;
+  cooldownUntil: string | null;
+  dataStaleHalted: boolean;
+  dataStalenessMinutes: number;
+  circuitBreakerActive: boolean;
+  circuitBreakerSince: string | null;
+  apiFailureCount: number;
+  emergencyLiquidationTriggered: boolean;
+  lastClearedAt: string | null;
+}
+
+export interface KillSwitchStatus {
+  portfolioId: number;
+  flags: KillSwitchFlags;
+  anyHalted: boolean;
+  reason: string;
+  lastUpdated: string;
+}
+
 // ─── Walk-Forward Types ─────────────────────────────────────────
 
 export interface StrategyBreakdown {
@@ -280,6 +307,12 @@ export const portfoliosApi = baseApi.injectEndpoints({
       query: id => ({ url: `/portfolios/${id}/strategy-walk-forward`, method: 'GET' }),
     }),
 
+    getKillSwitch: builder.query<KillSwitchStatus, number>({
+      query: id => ({ url: `/portfolios/${id}/kill-switch`, method: 'GET' }),
+      // Poll every 60s during market hours to catch live flag changes
+      keepUnusedDataFor: 60,
+    }),
+
   }),
   overrideExisting: false,
 });
@@ -301,4 +334,5 @@ export const {
   useGetExpectancyReportQuery,
   useGetModelGovernanceQuery,
   useGetStrategyWalkForwardQuery,
+  useGetKillSwitchQuery,
 } = portfoliosApi;
