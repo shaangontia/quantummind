@@ -9,6 +9,9 @@ import { resolveSignalOutcomes } from '../services/adaptiveEngine.js';
 import { geminiCycleFocus, geminiPortfolioInsight, geminiSellReview } from '../services/geminiService.js';
 import { recordSignalPattern, resolvePatternOutcome } from '../services/patternEngine.js';
 import { fetchAnnouncements } from '../services/newsService.js';
+import { evaluateKillSwitch, killSwitchSizeMultiplier } from '../services/killSwitch.js';
+import { registerExitPlan, evaluateExits, updateTrailingStop } from '../services/exitEngine.js';
+import { classifyMarketRegime } from '../services/regimeEngine.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -99,6 +102,29 @@ async function runPortfolioTradingCycle(
     if (!signal || signal.price <= 0) continue;
     const lossRatio = (signal.price - h.avgBuyPrice) / h.avgBuyPrice;
     let shouldSell = false, reason = signal.reason;
+
+    // Phase 13: Update trailing stop as price rises (before exit evaluation)
+    const marketRegimeForExit = await classifyMarketRegime().catch(() => null);
+    await updateTrailingStop(portfolioId, h.symbol, signal.price).catch(() => null);
+
+    // Phase 13: Exit engine — check all 6 exit types
+    const exitDecision = evaluateExits(
+      {
+        portfolioId, symbol: h.symbol, companyName: h.companyName ?? h.symbol,
+        quantity: h.quantity, avgBuyPrice: h.avgBuyPrice, currentPrice: signal.price,
+        createdAt: h.createdAt ?? new Date().toISOString(),
+        atrStopPrice: (h as any).atrStopPrice ?? null,
+        trailingStopPrice: (h as any).trailingStopPrice ?? null,
+        timeStopDate: (h as any).timeStopDate ?? null,
+        riskAmountInr: (h as any).riskAmountInr ?? null,
+        thesisInvalidated: (h as any).thesisInvalidated ?? 0,
+      },
+      marketRegimeForExit?.label ?? 'NEUTRAL',
+    );
+    if (exitDecision.shouldExit && exitDecision.exitType !== null) {
+      shouldSell = true;
+      reason = exitDecision.reason;
+    }
 
     const isStopLoss = lossRatio < -stopLoss;
 
@@ -193,7 +219,15 @@ async function runPortfolioTradingCycle(
   let tradeCount = 0, signalCount = sellSignalCount;
   if (refreshed.cashBalance < 10000) return { trades: tradeCount, signals: signalCount };
 
-  const maxPosPct = riskTolerance === 'High' ? 0.08 : riskTolerance === 'Low' ? 0.03 : 0.05;
+  // Phase 13: Kill-switch check before any BUY activity
+  const ksState = await evaluateKillSwitch(portfolioId).catch(() => ({ dailyLossHalted: false, weeklyLossHalted: false, drawdownPaused: false, drawdownProtection: false }));
+  const ksMult = killSwitchSizeMultiplier(ksState);
+  if (ksMult === 0) {
+    logger.info({ job: 'market-cycle', portfolioId, phase: 'execution', action: 'SKIP', reason: 'Kill-switch active: no new BUYs this cycle' });
+    return { trades: tradeCount, signals: signalCount };
+  }
+
+  const maxPosPct = (riskTolerance === 'High' ? 0.08 : riskTolerance === 'Low' ? 0.03 : 0.05) * ksMult;
   // Dynamic open-market universe: full NSE equity list (fetched from NSE, cached 24h)
   // Rotating 50-stock sample per cycle. Falls back to static ~150 list if NSE blocks.
   const cycleSlot = Math.floor(Date.now() / (5 * 60 * 1000)); // bucket changes every 5 min
@@ -262,6 +296,14 @@ async function runPortfolioTradingCycle(
     if (tradeId && sigRes.lastInsertRowid) {
       await run('UPDATE market_signals SET acted_upon=1, trade_id=? WHERE id=?', [tradeId, sigRes.lastInsertRowid]);
       tradeCount++;
+      // Phase 13: Register exit plan immediately after BUY (ATR stop, trailing stop, time stop)
+      const riskAmountInr = refreshed.cashBalance * maxPosPct * 0.005; // 0.5% of NAV
+      await registerExitPlan(portfolioId, symbol, signal.price, riskAmountInr).catch(() => null);
+      // Phase 13: Persist strategy type on holding
+      if (signal.strategyType) {
+        await run('UPDATE holdings SET strategy_type=? WHERE portfolio_id=? AND symbol=?',
+          [signal.strategyType, portfolioId, symbol]).catch(() => null);
+      }
       // Record BUY pattern for learning
       const regime2 = await import('../services/adaptiveEngine.js').then(m => m.getCurrentRegime()).catch(() => null);
       void recordSignalPattern({
@@ -270,7 +312,7 @@ async function runPortfolioTradingCycle(
         momentumTrend: signal.reason?.includes('bullish') ? 'bullish' : signal.reason?.includes('bearish') ? 'bearish' : 'neutral',
         groqSentiment: signal.groqSentiment ?? 'NEUTRAL',
         fundamentalScore: signal.fundamentalScore ?? 50,
-        marketRegime: regime2?.regime ?? 'SIDEWAYS',
+        marketRegime: regime2?.regime ?? signal.marketRegimeLabel ?? 'SIDEWAYS',
         sector: symbol.replace('.NS', ''),
         voteScore: 0,
         tradeId: Number(tradeId),

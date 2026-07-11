@@ -218,6 +218,35 @@ export async function runMigrations(): Promise<void> {
   const { ensurePatternTables } = await import('../services/patternEngine.js');
   await ensurePatternTables();
   console.log('[DB] Migration: signal_patterns tables ensured');
+
+  // Phase 13: Exit engine + strategy classification columns on holdings
+  const holdingsCols = [
+    "ALTER TABLE holdings ADD COLUMN strategy_type TEXT",
+    "ALTER TABLE holdings ADD COLUMN atr_stop_price REAL",
+    "ALTER TABLE holdings ADD COLUMN trailing_stop_price REAL",
+    "ALTER TABLE holdings ADD COLUMN time_stop_date TEXT",
+    "ALTER TABLE holdings ADD COLUMN risk_amount_inr REAL",
+    "ALTER TABLE holdings ADD COLUMN thesis_invalidated INTEGER DEFAULT 0",
+  ];
+  for (const col of holdingsCols) {
+    try { await db.execute(col); } catch (_) { /* already exists */ }
+  }
+  // Phase 13: Kill-switch state table
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS kill_switch_state (
+      portfolio_id INTEGER PRIMARY KEY,
+      daily_loss_halted INTEGER DEFAULT 0,
+      weekly_loss_halted INTEGER DEFAULT 0,
+      drawdown_paused INTEGER DEFAULT 0,
+      drawdown_protection INTEGER DEFAULT 0,
+      last_updated TEXT DEFAULT (datetime('now'))
+    )`);
+  } catch (_) { /* already exists */ }
+  // Phase 13: strategy_type on market_signals
+  try { await db.execute('ALTER TABLE market_signals ADD COLUMN strategy_type TEXT'); } catch (_) { /* already exists */ }
+  // Phase 13: EV tracking on signal_patterns
+  try { await db.execute('ALTER TABLE signal_patterns ADD COLUMN expected_value REAL'); } catch (_) { /* already exists */ }
+  console.log('[DB] Migration: Phase 13 exit engine + kill-switch schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

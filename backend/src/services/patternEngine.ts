@@ -196,33 +196,40 @@ export async function getPatternInsight(symbol: string): Promise<PatternInsight 
 
 /**
  * Return learned optimal RSI buy threshold for a symbol.
- * Falls back to the regime default when fewer than 5 resolved trades exist.
- *
- * Logic: use the average RSI at winning BUY entries, clamped to [25, 50].
- * This means: if the model consistently wins when buying symbol X at RSI=32,
- * it lowers the threshold from the generic 35 to 32 for this symbol.
+ * Phase 13: Conservative learning — requires 10+ resolved trades before any blending.
+ * Blending weights scale with sample size to prevent overfitting:
+ *   < 10 trades  → 0% learned (use regime default)
+ *   10–29 trades → 25% learned, 75% default
+ *   30–99 trades → 50% learned, 50% default
+ *   100+ trades  → 70% learned, 30% default
  */
 export async function getAdaptiveRSIBuy(
   symbol: string,
   regimeDefault: number,
 ): Promise<number> {
   const insight = await getPatternInsight(symbol);
-  if (!insight || insight.sampleCount < 5) return regimeDefault;
+  if (!insight || insight.sampleCount < 10) return regimeDefault;
 
-  // Blend: 70% learned, 30% regime default (prevents overfitting on small samples)
-  const blended = insight.avgRsiBuy * 0.7 + regimeDefault * 0.3;
+  // Conservative shrinkage: weight scales with sample size
+  let learnedWeight: number;
+  if (insight.sampleCount < 30)  learnedWeight = 0.25;
+  else if (insight.sampleCount < 100) learnedWeight = 0.50;
+  else                            learnedWeight = 0.70;
+
+  const blended = insight.avgRsiBuy * learnedWeight + regimeDefault * (1 - learnedWeight);
   return Math.max(25, Math.min(50, blended));
 }
 
 // ─── Confidence boost ──────────────────────────────────────────────────────────
 
 /**
- * Given the current signal context, return a confidence multiplier (0.8–1.4).
+ * Given the current signal context, return a confidence multiplier (0.9–1.15).
+ * Phase 13: Tighter range — prevents weak signals being inflated to strong.
  * Compares current conditions against historical winning patterns for this symbol.
  *
  * 1.0 = neutral (no pattern data or ambiguous)
- * 1.2–1.4 = current conditions match winning patterns → boost signal
- * 0.8–0.9 = current conditions match losing patterns → penalise signal
+ * 1.05–1.15 = current conditions match winning patterns → modest boost
+ * 0.9–0.95  = current conditions match losing patterns → modest penalty
  */
 export async function getPatternConfidence(
   symbol: string,
@@ -250,7 +257,7 @@ export async function getPatternConfidence(
   if (insight.winRate > 0.65) score += 0.05;
   else if (insight.winRate < 0.40) score -= 0.10;
 
-  return Math.max(0.8, Math.min(1.4, score));
+  return Math.max(0.9, Math.min(1.15, score));
 }
 
 // ─── Gemini prompt context builder ────────────────────────────────────────────

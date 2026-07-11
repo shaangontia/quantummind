@@ -16,6 +16,8 @@ import { getSignalWeights, getCurrentRegime, recordSignalForTracking, resolveGem
 import { geminiTradeVeto, geminiFundamentalAnalysis } from './geminiService.js';
 import { getFundamentalSnapshot, computeFundamentalVerdict } from './fundamentalService.js';
 import { getAdaptiveRSIBuy, getPatternConfidence } from './patternEngine.js';
+import { classifyStrategy, isStrategyAllowed } from './strategyClassifier.js';
+import { classifyMarketRegime } from './regimeEngine.js';
 
 export interface TradeSignal {
   symbol: string;
@@ -27,6 +29,8 @@ export interface TradeSignal {
   groqSentiment?: string;
   fundamentalScore?: number;
   fundamentalReasoning?: string;
+  strategyType?: string;
+  marketRegimeLabel?: string;
 }
 
 export interface HoldingSummary {
@@ -41,6 +45,14 @@ export interface HoldingSummary {
   pnlPct: number;
   priceStatus: 'LIVE' | 'STALE';  // LIVE = updated within last 15min, STALE = older
   priceUpdatedAt?: string;
+  // Phase 13 exit engine fields
+  createdAt?: string;
+  strategyType?: string;
+  atrStopPrice?: number | null;
+  trailingStopPrice?: number | null;
+  timeStopDate?: string | null;
+  riskAmountInr?: number | null;
+  thesisInvalidated?: number;
 }
 
 export interface PortfolioSummary {
@@ -356,9 +368,42 @@ export async function generateSignal(
       if (patternConf < 0.95) notes.push(`Pattern confidence penalty: ${patternConf.toFixed(2)}×`);
     }
 
+    // Phase 13: Strategy classification (must run before regime gate)
+    const near52WLow = (() => {
+      if (!q.fiftyTwoWeekLow || !q.fiftyTwoWeekHigh) return false;
+      const range = q.fiftyTwoWeekHigh - q.fiftyTwoWeekLow;
+      const pos = (q.price - q.fiftyTwoWeekLow) / range;
+      return pos < 0.15;
+    })();
+    const strategyResult = classifyStrategy({
+      rsiVal,
+      rsiBuyThreshold: t.rsiBuy,
+      near52WLow,
+      dayDropPct: q.changePct ?? 0,
+      volumeRatio: q.volumeRatio ?? null,
+      emaCrossover: trend?.emaCrossover?.goldenCross ?? false,
+      macdBullish: (trend?.macd?.bullishCrossover || (trend?.macd?.latestHistogram ?? 0) > 0) ?? false,
+      peUndervalued: (q.peRatio ?? 0) > 0 && (q.eps ?? 0) > 0 && (q.peRatio ?? 999) < 20,
+      fundamentalScore: null,
+      groqEventType: groq?.summary?.toLowerCase().includes('contract') ? 'contract' : null,
+      groqSentiment: groq?.sentiment ?? null,
+    });
+
+    // Phase 13: Market regime gate — block strategies not allowed in current regime
+    const marketRegime = await classifyMarketRegime().catch(() => null);
+    if (buy > sell && buy >= 3) {
+      const regimeAllowed = marketRegime
+        ? isStrategyAllowed(strategyResult.type, marketRegime.allowedStrategies)
+        : true;
+      if (!regimeAllowed) {
+        return { symbol, action: 'HOLD', strength: 'WEAK', reason: `Strategy ${strategyResult.type} blocked in ${marketRegime?.label} regime`, price: q.price };
+      }
+    }
+
     const reason = notes.join('; ') || 'No signal';
     const topScore = Math.max(buy, sell);
-    const topAction: 'BUY' | 'SELL' | null = buy > sell && buy >= 2 ? 'BUY' : sell > buy && sell >= 2 ? 'SELL' : null;
+    // Phase 13: Raised thresholds — consider at 3, execute at 5.5
+    const topAction: 'BUY' | 'SELL' | null = buy > sell && buy >= 3 ? 'BUY' : sell > buy && sell >= 2 ? 'SELL' : null;
 
     // ── Fundamental Analysis Gate ────────────────────────────────────────────
     // Runs on all BUY candidates (not SELL — we never block closing a position).
@@ -407,7 +452,7 @@ export async function generateSignal(
       return { symbol, action: 'HOLD', strength: 'WEAK', reason: notes.join('; '), price: q.price };
     }
 
-    if (topAction && portfolioCtx && topScore >= 4) {
+    if (topAction && portfolioCtx && topScore >= 5.5) {
       // Gemini pre-trade reasoning gate — only fires on STRONG signals (score ≥ 4)
       // MODERATE signals (score 2-3) proceed without veto to conserve Gemini quota
       const veto = await geminiTradeVeto({
@@ -442,15 +487,17 @@ export async function generateSignal(
       }
       const strength = veto.verdict === 'REDUCE'
         ? 'MODERATE'  // cap to MODERATE so position sizing stays smaller
-        : topScore >= 4 ? 'STRONG' : 'MODERATE';
+        : topScore >= 5.5 ? 'STRONG' : 'MODERATE';
       const finalReason = veto.reason ? `${reason} | Gemini: ${veto.reason}` : reason;
       return { symbol, action: topAction, strength, reason: finalReason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment,
-        fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined };
+        fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined,
+        strategyType: strategyResult.type, marketRegimeLabel: marketRegime?.label };
     }
 
     if (topAction) {
-      return { symbol, action: topAction, strength: topScore >= 4 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment,
-        fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined };
+      return { symbol, action: topAction, strength: topScore >= 5.5 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment,
+        fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined,
+        strategyType: strategyResult.type, marketRegimeLabel: marketRegime?.label };
     }
     return { symbol, action: 'HOLD', strength: 'WEAK', reason, price: q.price };
   } catch (err) {
@@ -663,6 +710,13 @@ export async function getPortfolioSummary(portfolioId: number): Promise<Portfoli
       quantity: Number(h.quantity), avgBuyPrice: Number(h.avg_buy_price), currentPrice: cp,
       currentValue: cv, pnl: cv - cost, pnlPct: ((cv - cost) / cost) * 100,
       priceStatus, priceUpdatedAt: updatedAt,
+      createdAt: h.created_at as string | undefined,
+      strategyType: h.strategy_type as string | undefined,
+      atrStopPrice: h.atr_stop_price != null ? Number(h.atr_stop_price) : null,
+      trailingStopPrice: h.trailing_stop_price != null ? Number(h.trailing_stop_price) : null,
+      timeStopDate: h.time_stop_date as string | null,
+      riskAmountInr: h.risk_amount_inr != null ? Number(h.risk_amount_inr) : null,
+      thesisInvalidated: Number(h.thesis_invalidated ?? 0),
     });
   }
 
