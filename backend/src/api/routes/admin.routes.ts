@@ -316,8 +316,9 @@ router.post('/admin/decisions/:decisionId/replay/simulate', requireAdminAuth, as
     const dryRun = true;
 
     const event = await queryOne(
-      `SELECT dre.*, tc.symbol, tc.portfolio_id as tc_portfolio_id,
+      `SELECT dre.*, tc.symbol,
               ppe.policy_type, ppe.risk_level, ppe.horizon_days,
+              ppe.policy_snapshot_json,
               ppe.rejection_reasons_json as original_rejections,
               ppe.utility_score as original_utility, ppe.decision as original_decision
        FROM decision_replay_events dre
@@ -328,7 +329,6 @@ router.post('/admin/decisions/:decisionId/replay/simulate', requireAdminAuth, as
     );
     if (!event) return res.status(404).json({ success: false, error: 'Decision not found' });
 
-    // Load feature snapshot from the frozen admin trace
     const parseJ = (v: any) => { try { return v ? JSON.parse(String(v)) : null; } catch { return null; } };
     const featureSnapshot = parseJ(event.raw_feature_snapshot_json);
     const ruleTrace       = parseJ(event.rule_trace_json);
@@ -340,30 +340,60 @@ router.post('/admin/decisions/:decisionId/replay/simulate', requireAdminAuth, as
       });
     }
 
-    // Re-run eligibility + utility using Phase 19 services against the stored feature snapshot.
-    // This is a read-only re-evaluation — no DB writes, no trade execution.
-    const { getPortfolioPolicy } = await import('../../services/portfolioPolicy.js');
-    const { checkEligibility }   = await import('../../services/portfolioEligibilityFilter.js');
+    const { checkEligibility }        = await import('../../services/portfolioEligibilityFilter.js');
     const { computePortfolioUtility } = await import('../../services/portfolioUtilityScore.js');
+    const { getPortfolioPolicy }      = await import('../../services/portfolioPolicy.js');
 
+    // Fix 1 + Suggestion 3: Prefer the frozen policy_snapshot_json stored at decision time.
+    // This ensures simulation re-runs against the rules that were ACTUALLY in effect —
+    // not the current portfolio settings which may have changed since.
+    // If policyVersion is supplied and differs from the stored snapshot version, warn the caller.
+    const frozenPolicy: any = parseJ(event.policy_snapshot_json);
     const portfolioId = Number(event.portfolio_id);
-    const policy = await getPortfolioPolicy(portfolioId).catch(() => null);
-    if (!policy) return res.status(422).json({ success: false, error: 'Portfolio policy not resolvable' });
+    const livePolicy = frozenPolicy
+      ? null                                                      // prefer frozen
+      : await getPortfolioPolicy(portfolioId).catch(() => null);  // fallback for SELL (no PPE row)
+    const policy: any = frozenPolicy ?? livePolicy;
+    if (!policy) return res.status(422).json({ success: false, error: 'Policy not resolvable for this decision' });
+
+    const storedPolicyVersion = String(event.policy_version ?? frozenPolicy?.policyVersion ?? 'unknown');
+    const storedModelVersion  = String(event.model_version ?? 'unknown');
+
+    // Warn when requested version differs from what was frozen (version-specific re-evaluation
+    // is a Phase 22 capability; for now we simulate against the frozen snapshot only).
+    const warnings: string[] = [];
+    if (policyVersion && policyVersion !== storedPolicyVersion) {
+      warnings.push(`Requested policyVersion "${policyVersion}" not available — simulating against frozen snapshot version "${storedPolicyVersion}" instead`);
+    }
+    if (modelVersion && modelVersion !== storedModelVersion) {
+      warnings.push(`Requested modelVersion "${modelVersion}" not available — ML P(win) from original feature snapshot used`);
+    }
+
+    // Fix 2: Simulate with ZEROED exposure context (sector map, drawdown are unknown at replay time).
+    // This is a fundamental limitation of decision replay — the portfolio state at that exact
+    // moment is not stored. Sector-concentration and drawdown gates will not reproduce correctly.
+    const simulationLimitations = [
+      'sector_exposure_not_replayed: Gate 6 (sector cap) uses empty sector map — SECTOR_OVEREXPOSED veto may not reproduce',
+      'drawdown_context_empty: Gate 9 (drawdown penalty) uses 0% drawdown — DRAWDOWN_PENALTY may differ',
+      'portfolio_state_snapshot_absent: position count and cash % are set to neutral defaults',
+    ];
+
+    const emptyExposure = { sectorPct: {}, currentPositionCount: 0, cashPct: 1, drawdownPct: 0 };
 
     const eligInput = {
-      symbol:          event.symbol ?? '',
-      strategyType:    featureSnapshot.strategyType ?? 'UNKNOWN',
+      symbol:           event.symbol ?? '',
+      strategyType:     featureSnapshot.strategyType ?? 'UNKNOWN',
       fundamentalScore: featureSnapshot.fundamentalScore ?? null,
-      atrPct:          featureSnapshot.atrPct ?? null,
-      beta:            null,
-      liquidityScore:  null,
-      sector:          null,
-      eps:             null,
-      mlPwin:          featureSnapshot.mlPwin ?? null,
-      evPct:           null,
-      marketRegime:    featureSnapshot.marketRegime ?? 'UNKNOWN',
+      atrPct:           featureSnapshot.atrPct ?? null,
+      beta:             null,
+      liquidityScore:   null,
+      sector:           featureSnapshot.sector ?? null,
+      eps:              null,
+      mlPwin:           featureSnapshot.mlPwin ?? null,
+      evPct:            null,
+      marketRegime:     featureSnapshot.marketRegime ?? 'UNKNOWN',
     };
-    const simulatedElig = checkEligibility(eligInput as any, policy, { sectorPct: {}, currentPositionCount: 0, cashPct: 1, drawdownPct: 0 }, 'ADVISORY');
+    const simulatedElig = checkEligibility(eligInput as any, policy, emptyExposure, 'ADVISORY');
 
     let simulatedUtility = null;
     if (simulatedElig.eligible) {
@@ -374,40 +404,48 @@ router.post('/admin/decisions/:decisionId/replay/simulate', requireAdminAuth, as
         mlPwin:              featureSnapshot.mlPwin ?? null,
         atrPct:              featureSnapshot.atrPct ?? 2.0,
         liquidityScore:      0.5,
-        sector:              null,
+        sector:              featureSnapshot.sector ?? null,
         expectedHoldingDays: 15,
         marketRegime:        featureSnapshot.marketRegime ?? 'UNKNOWN',
       };
-      simulatedUtility = computePortfolioUtility(utilInput as any, policy, { sectorPct: {}, currentPositionCount: 0, cashPct: 1, drawdownPct: 0 });
+      simulatedUtility = computePortfolioUtility(utilInput as any, policy, emptyExposure);
     }
 
     const originalUtility = ruleTrace?.utilityComponents?.finalScore ?? event.original_utility ?? null;
+    const usedFrozenPolicy = frozenPolicy != null;
 
     return res.json({
       success: true,
       dryRun,
       data: {
         decisionId,
-        symbol:    event.symbol ?? 'UNKNOWN',
+        symbol: event.symbol ?? 'UNKNOWN',
         originalDecision: {
-          decision:   event.decision_type,
-          eligible:   !parseJ(event.original_rejections)?.length,
-          utilityScore: originalUtility,
+          decision:         event.decision_type,
+          eligible:         !(parseJ(event.original_rejections)?.length > 0),
+          utilityScore:     originalUtility,
           rejectionReasons: parseJ(event.original_rejections) ?? [],
+          policyVersion:    storedPolicyVersion,
+          modelVersion:     storedModelVersion,
         },
         simulatedDecision: {
-          requestedPolicyVersion: policyVersion ?? policy.policyVersion,
-          requestedModelVersion:  modelVersion ?? 'current',
-          eligible:       simulatedElig.eligible,
+          // Policy used: frozen snapshot when available (correct), live policy as fallback
+          policySource:     usedFrozenPolicy ? 'FROZEN_SNAPSHOT' : 'LIVE_POLICY',
+          policyVersion:    storedPolicyVersion,
+          requestedPolicyVersion: policyVersion ?? null,
+          requestedModelVersion:  modelVersion ?? null,
+          eligible:         simulatedElig.eligible,
           rejectionReasons: simulatedElig.rejectionReasons,
-          utilityScore:   simulatedUtility?.finalScore ?? null,
-          decision:       simulatedElig.eligible
+          utilityScore:     simulatedUtility?.finalScore ?? null,
+          decision:         simulatedElig.eligible
             ? (simulatedUtility && simulatedUtility.finalScore >= 0 ? 'BUY' : 'SKIP')
             : 'VETO',
         },
-        utilityDiff: simulatedUtility && originalUtility != null
+        utilityDiff: simulatedUtility != null && originalUtility != null
           ? simulatedUtility.finalScore - Number(originalUtility) : null,
-        note: 'This is a dry-run simulation. No trades were executed or recorded.',
+        warnings,
+        simulationLimitations,
+        note: 'Dry-run simulation. No trades executed or recorded.',
       },
     });
   } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
