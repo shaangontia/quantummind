@@ -68,6 +68,7 @@ export const AppLayout = () => {
               <>
                 <Box component={NavLink} to="/admin/overlap" sx={NAV_LINK_SX}>Overlap</Box>
                 <Box component={NavLink} to="/admin/decisions" sx={NAV_LINK_SX}>Decisions</Box>
+                <Box component={NavLink} to="/admin/failed-decisions" sx={NAV_LINK_SX}>Failed</Box>
                 <Box component={NavLink} to="/admin/portfolio-health" sx={NAV_LINK_SX}>Health</Box>
                 <Box component={NavLink} to="/admin/candidate-trace" sx={NAV_LINK_SX}>Candidates</Box>
                 <Box component={NavLink} to="/admin/replay-simulator" sx={NAV_LINK_SX}>Simulator</Box>
