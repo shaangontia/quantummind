@@ -9,6 +9,11 @@ import { PortfolioDashboard } from './features/portfolios/ui/PortfolioDashboard/
 import { AuditLogPage } from './features/portfolios/ui/AuditLogPage/AuditLogPage.tsx';
 import { SignalsPage } from './features/portfolios/ui/SignalsPage/SignalsPage.tsx';
 import { AdminOverlapPage } from './features/portfolios/ui/AdminOverlapPage/index.ts';
+import { DecisionsPage } from './features/portfolios/ui/DecisionsPage/index.ts';
+import { AdminDecisionsPage } from './features/portfolios/ui/AdminDecisionsPage/index.ts';
+import { AdminFailedDecisionsPage } from './features/portfolios/ui/AdminFailedDecisionsPage/index.ts';
+import { AdminCandidateTracePage } from './features/portfolios/ui/AdminCandidateTracePage/index.ts';
+import { AdminReplaySimulatorPage } from './features/portfolios/ui/AdminReplaySimulatorPage/index.ts';
 
 export const router = createBrowserRouter([
   // ─── Public auth routes ───────────────────────────────────────────────────
@@ -28,13 +33,26 @@ export const router = createBrowserRouter([
       { path: 'portfolios/:id',                element: <PortfolioDashboard /> },
       { path: 'portfolios/:id/trades',         element: <AuditLogPage /> },
       { path: 'portfolios/:id/signals',        element: <SignalsPage /> },
+      { path: 'portfolios/:id/decisions',       element: <DecisionsPage /> },
       {
         path: 'admin/overlap',
-        element: (
-          <RequireAdmin>
-            <AdminOverlapPage />
-          </RequireAdmin>
-        ),
+        element: (<RequireAdmin><AdminOverlapPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/decisions',
+        element: (<RequireAdmin><AdminDecisionsPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/failed-decisions',
+        element: (<RequireAdmin><AdminFailedDecisionsPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/candidate-trace',
+        element: (<RequireAdmin><AdminCandidateTracePage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/replay-simulator',
+        element: (<RequireAdmin><AdminReplaySimulatorPage /></RequireAdmin>),
       },
     ],
   },

@@ -120,6 +120,9 @@ export const PortfolioDashboard = () => {
           <Button size="small" variant="outlined" component={Link} to={`/portfolios/${portfolioId}/trades`}>
             Audit Log
           </Button>
+          <Button size="small" variant="outlined" component={Link} to={`/portfolios/${portfolioId}/decisions`}>
+            Decisions
+          </Button>
         </Box>
       </Box>
 

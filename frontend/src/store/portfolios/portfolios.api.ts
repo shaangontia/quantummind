@@ -224,6 +224,48 @@ export interface ExpectancyReport {
   }>;
 }
 
+// ─── Phase 20: Decision Replay ───────────────────────────────────────────────
+
+export type DecisionType = 'BUY' | 'SELL' | 'SKIP' | 'VETO';
+
+export interface DecisionEvent {
+  decisionId: string;
+  symbol: string;
+  decision: DecisionType;
+  title: string;
+  decisionTime: string;
+}
+
+export interface DecisionReasonCode {
+  code: string;
+  label: string;
+  detail?: string;
+}
+
+export interface PortfolioContext {
+  navAtDecision: number | null;
+  cashPct: number | null;
+  openPositions: number | null;
+  regimeLabel: string | null;
+  policyType: string | null;
+}
+
+export interface TradeResult {
+  tradeId: number | null;
+  quantity: number | null;
+  price: number | null;
+  amount: number | null;
+}
+
+export interface UserDecisionReplay {
+  decisionId: string;
+  title: string;
+  summary: string;
+  reasonCodes: DecisionReasonCode[];
+  portfolioContext: PortfolioContext;
+  tradeResult: TradeResult | null;
+}
+
 // ─── Phase 19: Overlap analytics ────────────────────────────────────────────
 
 export type OverlapType = 'GLOBAL_CONSENSUS' | 'POLICY_MATCH' | 'REGIME_DRIVEN' | 'DIVERSIFICATION_BLOCKED';
@@ -424,6 +466,25 @@ export const portfoliosApi = baseApi.injectEndpoints({
       keepUnusedDataFor: 120,
     }),
 
+    // ─── Phase 20: Decision Replay (user-facing) ─────────────────────────────────
+
+    getPortfolioDecisions: builder.query<DecisionEvent[], { portfolioId: number; limit?: number; offset?: number }>({
+      query: ({ portfolioId, limit = 50, offset = 0 }) => ({
+        url: `/portfolios/${portfolioId}/decisions`,
+        params: { limit, offset },
+        method: 'GET',
+      }),
+      keepUnusedDataFor: 60,
+    }),
+
+    getDecisionReplay: builder.query<UserDecisionReplay, { portfolioId: number; decisionId: string }>({
+      query: ({ portfolioId, decisionId }) => ({
+        url: `/portfolios/${portfolioId}/decisions/${decisionId}/replay`,
+        method: 'GET',
+      }),
+      keepUnusedDataFor: 300,
+    }),
+
   }),
   overrideExisting: false,
 });
@@ -450,4 +511,6 @@ export const {
   useGetAuditReportQuery,
   useGetDriftReportQuery,
   useGetPortfolioOverlapQuery,
+  useGetPortfolioDecisionsQuery,
+  useGetDecisionReplayQuery,
 } = portfoliosApi;
