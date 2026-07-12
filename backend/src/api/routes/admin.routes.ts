@@ -452,4 +452,132 @@ router.post('/admin/decisions/:decisionId/replay/simulate', verifyAuth, requireU
   } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
+// ─── Phase 21: Portfolio Health Admin APIs ───────────────────────────────────
+
+/** GET /api/admin/portfolio-health/overview */
+router.get('/admin/portfolio-health/overview', verifyAuth, requireUserAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    // Latest snapshot per portfolio
+    const latestRows = await query(
+      `SELECT phs.portfolio_id, phs.health_score, phs.health_grade, phs.top_risks_json
+       FROM portfolio_health_snapshots phs
+       INNER JOIN (
+         SELECT portfolio_id, MAX(snapshot_time) as latest FROM portfolio_health_snapshots GROUP BY portfolio_id
+       ) latest_t ON phs.portfolio_id = latest_t.portfolio_id AND phs.snapshot_time = latest_t.latest`,
+    );
+    const totalPortfolios = latestRows.length;
+    const distribution: Record<string, number> = { EXCELLENT: 0, GOOD: 0, WARNING: 0, CRITICAL: 0 };
+    let scoreSum = 0;
+    const reasonCounts: Record<string, number> = {};
+    const parseJ = (v: any): string[] => { try { return v ? JSON.parse(String(v)) : []; } catch { return []; } };
+    for (const r of latestRows) {
+      const grade = String(r.health_grade);
+      if (distribution[grade] !== undefined) distribution[grade]++;
+      scoreSum += Number(r.health_score ?? 0);
+      for (const code of parseJ(r.top_risks_json)) reasonCounts[code] = (reasonCounts[code] ?? 0) + 1;
+    }
+    const topRiskReasons = Object.entries(reasonCounts)
+      .sort(([, a], [, b]) => b - a).slice(0, 10).map(([code, count]) => ({ code, count }));
+    return res.json({
+      success: true,
+      data: {
+        totalPortfolios,
+        healthDistribution: distribution,
+        averageHealthScore: totalPortfolios > 0 ? Math.round(scoreSum / totalPortfolios) : 0,
+        topRiskReasons,
+      },
+    });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
+/** GET /api/admin/portfolio-health/at-risk */
+router.get('/admin/portfolio-health/at-risk', verifyAuth, requireUserAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    const rows = await query(
+      `SELECT phs.portfolio_id, p.name, phs.health_score, phs.health_grade,
+              phs.goal_probability_pct, phs.top_risks_json, phs.snapshot_time
+       FROM portfolio_health_snapshots phs
+       INNER JOIN (
+         SELECT portfolio_id, MAX(snapshot_time) as latest FROM portfolio_health_snapshots GROUP BY portfolio_id
+       ) latest_t ON phs.portfolio_id = latest_t.portfolio_id AND phs.snapshot_time = latest_t.latest
+       JOIN portfolios p ON p.id = phs.portfolio_id
+       WHERE phs.health_score < 50
+          OR phs.goal_probability_pct < 30
+          OR phs.top_risks_json LIKE '%KILL_SWITCH_ACTIVE%'
+          OR phs.top_risks_json LIKE '%CIRCUIT_BREAKER_ACTIVE%'
+       ORDER BY phs.health_score ASC`,
+    );
+    const parseJ = (v: any): string[] => { try { return v ? JSON.parse(String(v)) : []; } catch { return []; } };
+    return res.json({
+      success: true,
+      data: rows.map((r: any) => ({
+        portfolioId:       Number(r.portfolio_id),
+        name:              r.name,
+        healthScore:       Number(r.health_score),
+        healthGrade:       r.health_grade,
+        goalProbabilityPct: r.goal_probability_pct != null ? Number(r.goal_probability_pct) : null,
+        topRisks:          parseJ(r.top_risks_json),
+        lastUpdated:       r.snapshot_time,
+      })),
+    });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
+/** GET /api/admin/portfolio-health/config */
+router.get('/admin/portfolio-health/config', verifyAuth, requireUserAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    const configs = await query('SELECT * FROM health_score_configs ORDER BY created_at DESC');
+    return res.json({ success: true, data: configs });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
+/** POST /api/admin/portfolio-health/config */
+router.post('/admin/portfolio-health/config', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const { weights_json, thresholds_json, goal_probability_assumptions_json } = req.body as {
+      weights_json?: string; thresholds_json?: string; goal_probability_assumptions_json?: string;
+    };
+    if (!weights_json) return res.status(400).json({ success: false, error: 'weights_json required' });
+    // Validate weights sum to 1.0
+    const weights = JSON.parse(weights_json) as Record<string, number>;
+    const sum = Object.values(weights).reduce((a, b) => a + b, 0);
+    if (Math.abs(sum - 1.0) > 0.001)
+      return res.status(400).json({ success: false, error: `Weights must sum to 1.0, got ${sum.toFixed(4)}` });
+    const newVersion = `health-v${Date.now()}`;
+    // Deactivate all existing configs
+    await run('UPDATE health_score_configs SET is_active = 0');
+    // Insert new active config
+    const result = await run(
+      `INSERT INTO health_score_configs (config_version, is_active, weights_json, thresholds_json, goal_probability_assumptions_json, created_by)
+       VALUES (?, 1, ?, ?, ?, ?)`,
+      [newVersion, weights_json, thresholds_json ?? '{}', goal_probability_assumptions_json ?? '{}', (req.user as any)?.id ?? null],
+    );
+    const newConfig = await queryOne('SELECT * FROM health_score_configs WHERE id = ?', [result.lastInsertRowid]);
+    return res.json({ success: true, data: newConfig });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
+/** POST /api/admin/portfolio-health/recalculate */
+router.post('/admin/portfolio-health/recalculate', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const { portfolioId } = req.body as { portfolioId?: number };
+    if (!portfolioId) return res.status(400).json({ success: false, error: 'portfolioId required' });
+    const { calculatePortfolioHealth } = await import('../../services/portfolioHealthService.js');
+    const snapshot = await calculatePortfolioHealth(Number(portfolioId));
+    return res.json({ success: true, data: snapshot });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
+/** POST /api/admin/portfolio-health/recalculate-all (super-admin: all portfolios) */
+router.post('/admin/portfolio-health/recalculate-all', verifyAuth, requireUserAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    const portfolios = await query('SELECT id FROM portfolios WHERE is_active = 1');
+    const n = portfolios.length;
+    // Async — returns 202 immediately
+    res.status(202).json({ success: true, message: `Recalculation started for ${n} portfolio${n !== 1 ? 's' : ''}` });
+    const { runAllPortfoliosHealthJob } = await import('../../scheduler/portfolioHealthJob.js');
+    runAllPortfoliosHealthJob().catch(console.error);
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
 export default router;

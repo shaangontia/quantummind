@@ -21,6 +21,8 @@ import { computePortfolioUtility, estimateHoldingDays, type CandidateUtilityInpu
 import { storePolicyEvaluation } from '../services/policyEvaluationStore.js';
 // Phase 20: Decision Replay + Explainability
 import { writeDecisionReplay } from '../services/decisionReplayWriter.js';
+// Phase 21: Portfolio Health Job
+import { runPortfolioHealthJob, runAllPortfoliosHealthJob } from './portfolioHealthJob.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -242,6 +244,8 @@ async function runPortfolioTradingCycle(
       void resolvePatternOutcome(portfolioId, h.symbol, sellPnlPct).catch(() => null);
       // Phase 17: Consecutive-loss tracking
       void recordTradeOutcome(portfolioId, sellPnlPct < 0).catch(() => null);
+      // Phase 21: Refresh health snapshot after SELL
+      void runPortfolioHealthJob(portfolioId).catch(() => null);
       // Phase 20: write SELL replay event (fire-and-forget)
       if (sellTradeId) {
         const buyDate = h.createdAt ? new Date(String(h.createdAt)) : null;
@@ -913,6 +917,8 @@ async function runPortfolioTradingCycle(
         holdingDays: null, entryPrice: signal.price,
         strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
       }).catch(() => null);
+      // Phase 21: Refresh health snapshot after BUY
+      void runPortfolioHealthJob(portfolioId).catch(() => null);
     }
   }
   return { trades: tradeCount, signals: signalCount };
@@ -1098,6 +1104,8 @@ export function startScheduler(): void {
         }
       }
     } catch (err) { console.warn('[Gemini] Portfolio insight failed:', err); }
+    // Phase 21: Nightly portfolio health refresh for all active portfolios
+    await runAllPortfoliosHealthJob().catch(console.error);
   }, { timezone: 'Asia/Kolkata' });
 
   console.log('[Scheduler] All cron jobs active (IST)');

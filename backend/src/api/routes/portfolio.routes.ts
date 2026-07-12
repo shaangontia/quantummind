@@ -473,4 +473,91 @@ router.get('/portfolios/:portfolioId/decisions/:decisionId/replay', verifyAuth, 
   } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
+// ─── Phase 21: Portfolio Health + Goal Probability ────────────────────────────
+
+/**
+ * GET /api/portfolios/:id/health
+ * Returns the latest health snapshot (or calculates fresh if stale > 1h / missing).
+ * Sanitized — calculation_trace_json is never returned.
+ */
+router.get('/portfolios/:id/health', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  try {
+    const portfolioId = parseInt(req.params.id, 10);
+    if (isNaN(portfolioId)) return res.status(400).json({ success: false, error: 'Invalid portfolio ID' });
+    const { getOrCalculateLatestHealth } = await import('../../services/portfolioHealthService.js');
+    const snapshot = await getOrCalculateLatestHealth(portfolioId);
+    return res.json({
+      success: true,
+      data: {
+        portfolioId:              snapshot.portfolioId,
+        healthScore:              snapshot.healthScore,
+        healthGrade:              snapshot.healthGrade,
+        goalProbabilityPct:       snapshot.goalProbabilityPct,
+        goalImpossible:           snapshot.goalImpossible,
+        goalImpossibilityReason:  snapshot.goalImpossibilityReason,
+        targetReturnPct:          snapshot.targetReturnPct,
+        horizonDays:              snapshot.horizonDays,
+        daysRemaining:            snapshot.daysRemaining,
+        requiredMonthlyReturnPct: snapshot.requiredMonthlyReturnPct,
+        currentReturnPct:         snapshot.currentReturnPct,
+        currentDrawdownPct:       snapshot.currentDrawdownPct,
+        cashPct:                  snapshot.cashPct,
+        investedPct:              snapshot.investedPct,
+        openPositionsCount:       snapshot.openPositionsCount,
+        components: {
+          diversification:  snapshot.components.diversificationScore,
+          drawdown:         snapshot.components.drawdownScore,
+          goalProgress:     snapshot.components.goalProgressScore,
+          strategyBalance:  snapshot.components.strategyBalanceScore,
+          cashDeployment:   snapshot.components.cashDeploymentScore,
+          executionQuality: snapshot.components.executionQualityScore,
+          modelConfidence:  snapshot.components.modelConfidenceScore,
+          riskControl:      snapshot.components.riskControlScore,
+        },
+        sectorExposure:  snapshot.sectorExposureJson ? JSON.parse(snapshot.sectorExposureJson) : null,
+        topRisks:        snapshot.topRisks,
+        recommendations: snapshot.recommendations,
+        lastUpdated:     snapshot.snapshotTime,
+        // MUST NOT return: calculation_trace_json
+      },
+    });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
+/**
+ * GET /api/portfolios/:id/health/history?range=7D|30D|90D
+ * Historical health snapshots for trend charting.
+ */
+router.get('/portfolios/:id/health/history', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  try {
+    const portfolioId = parseInt(req.params.id, 10);
+    if (isNaN(portfolioId)) return res.status(400).json({ success: false, error: 'Invalid portfolio ID' });
+
+    const rangeDays = req.query.range === '7D' ? 7 : req.query.range === '90D' ? 90 : 30;
+    const since     = new Date(Date.now() - rangeDays * 86_400_000).toISOString();
+
+    const rows = await query(
+      `SELECT snapshot_time, health_score, health_grade, goal_probability_pct,
+              current_return_pct, current_drawdown_pct
+       FROM portfolio_health_snapshots
+       WHERE portfolio_id = ? AND snapshot_time >= ?
+       ORDER BY snapshot_time ASC
+       LIMIT 200`,
+      [portfolioId, since],
+    );
+
+    return res.json({
+      success: true,
+      data: rows.map((r: any) => ({
+        snapshotTime:       r.snapshot_time,
+        healthScore:        Number(r.health_score),
+        healthGrade:        r.health_grade,
+        goalProbabilityPct: r.goal_probability_pct != null ? Number(r.goal_probability_pct) : null,
+        currentReturnPct:   Number(r.current_return_pct ?? 0),
+        currentDrawdownPct: Number(r.current_drawdown_pct ?? 0),
+      })),
+    });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
 export default router;

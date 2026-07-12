@@ -564,6 +564,101 @@ export async function runMigrations(): Promise<void> {
   } catch (_) { /* exists */ }
 
   console.log('[DB] Migration: Phase 20 decision replay + explainability schema done');
+
+  // ── Phase 21: Portfolio Health + Goal Probability ────────────────────────────
+  try {
+    const db = getClient();
+
+    // portfolio_health_snapshots: one row per portfolio per health calculation
+    await db.execute(`CREATE TABLE IF NOT EXISTS portfolio_health_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+      snapshot_time TEXT NOT NULL,
+
+      health_score INTEGER NOT NULL,
+      health_grade TEXT NOT NULL CHECK(health_grade IN ('EXCELLENT','GOOD','WARNING','CRITICAL')),
+
+      goal_probability_pct REAL,
+      target_return_pct REAL,
+      horizon_days INTEGER,
+      days_remaining INTEGER,
+      required_monthly_return_pct REAL,
+
+      current_nav REAL,
+      initial_capital REAL,
+      current_return_pct REAL,
+      current_drawdown_pct REAL,
+      expected_drawdown_pct REAL,
+
+      cash_pct REAL,
+      invested_pct REAL,
+      open_positions_count INTEGER,
+
+      diversification_score REAL,
+      concentration_score REAL,
+      drawdown_score REAL,
+      goal_progress_score REAL,
+      strategy_balance_score REAL,
+      cash_deployment_score REAL,
+      execution_quality_score REAL,
+      model_confidence_score REAL,
+      risk_control_score REAL,
+
+      sector_exposure_json TEXT,
+      strategy_exposure_json TEXT,
+      top_risks_json TEXT,
+      recommendations_json TEXT,
+
+      goal_impossible INTEGER DEFAULT 0,
+      goal_impossibility_reason TEXT,
+
+      health_model_version TEXT NOT NULL DEFAULT 'health-v1',
+      calculation_trace_json TEXT,
+
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_phs_portfolio_time ON portfolio_health_snapshots(portfolio_id, snapshot_time)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_phs_portfolio_latest ON portfolio_health_snapshots(portfolio_id, created_at)');
+
+    // health_score_configs: admin-controlled scoring weights per version
+    await db.execute(`CREATE TABLE IF NOT EXISTS health_score_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      config_version TEXT NOT NULL UNIQUE,
+      is_active INTEGER NOT NULL DEFAULT 0,
+      weights_json TEXT NOT NULL,
+      thresholds_json TEXT NOT NULL,
+      goal_probability_assumptions_json TEXT NOT NULL,
+      created_by INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    // Seed default config (INSERT OR IGNORE — safe to re-run)
+    await db.execute(`INSERT OR IGNORE INTO health_score_configs
+      (config_version, is_active, weights_json, thresholds_json, goal_probability_assumptions_json)
+      VALUES (
+        'health-v1',
+        1,
+        '{"diversification":0.15,"drawdown":0.20,"goalProgress":0.15,"strategyBalance":0.10,"cashDeployment":0.10,"executionQuality":0.10,"modelConfidence":0.10,"riskControl":0.10}',
+        '{"EXCELLENT":85,"GOOD":70,"WARNING":50,"CRITICAL":0}',
+        '{"baseProbability":50,"maxRequiredMonthlyReturn":15}'
+      )`);
+
+    // portfolio_health_alerts: CRITICAL/WARNING events from health scoring
+    await db.execute(`CREATE TABLE IF NOT EXISTS portfolio_health_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+      alert_type TEXT NOT NULL,
+      severity TEXT NOT NULL CHECK(severity IN ('INFO','WARNING','CRITICAL')),
+      message TEXT NOT NULL,
+      reason_codes_json TEXT,
+      status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','ACKNOWLEDGED','RESOLVED')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      resolved_at TEXT
+    )`);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_pha_portfolio ON portfolio_health_alerts(portfolio_id, status)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_pha_alert_type ON portfolio_health_alerts(portfolio_id, alert_type, status)');
+  } catch (_) { /* exists */ }
+
+  console.log('[DB] Migration: Phase 21 portfolio health + goal probability schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {
