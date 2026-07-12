@@ -486,7 +486,7 @@ export async function saveHealthSnapshot(
   s: PortfolioHealthSnapshot,
 ): Promise<number> {
   const result = await run(
-    `INSERT INTO portfolio_health_snapshots (
+    `INSERT OR IGNORE INTO portfolio_health_snapshots (
       portfolio_id, snapshot_time,
       health_score, health_grade,
       goal_probability_pct, target_return_pct, horizon_days, days_remaining, required_monthly_return_pct,

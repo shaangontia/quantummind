@@ -13,6 +13,7 @@
  */
 
 import { query } from '../db/turso.js';
+import { logger } from '../lib/logger.js';
 import { calculatePortfolioHealth } from '../services/portfolioHealthService.js';
 import { createHealthAlertIfNeeded } from '../services/portfolioRecommendationService.js';
 
@@ -39,7 +40,7 @@ export async function runPortfolioHealthJob(portfolioId: number): Promise<number
 
     return snapshot.healthScore;
   } catch (err) {
-    console.error(`[portfolioHealthJob] Failed for portfolio ${portfolioId}:`, String(err));
+    logger.error({ job: 'portfolio-health', portfolioId, phase: 'health', reason: String(err) });
     return null;
   }
 }
@@ -61,7 +62,7 @@ export async function runAllPortfoliosHealthJob(): Promise<{ portfoliosProcessed
       else failures++;
     }
   } catch (err) {
-    console.error('[portfolioHealthJob] runAllPortfoliosHealthJob failed:', String(err));
+    logger.error({ job: 'portfolio-health', portfolioId: -1, phase: 'health', reason: String(err) });
   }
 
   return { portfoliosProcessed, failures };

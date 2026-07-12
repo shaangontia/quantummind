@@ -617,7 +617,7 @@ export async function runMigrations(): Promise<void> {
 
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
-    await db.execute('CREATE INDEX IF NOT EXISTS idx_phs_portfolio_time ON portfolio_health_snapshots(portfolio_id, snapshot_time)');
+    await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_phs_portfolio_time ON portfolio_health_snapshots(portfolio_id, snapshot_time)');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_phs_portfolio_latest ON portfolio_health_snapshots(portfolio_id, created_at)');
 
     // health_score_configs: admin-controlled scoring weights per version
