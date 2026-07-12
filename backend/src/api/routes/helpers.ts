@@ -50,7 +50,17 @@ export const authRegisterSchema = z.object({
 
 // ─── Admin auth middleware ─────────────────────────────────────────────────────
 
-/** Fail-closed admin auth middleware. Rejects if CRON_SECRET is unset. */
+/**
+ * Session-based admin check for browser-facing admin UI routes.
+ * Requires a valid JWT cookie (verifyAuth must run first) with isAdmin=true.
+ * Use for all /admin/* routes accessible from the browser.
+ */
+export function requireUserAdminAuth(req: Request, res: Response, next: NextFunction): void {
+  if (!req.user?.isAdmin) { res.status(403).json({ error: 'Admin only' }); return; }
+  next();
+}
+
+/** Fail-closed admin auth middleware for server-to-server cron calls. Rejects if CRON_SECRET is unset. */
 export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
   const secret = process.env.CRON_SECRET;
   if (!secret) { res.status(503).json({ error: 'Auth not configured - set CRON_SECRET env var' }); return; }

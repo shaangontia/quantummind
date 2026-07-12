@@ -3,7 +3,8 @@
  */
 import { Router, Request, Response } from 'express';
 import { query, queryOne, run } from '../../db/turso.js';
-import { requireAdminAuth } from './helpers.js';
+import { requireAdminAuth, requireUserAdminAuth } from './helpers.js';
+import { verifyAuth } from '../../middleware/auth.js';
 
 const router = Router();
 
@@ -89,7 +90,7 @@ router.post('/cron/price-update', requireAdminAuth, async (_req: Request, res: R
  * Cross-portfolio decision list. Admin sees all portfolios.
  * Query params: portfolioId?, symbol?, decision_type?, dateFrom?, dateTo?, limit, offset
  */
-router.get('/admin/decisions', requireAdminAuth, async (req: Request, res: Response) => {
+router.get('/admin/decisions', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
   try {
     const limit     = Math.min(parseInt(req.query.limit  as string ?? '50', 10) || 50, 200);
     const offset    = parseInt(req.query.offset as string ?? '0', 10) || 0;
@@ -131,7 +132,7 @@ router.get('/admin/decisions', requireAdminAuth, async (req: Request, res: Respo
  * GET /api/admin/decisions/:decisionId/replay
  * Full trace replay for a specific decision. Returns BOTH user + admin visibility rows.
  */
-router.get('/admin/decisions/:decisionId/replay', requireAdminAuth, async (req: Request, res: Response) => {
+router.get('/admin/decisions/:decisionId/replay', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
   try {
     const decisionId = parseInt(req.params.decisionId, 10);
     if (isNaN(decisionId)) return res.status(400).json({ success: false, error: 'Invalid decisionId' });
@@ -196,7 +197,7 @@ router.get('/admin/decisions/:decisionId/replay', requireAdminAuth, async (req: 
  * GET /api/admin/decisions/failed
  * All VETO + SKIP decisions with rejection reason breakdown.
  */
-router.get('/admin/decisions/failed', requireAdminAuth, async (req: Request, res: Response) => {
+router.get('/admin/decisions/failed', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
   try {
     const limit  = Math.min(parseInt(req.query.limit  as string ?? '100', 10) || 100, 500);
     const offset = parseInt(req.query.offset as string ?? '0', 10) || 0;
@@ -255,7 +256,7 @@ router.get('/admin/decisions/failed', requireAdminAuth, async (req: Request, res
  * Full candidate universe trace for a portfolio+date range.
  * Shows all candidates evaluated in a cycle: eligibility, utility, rank, final decision.
  */
-router.get('/admin/candidates/:portfolioId/trace', requireAdminAuth, async (req: Request, res: Response) => {
+router.get('/admin/candidates/:portfolioId/trace', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
   try {
     const portfolioId = parseInt(req.params.portfolioId, 10);
     if (isNaN(portfolioId)) return res.status(400).json({ success: false, error: 'Invalid portfolioId' });
@@ -306,7 +307,7 @@ router.get('/admin/candidates/:portfolioId/trace', requireAdminAuth, async (req:
  * different policy/model version. NEVER executes actual trades.
  * dryRun is ALWAYS enforced server-side regardless of payload.
  */
-router.post('/admin/decisions/:decisionId/replay/simulate', requireAdminAuth, async (req: Request, res: Response) => {
+router.post('/admin/decisions/:decisionId/replay/simulate', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
   try {
     const decisionId = parseInt(req.params.decisionId, 10);
     if (isNaN(decisionId)) return res.status(400).json({ success: false, error: 'Invalid decisionId' });
