@@ -19,6 +19,8 @@ import { getPortfolioPolicy, snapshotPolicy } from '../services/portfolioPolicy.
 import { checkEligibility, computeLiquidityScore, type CandidateEligibilityInput, type PortfolioExposure } from '../services/portfolioEligibilityFilter.js';
 import { computePortfolioUtility, estimateHoldingDays, type CandidateUtilityInput } from '../services/portfolioUtilityScore.js';
 import { storePolicyEvaluation } from '../services/policyEvaluationStore.js';
+// Phase 20: Decision Replay + Explainability
+import { writeDecisionReplay } from '../services/decisionReplayWriter.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -240,6 +242,98 @@ async function runPortfolioTradingCycle(
       void resolvePatternOutcome(portfolioId, h.symbol, sellPnlPct).catch(() => null);
       // Phase 17: Consecutive-loss tracking
       void recordTradeOutcome(portfolioId, sellPnlPct < 0).catch(() => null);
+      // Phase 20: write SELL replay event (fire-and-forget)
+      if (sellTradeId) {
+        const buyDate = h.createdAt ? new Date(String(h.createdAt)) : null;
+        const holdingDays20 = buyDate ? Math.floor((Date.now() - buyDate.getTime()) / 86_400_000) : null;
+        const grossReturnPct20 = sellPnlPct;
+        const brokerage20 = 5; // flat ₹5
+        const costAdjustedPct20 = sellPnlPct - (brokerage20 * 2 / (h.avgBuyPrice * h.quantity)) * 100;
+        void writeDecisionReplay({
+          candidateId:             0, // SELL has no candidate row; linked via trade_id
+          portfolioId,
+          policyEvaluationId:      null,
+          tradeId:                 Number(sellTradeId),
+          decisionType:            'SELL',
+          decisionTime:            new Date(),
+          policyType:              null, // SELL decisions have no policy eval; policy context is on original BUY
+          policyVersion:           null,
+          portfolioMode:           (() => {
+            const ks = ksStateForSell as any;
+            if (!ks) return 'NORMAL';
+            if (ks.emergencyLiquidationTriggered) return 'LIQUIDATION';
+            if (ks.drawdownProtection) return 'PROTECTION';
+            if (ks.dailyLossHalted || ks.weeklyLossHalted) return 'HALTED';
+            return 'NORMAL';
+          })(),
+          positionSizePct:         null,
+          symbol:                  h.symbol,
+          price:                   signal.price,
+          rsiValue:                signal.mlBoost ?? null,
+          macdHistogram:           null,
+          volumeRatio:             null,
+          atrPct:                  null,
+          fundamentalScore:        signal.fundamentalScore ?? null,
+          marketRegime:            signal.marketRegimeLabel ?? null,
+          strategyType:            (signal.strategyType ?? null) as any,
+          strategyConfidence:      signal.strategyConfidence ?? null,
+          strategyReasonCodes:     signal.strategyReasonCodes ?? null,
+          mlPwin:                  signal.mlWinProbability ?? null,
+          modelStage:              null, // govState not yet loaded at sell-scan time
+          trainingRows:            null,
+          modelVersion:            null,
+          eligibilityGateResults:  [],
+          utilityComponents:       { expectedValuePct: null, strategyFitMultiplier: null, horizonFitMultiplier: null, regimeFitMultiplier: null, volatilityPenalty: null, drawdownPenalty: null, sectorConcentrationPenalty: null, liquidityPenalty: null, finalScore: null },
+          rejectionReasons:        [],
+          selectionReason:         null,
+          killSwitchFlags:         {
+            dailyLossHalted:         (ksStateForSell as any)?.dailyLossHalted ?? false,
+            weeklyLossHalted:        (ksStateForSell as any)?.weeklyLossHalted ?? false,
+            drawdownPaused:          (ksStateForSell as any)?.drawdownPaused ?? false,
+            drawdownProtection:      (ksStateForSell as any)?.drawdownProtection ?? false,
+            consecutiveLossCooldown: (ksStateForSell as any)?.consecutiveLossCooldown ?? false,
+            circuitBreakerActive:    (ksStateForSell as any)?.circuitBreakerActive ?? false,
+            dataStaleHalted:         (ksStateForSell as any)?.dataStaleHalted ?? false,
+          },
+          stopPrice:               (h as any).atrStopPrice ?? null,
+          targetPrice:             null,
+          riskAmountInr:           (h as any).riskAmountInr ?? null,
+          drawdownPct:             null,
+          llmVerdict:              null, llmReasonCodes: null, llmModel: null, llmPromptVersion: null, llmConfidence: null,
+          execution: {
+            quantity:             h.quantity,
+            averagePrice:         signal.price,
+            averageFillPrice:     signal.price,
+            brokerage:            brokerage20,
+            slippagePct:          0,
+            costAdjustedReturnPct: costAdjustedPct20,
+            orderType:            'MARKET',
+            fillStatus:           'FULL',
+            quantityRequested:    h.quantity,
+            quantityFilled:       h.quantity,
+            signalPrice:          signal.price,
+            intendedPrice:        signal.price,
+            executionPrice:       signal.price,
+            brokerName:           'paper',
+            fees: {
+              brokerage:       brokerage20,
+              stt:             null, exchangeCharges: null,
+              sebiCharges:     null, gst: null, stampDuty: null,
+              totalCharges:    brokerage20,
+            },
+            grossPnl:      h.quantity * (signal.price - h.avgBuyPrice),
+            netPnl:        h.quantity * (signal.price - h.avgBuyPrice) - brokerage20,
+            grossReturnPct: grossReturnPct20,
+          },
+          exitType:              exitTypeForTrade,
+          exitPrice:             signal.price,
+          grossReturnPct:        grossReturnPct20,
+          costAdjustedReturnPct: costAdjustedPct20,
+          holdingDays:           holdingDays20,
+          entryPrice:            h.avgBuyPrice,
+          strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
+        }).catch(() => null);
+      }
     }
   }
 
@@ -346,6 +440,26 @@ async function runPortfolioTradingCycle(
     cashPct:              refreshed.cashBalance / refreshed.totalValue,
     drawdownPct:          0, // TODO: wire from kill-switch drawdown state
   };
+
+  // Phase 20: shared kill-switch flag snapshot for replay events (built once per cycle)
+  const ksFlags20: Record<string, boolean> = {
+    dailyLossHalted:        (ksState as any).dailyLossHalted        ?? false,
+    weeklyLossHalted:       (ksState as any).weeklyLossHalted       ?? false,
+    drawdownPaused:         (ksState as any).drawdownPaused         ?? false,
+    drawdownProtection:     (ksState as any).drawdownProtection     ?? false,
+    consecutiveLossCooldown:(ksState as any).consecutiveLossCooldown ?? false,
+    circuitBreakerActive:   (ksState as any).circuitBreakerActive   ?? false,
+    dataStaleHalted:        (ksState as any).dataStaleHalted        ?? false,
+  };
+  const portfolioMode20 = derivePortfolioMode20(ksState as any);
+  /** Thin wrapper: derive mode string without importing derivePortfolioMode (avoids circular dep) */
+  function derivePortfolioMode20(ks: Record<string, any>): string {
+    if (ks.emergencyLiquidationTriggered) return 'LIQUIDATION';
+    if (ks.drawdownProtection)             return 'PROTECTION';
+    if (ks.dailyLossHalted || ks.weeklyLossHalted) return 'HALTED';
+    if (govState?.isColdStart)             return 'COLD_START';
+    return 'NORMAL';
+  }
 
   for (const symbol of candidates) {
     // Phase 16: Cold-start daily trade cap
@@ -502,6 +616,47 @@ async function runPortfolioTradingCycle(
         }).catch(() => null);
         logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP',
           reason: `Phase 19 policy veto: ${eligResult19.rejectionReasons.join('; ')}` });
+        // Phase 20: write VETO replay event (fire-and-forget)
+        void writeDecisionReplay({
+          candidateId:             policyEvaluationCandidateId19,
+          portfolioId,
+          policyEvaluationId:      null,
+          tradeId:                 null,
+          decisionType:            'VETO',
+          decisionTime:            new Date(),
+          policyType:              portfolioPolicy19.policyType,
+          policyVersion:           portfolioPolicy19.policyVersion,
+          portfolioMode:           portfolioMode20,
+          positionSizePct:         maxPosPct,
+          symbol,
+          price:                   signal.price,
+          rsiValue:                signal.mlBoost ?? null,
+          macdHistogram:           null,
+          volumeRatio:             null,
+          atrPct:                  null,
+          fundamentalScore:        signal.fundamentalScore ?? null,
+          marketRegime:            signal.marketRegimeLabel ?? null,
+          strategyType:            (signal.strategyType ?? null) as any,
+          strategyConfidence:      signal.strategyConfidence ?? null,
+          strategyReasonCodes:     signal.strategyReasonCodes ?? null,
+          mlPwin:                  signal.mlWinProbability ?? null,
+          modelStage:              govState?.stage ?? null,
+          trainingRows:            null,
+          modelVersion:            null,
+          eligibilityGateResults:  [],
+          utilityComponents:       { expectedValuePct: null, strategyFitMultiplier: null, horizonFitMultiplier: null, regimeFitMultiplier: null, volatilityPenalty: null, drawdownPenalty: null, sectorConcentrationPenalty: null, liquidityPenalty: null, finalScore: null },
+          rejectionReasons:        eligResult19.rejectionReasons,
+          selectionReason:         eligResult19.selectionReason,
+          killSwitchFlags:         ksFlags20,
+          stopPrice:               null,
+          targetPrice:             null,
+          riskAmountInr:           null,
+          drawdownPct:             portfolioExposure19.drawdownPct,
+          llmVerdict:              null, llmReasonCodes: null, llmModel: null, llmPromptVersion: null, llmConfidence: null,
+          execution:               null,
+          exitType: null, exitPrice: null, grossReturnPct: null, costAdjustedReturnPct: null, holdingDays: null, entryPrice: null,
+          strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
+        }).catch(() => null);
         continue;
       }
 
@@ -561,6 +716,57 @@ async function runPortfolioTradingCycle(
       if (utilComponents19.finalScore < 0) {
         logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP',
           reason: `Phase 19 utility skip: score=${utilComponents19.finalScore.toFixed(3)}` });
+        // Phase 20: write SKIP replay event
+        void writeDecisionReplay({
+          candidateId:             policyEvaluationCandidateId19,
+          portfolioId,
+          policyEvaluationId:      null,
+          tradeId:                 null,
+          decisionType:            'SKIP',
+          decisionTime:            new Date(),
+          policyType:              portfolioPolicy19?.policyType ?? null,
+          policyVersion:           portfolioPolicy19?.policyVersion ?? null,
+          portfolioMode:           portfolioMode20,
+          positionSizePct:         maxPosPct,
+          symbol,
+          price:                   signal.price,
+          rsiValue:                signal.mlBoost ?? null,
+          macdHistogram:           null,
+          volumeRatio:             null,
+          atrPct:                  null,
+          fundamentalScore:        signal.fundamentalScore ?? null,
+          marketRegime:            signal.marketRegimeLabel ?? null,
+          strategyType:            (signal.strategyType ?? null) as any,
+          strategyConfidence:      signal.strategyConfidence ?? null,
+          strategyReasonCodes:     signal.strategyReasonCodes ?? null,
+          mlPwin:                  signal.mlWinProbability ?? null,
+          modelStage:              govState?.stage ?? null,
+          trainingRows:            null,
+          modelVersion:            null,
+          eligibilityGateResults:  [],
+          utilityComponents: {
+            expectedValuePct:         utilComponents19.expectedValuePct,
+            strategyFitMultiplier:    utilComponents19.strategyFitMultiplier,
+            horizonFitMultiplier:     utilComponents19.horizonFitMultiplier,
+            regimeFitMultiplier:      utilComponents19.regimeFitMultiplier,
+            volatilityPenalty:        utilComponents19.volatilityPenalty,
+            drawdownPenalty:          utilComponents19.drawdownPenalty,
+            sectorConcentrationPenalty: utilComponents19.sectorConcentrationPenalty,
+            liquidityPenalty:         utilComponents19.liquidityPenalty,
+            finalScore:               utilComponents19.finalScore,
+          },
+          rejectionReasons:        ['UTILITY_NEGATIVE'],
+          selectionReason:         null,
+          killSwitchFlags:         ksFlags20,
+          stopPrice:               null,
+          targetPrice:             null,
+          riskAmountInr:           null,
+          drawdownPct:             portfolioExposure19.drawdownPct,
+          llmVerdict:              null, llmReasonCodes: null, llmModel: null, llmPromptVersion: null, llmConfidence: null,
+          execution:               null,
+          exitType: null, exitPrice: null, grossReturnPct: null, costAdjustedReturnPct: null, holdingDays: null, entryPrice: null,
+          strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
+        }).catch(() => null);
         continue;
       }
     }
@@ -642,6 +848,70 @@ async function runPortfolioTradingCycle(
         sector: symbol.replace('.NS', ''),
         voteScore: 0,
         tradeId: Number(tradeId),
+      }).catch(() => null);
+      // Phase 20: write BUY replay event
+      const stopPriceForReplay  = signal.price * (1 - 0.015 * 1.5);
+      const targetPriceForReplay = signal.price * (1 + 0.015 * 3);
+      void writeDecisionReplay({
+        candidateId:             policyEvaluationCandidateId19 || 0,
+        portfolioId,
+        policyEvaluationId:      null,
+        tradeId:                 Number(tradeId),
+        decisionType:            'BUY',
+        decisionTime:            new Date(),
+        policyType:              portfolioPolicy19?.policyType ?? null,
+        policyVersion:           portfolioPolicy19?.policyVersion ?? null,
+        portfolioMode:           portfolioMode20,
+        positionSizePct:         maxPosPct,
+        symbol,
+        price:                   signal.price,
+        rsiValue:                signal.mlBoost ?? null,
+        macdHistogram:           null,
+        volumeRatio:             null,
+        atrPct:                  null,
+        fundamentalScore:        signal.fundamentalScore ?? null,
+        marketRegime:            signal.marketRegimeLabel ?? null,
+        strategyType:            (signal.strategyType ?? null) as any,
+        strategyConfidence:      signal.strategyConfidence ?? null,
+        strategyReasonCodes:     signal.strategyReasonCodes ?? null,
+        mlPwin:                  signal.mlWinProbability ?? null,
+        modelStage:              govState?.stage ?? null,
+        trainingRows:            null,
+        modelVersion:            null,
+        eligibilityGateResults:  [],
+        utilityComponents: {
+          expectedValuePct:         null, strategyFitMultiplier: null,
+          horizonFitMultiplier:     null, regimeFitMultiplier: null,
+          volatilityPenalty:        null, drawdownPenalty: null,
+          sectorConcentrationPenalty: null, liquidityPenalty: null,
+          finalScore:               null,
+        },
+        rejectionReasons:        [],
+        selectionReason:         null,
+        killSwitchFlags:         ksFlags20,
+        stopPrice:               stopPriceForReplay,
+        targetPrice:             targetPriceForReplay,
+        riskAmountInr:           refreshed.totalValue * 0.005,
+        drawdownPct:             portfolioExposure19.drawdownPct,
+        llmVerdict:              signal.groqSentiment ?? null,
+        llmReasonCodes:          signal.fundamentalReasoning ? [signal.fundamentalReasoning] : null,
+        llmModel:                null, llmPromptVersion: null, llmConfidence: null,
+        execution: {
+          quantity:          qty,
+          averagePrice:      signal.price,
+          brokerage:         5, // flat ₹5 brokerage
+          orderType:         'MARKET',
+          fillStatus:        'FULL',
+          quantityRequested: qty,
+          quantityFilled:    qty,
+          signalPrice:       signal.price,
+          intendedPrice:     signal.price,
+          executionPrice:    signal.price,
+          brokerName:        'paper',
+        },
+        exitType: null, exitPrice: null, grossReturnPct: null, costAdjustedReturnPct: null,
+        holdingDays: null, entryPrice: signal.price,
+        strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
       }).catch(() => null);
     }
   }

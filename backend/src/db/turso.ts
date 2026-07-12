@@ -508,6 +508,62 @@ export async function runMigrations(): Promise<void> {
   } catch (_) { /* exists */ }
 
   console.log('[DB] Migration: Phase 19 portfolio-aware ranking schema done');
+
+  // ── Phase 20: Decision Replay + Explainability ────────────────────────────
+  try {
+    const db = getClient();
+    // decision_replay_events: one row per BUY/SELL/SKIP/VETO decision
+    // idempotency_key is the dedup key — format:
+    //   BUY/SKIP/VETO: candidate:{candidateId}:portfolio:{portfolioId}:{DECISION}
+    //   SELL:          trade:{tradeId}:order:{systemOrderId}:SELL
+    await db.execute(`CREATE TABLE IF NOT EXISTS decision_replay_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      candidate_id INTEGER NOT NULL,
+      portfolio_id INTEGER NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+      policy_evaluation_id INTEGER,
+      decision_type TEXT NOT NULL CHECK(decision_type IN ('BUY','SELL','SKIP','VETO','REDUCE','WATCH')),
+      decision_time TEXT NOT NULL,
+      source_type TEXT NOT NULL CHECK(source_type IN ('CANDIDATE','TRADE','ORDER')),
+      source_id TEXT NOT NULL,
+      trade_id INTEGER,
+      order_id TEXT,
+      user_summary TEXT,
+      user_reason_codes_json TEXT,
+      admin_trace_json TEXT,
+      raw_feature_snapshot_json TEXT,
+      model_trace_json TEXT,
+      rule_trace_json TEXT,
+      llm_trace_json TEXT,
+      risk_trace_json TEXT,
+      execution_trace_json TEXT,
+      explanation_version TEXT NOT NULL DEFAULT 'v1.0',
+      model_version TEXT,
+      policy_version TEXT,
+      strategy_classifier_version TEXT,
+      idempotency_key TEXT UNIQUE NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_dre_portfolio_time ON decision_replay_events(portfolio_id, decision_time)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_dre_candidate ON decision_replay_events(candidate_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_dre_trade ON decision_replay_events(trade_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_dre_decision_type ON decision_replay_events(portfolio_id, decision_type, decision_time)');
+
+    // decision_explanations: USER and ADMIN visibility rows per replay event
+    await db.execute(`CREATE TABLE IF NOT EXISTS decision_explanations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      decision_replay_event_id INTEGER NOT NULL REFERENCES decision_replay_events(id) ON DELETE CASCADE,
+      visibility TEXT NOT NULL CHECK(visibility IN ('USER','ADMIN')),
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      reason_codes_json TEXT,
+      metrics_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(decision_replay_event_id, visibility)
+    )`);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_de_event ON decision_explanations(decision_replay_event_id, visibility)');
+  } catch (_) { /* exists */ }
+
+  console.log('[DB] Migration: Phase 20 decision replay + explainability schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

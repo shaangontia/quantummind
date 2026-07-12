@@ -337,4 +337,140 @@ router.get('/market-regime', async (_req: Request, res: Response) => {
   return res.json({ success: true, data: regime ?? { label: 'NEUTRAL', niftyVs50Dma: 'unavailable', niftyVs200Dma: 'unavailable' } });
 });
 
+// ─── Phase 20: Decision Replay — User endpoints ───────────────────────────────
+
+/**
+ * GET /api/portfolios/:portfolioId/decisions
+ * Paginated list of decisions (BUY/SELL/SKIP/VETO) for a portfolio.
+ * Returns sanitized fields only — NO admin trace columns.
+ */
+router.get('/portfolios/:portfolioId/decisions', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  try {
+    const portfolioId = parseInt(req.params.portfolioId, 10);
+    if (isNaN(portfolioId)) return res.status(400).json({ success: false, error: 'Invalid portfolioId' });
+    const limit  = Math.min(parseInt(req.query.limit  as string ?? '50', 10) || 50, 100);
+    const offset = parseInt(req.query.offset as string ?? '0',  10) || 0;
+    const dtFilter = req.query.decision_type as string | undefined;
+
+    const conditions: string[] = ['dre.portfolio_id = ?'];
+    const args: any[] = [portfolioId];
+    if (dtFilter && ['BUY','SELL','SKIP','VETO','WATCH','REDUCE'].includes(dtFilter.toUpperCase())) {
+      conditions.push('dre.decision_type = ?');
+      args.push(dtFilter.toUpperCase());
+    }
+
+    const where = conditions.join(' AND ');
+    const rows = await query(
+      `SELECT dre.id as decisionId, dre.decision_type as decision, dre.decision_time,
+              dre.user_summary, dre.user_reason_codes_json,
+              de.title,
+              tc.symbol
+       FROM decision_replay_events dre
+       LEFT JOIN decision_explanations de ON de.decision_replay_event_id = dre.id AND de.visibility = 'USER'
+       LEFT JOIN trade_candidates tc ON tc.id = dre.candidate_id
+       WHERE ${where}
+       ORDER BY dre.decision_time DESC
+       LIMIT ? OFFSET ?`,
+      [...args, limit, offset],
+    );
+
+    const total = await queryOne(
+      `SELECT COUNT(*) as cnt FROM decision_replay_events dre WHERE ${where}`,
+      args,
+    );
+
+    return res.json({
+      success: true,
+      data: rows.map((r: any) => ({
+        decisionId:   r.decisionId,
+        symbol:       r.symbol ?? 'UNKNOWN',
+        decision:     r.decision,
+        title:        r.title ?? r.user_summary ?? '',
+        userSummary:  r.user_summary ?? '',
+        decisionTime: r.decision_time,
+      })),
+      pagination: { limit, offset, total: Number(total?.cnt ?? 0) },
+    });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
+/**
+ * GET /api/portfolios/:portfolioId/decisions/:decisionId/replay
+ * Sanitized single decision replay — user-visible fields only.
+ * Returns: title, summary, reasonCodes, portfolioContext, tradeResult.
+ * MUST NOT expose: admin_trace_json, raw_feature_snapshot_json, model/rule/llm/risk trace.
+ */
+router.get('/portfolios/:portfolioId/decisions/:decisionId/replay', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  try {
+    const portfolioId = parseInt(req.params.portfolioId, 10);
+    const decisionId  = parseInt(req.params.decisionId, 10);
+    if (isNaN(portfolioId) || isNaN(decisionId))
+      return res.status(400).json({ success: false, error: 'Invalid parameters' });
+
+    // Fetch event — portfolio_id check prevents cross-portfolio access
+    const event = await queryOne(
+      `SELECT dre.id, dre.decision_type, dre.decision_time,
+              dre.user_reason_codes_json, dre.trade_id, dre.candidate_id,
+              dre.explanation_version
+       FROM decision_replay_events dre
+       WHERE dre.id = ? AND dre.portfolio_id = ?`,
+      [decisionId, portfolioId],
+    );
+    if (!event) return res.status(404).json({ success: false, error: 'Decision not found' });
+
+    // User explanation row
+    const explanation = await queryOne(
+      `SELECT title, summary, reason_codes_json, metrics_json
+       FROM decision_explanations
+       WHERE decision_replay_event_id = ? AND visibility = 'USER'`,
+      [decisionId],
+    );
+
+    // Symbol from trade_candidates
+    const candidate = event.candidate_id
+      ? await queryOne('SELECT symbol FROM trade_candidates WHERE id = ?', [event.candidate_id])
+      : null;
+
+    // Trade result (BUY/SELL) — join trades for price + return data
+    let tradeResult = null;
+    if (event.trade_id && ['BUY','SELL'].includes(String(event.decision_type))) {
+      const trade = await queryOne(
+        `SELECT action, price, exit_type,
+                (SELECT price FROM trades WHERE portfolio_id = ? AND symbol = t.symbol AND action = 'BUY' ORDER BY trade_time DESC LIMIT 1) as entry_price
+         FROM trades t WHERE t.id = ? AND t.portfolio_id = ?`,
+        [portfolioId, event.trade_id, portfolioId],
+      );
+      if (trade) {
+        const exitPrice  = String(event.decision_type) === 'SELL' ? Number(trade.price) : null;
+        const entryPrice = String(event.decision_type) === 'SELL' ? (trade.entry_price ? Number(trade.entry_price) : null) : Number(trade.price);
+        const grossReturnPct = entryPrice && exitPrice
+          ? ((exitPrice - entryPrice) / entryPrice) * 100 : null;
+        tradeResult = { entryPrice, exitPrice, grossReturnPct, costAdjustedReturnPct: grossReturnPct, holdingDays: null };
+      }
+    }
+
+    // portfolioContext from explanation metrics_json
+    let portfolioContext: any = {};
+    try { portfolioContext = explanation?.metrics_json ? JSON.parse(String(explanation.metrics_json)) : {}; } catch { /* ignore */ }
+
+    return res.json({
+      success: true,
+      data: {
+        decisionId,
+        symbol:       candidate?.symbol ?? 'UNKNOWN',
+        decision:     event.decision_type,
+        title:        explanation?.title ?? '',
+        summary:      explanation?.summary ?? '',
+        reasonCodes:  explanation?.reason_codes_json ? JSON.parse(String(explanation.reason_codes_json)) : [],
+        portfolioContext: {
+          policyType:      portfolioContext.policyType     ?? null,
+          riskMode:        portfolioContext.portfolioMode  ?? null,
+          positionSizePct: portfolioContext.positionSizePct ?? null,
+        },
+        tradeResult,
+      },
+    });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
 export default router;
