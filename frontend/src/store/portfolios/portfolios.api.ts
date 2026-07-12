@@ -224,6 +224,58 @@ export interface ExpectancyReport {
   }>;
 }
 
+// ─── Phase 21: Portfolio Health types ──────────────────────────────────────────────────
+
+export type HealthGrade = 'EXCELLENT' | 'GOOD' | 'WARNING' | 'CRITICAL';
+
+export interface HealthComponents {
+  diversification: number;
+  drawdown: number;
+  goalProgress: number;
+  strategyBalance: number;
+  cashDeployment: number;
+  executionQuality: number;
+  modelConfidence: number;
+  riskControl: number;
+}
+
+export interface HealthRecommendation {
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  code: string;
+  message: string;
+  action: string;
+}
+
+export interface PortfolioHealth {
+  portfolioId: number;
+  healthScore: number;
+  healthGrade: HealthGrade;
+  goalProbabilityPct: number | null;
+  goalImpossible?: boolean;
+  goalImpossibilityReason?: string;
+  targetReturnPct: number | null;
+  horizonDays: number | null;
+  daysRemaining: number | null;
+  requiredMonthlyReturnPct: number | null;
+  currentReturnPct: number | null;
+  currentDrawdownPct: number | null;
+  cashPct: number | null;
+  investedPct: number | null;
+  openPositionsCount: number | null;
+  components: HealthComponents;
+  topRisks: string[];
+  recommendations: HealthRecommendation[];
+  lastUpdated: string;
+}
+
+export interface HealthHistoryPoint {
+  snapshotTime: string;
+  healthScore: number;
+  healthGrade: HealthGrade;
+  goalProbabilityPct: number | null;
+  currentReturnPct: number | null;
+}
+
 // ─── Phase 20: Decision Replay ───────────────────────────────────────────────
 
 export type DecisionType = 'BUY' | 'SELL' | 'SKIP' | 'VETO';
@@ -466,6 +518,18 @@ export const portfoliosApi = baseApi.injectEndpoints({
       keepUnusedDataFor: 120,
     }),
 
+    // ─── Phase 21: Portfolio Health (user-facing) ────────────────────────────────
+
+    getPortfolioHealth: builder.query<PortfolioHealth, number>({
+      query: id => ({ url: `/portfolios/${id}/health`, method: 'GET' }),
+      keepUnusedDataFor: 120,
+    }),
+
+    getPortfolioHealthHistory: builder.query<HealthHistoryPoint[], { id: number; range?: '7D' | '30D' | '90D' }>({
+      query: ({ id, range = '30D' }) => ({ url: `/portfolios/${id}/health/history`, params: { range }, method: 'GET' }),
+      keepUnusedDataFor: 60,
+    }),
+
     // ─── Phase 20: Decision Replay (user-facing) ─────────────────────────────────
 
     getPortfolioDecisions: builder.query<DecisionEvent[], { portfolioId: number; limit?: number; offset?: number }>({
@@ -513,4 +577,6 @@ export const {
   useGetPortfolioOverlapQuery,
   useGetPortfolioDecisionsQuery,
   useGetDecisionReplayQuery,
+  useGetPortfolioHealthQuery,
+  useGetPortfolioHealthHistoryQuery,
 } = portfoliosApi;

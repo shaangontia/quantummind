@@ -152,6 +152,50 @@ export interface SimulateReplayResult {
   simulatedAt: string;
 }
 
+// ─── Phase 21: Admin Health types ───────────────────────────────────────────────────
+
+import type { HealthGrade } from '../portfolios/portfolios.api.ts';
+
+export interface HealthDistribution {
+  EXCELLENT: number;
+  GOOD: number;
+  WARNING: number;
+  CRITICAL: number;
+}
+
+export interface AdminHealthOverview {
+  totalPortfolios: number;
+  healthDistribution: HealthDistribution;
+  averageHealthScore: number;
+  topRiskReasons: string[];
+}
+
+export interface AtRiskPortfolio {
+  portfolioId: number;
+  portfolioName: string;
+  healthScore: number;
+  healthGrade: HealthGrade;
+  goalProbabilityPct: number | null;
+  topRisks: string[];
+  lastUpdated: string;
+}
+
+export interface HealthConfigVersion {
+  id: number;
+  configVersion: string;
+  isActive: boolean;
+  weightsJson: string;
+  thresholdsJson: string;
+  goalProbabilityAssumptionsJson: string;
+  createdAt: string;
+}
+
+export interface CreateHealthConfigPayload {
+  weights_json: string;
+  thresholds_json: string;
+  goal_probability_assumptions_json: string;
+}
+
 // ─── RTK Query Endpoints ──────────────────────────────────────────────────────
 
 export const adminApi = baseApi.injectEndpoints({
@@ -192,6 +236,37 @@ export const adminApi = baseApi.injectEndpoints({
       keepUnusedDataFor: 120,
     }),
 
+    // ─── Phase 21: Admin Health endpoints ──────────────────────────────────────────────
+
+    getAdminHealthOverview: builder.query<AdminHealthOverview, void>({
+      query: () => ({ url: '/admin/portfolio-health/overview', method: 'GET' }),
+      keepUnusedDataFor: 120,
+    }),
+
+    getAdminAtRiskPortfolios: builder.query<AtRiskPortfolio[], void>({
+      query: () => ({ url: '/admin/portfolio-health/at-risk', method: 'GET' }),
+      keepUnusedDataFor: 60,
+    }),
+
+    getAdminHealthConfigs: builder.query<HealthConfigVersion[], void>({
+      query: () => ({ url: '/admin/portfolio-health/config', method: 'GET' }),
+      keepUnusedDataFor: 300,
+      providesTags: ['HealthConfig'],
+    }),
+
+    createAdminHealthConfig: builder.mutation<HealthConfigVersion, CreateHealthConfigPayload>({
+      query: body => ({ url: '/admin/portfolio-health/config', method: 'POST', body }),
+      invalidatesTags: ['HealthConfig'],
+    }),
+
+    recalculatePortfolioHealth: builder.mutation<{ success: boolean }, { portfolioId: number }>({
+      query: body => ({ url: '/admin/portfolio-health/recalculate', method: 'POST', body }),
+    }),
+
+    recalculateAllHealth: builder.mutation<{ accepted: boolean }, void>({
+      query: () => ({ url: '/admin/portfolio-health/recalculate-all', method: 'POST' }),
+    }),
+
     simulateDecisionReplay: builder.mutation<SimulateReplayResult, { decisionId: string; body: SimulateReplayPayload }>({
       query: ({ decisionId, body }) => ({
         url: `/admin/decisions/${decisionId}/replay/simulate`,
@@ -210,4 +285,10 @@ export const {
   useGetAdminFailedDecisionsQuery,
   useGetAdminCandidateTraceQuery,
   useSimulateDecisionReplayMutation,
+  useGetAdminHealthOverviewQuery,
+  useGetAdminAtRiskPortfoliosQuery,
+  useGetAdminHealthConfigsQuery,
+  useCreateAdminHealthConfigMutation,
+  useRecalculatePortfolioHealthMutation,
+  useRecalculateAllHealthMutation,
 } = adminApi;

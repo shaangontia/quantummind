@@ -245,7 +245,9 @@ async function runPortfolioTradingCycle(
       // Phase 17: Consecutive-loss tracking
       void recordTradeOutcome(portfolioId, sellPnlPct < 0).catch(() => null);
       // Phase 21: Refresh health snapshot after SELL
-      void runPortfolioHealthJob(portfolioId).catch(() => null);
+      void runPortfolioHealthJob(portfolioId).catch(err =>
+        logger.warn({ job: 'portfolio-health', portfolioId, phase: 'sell-trigger', err: String(err) }, 'Health recalculation failed after SELL')
+      );
       // Phase 20: write SELL replay event (fire-and-forget)
       if (sellTradeId) {
         const buyDate = h.createdAt ? new Date(String(h.createdAt)) : null;
@@ -918,7 +920,9 @@ async function runPortfolioTradingCycle(
         strategyClassifierVersion: signal.strategyClassifierVersion ?? null,
       }).catch(() => null);
       // Phase 21: Refresh health snapshot after BUY
-      void runPortfolioHealthJob(portfolioId).catch(() => null);
+      void runPortfolioHealthJob(portfolioId).catch(err =>
+        logger.warn({ job: 'portfolio-health', portfolioId, phase: 'buy-trigger', err: String(err) }, 'Health recalculation failed after BUY')
+      );
     }
   }
   return { trades: tradeCount, signals: signalCount };
