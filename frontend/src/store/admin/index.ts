@@ -5,6 +5,12 @@ export {
   useGetAdminFailedDecisionsQuery,
   useGetAdminCandidateTraceQuery,
   useSimulateDecisionReplayMutation,
+  useGetAdminHealthOverviewQuery,
+  useGetAdminAtRiskPortfoliosQuery,
+  useGetAdminHealthConfigsQuery,
+  useCreateAdminHealthConfigMutation,
+  useRecalculatePortfolioHealthMutation,
+  useRecalculateAllHealthMutation,
 } from './admin.api.ts';
 
 export type {
@@ -16,4 +22,9 @@ export type {
   CandidateTraceEntry,
   SimulateReplayPayload,
   SimulateReplayResult,
+  AdminHealthOverview,
+  HealthDistribution,
+  AtRiskPortfolio,
+  HealthConfigVersion,
+  CreateHealthConfigPayload,
 } from './admin.api.ts';

@@ -14,6 +14,8 @@ import { AdminDecisionsPage } from './features/portfolios/ui/AdminDecisionsPage/
 import { AdminFailedDecisionsPage } from './features/portfolios/ui/AdminFailedDecisionsPage/index.ts';
 import { AdminCandidateTracePage } from './features/portfolios/ui/AdminCandidateTracePage/index.ts';
 import { AdminReplaySimulatorPage } from './features/portfolios/ui/AdminReplaySimulatorPage/index.ts';
+import { PortfolioHealthPage } from './features/portfolios/ui/PortfolioHealthPage/index.ts';
+import { AdminPortfolioHealthPage, AdminAtRiskPage, AdminHealthConfigPage } from './features/portfolios/ui/AdminPortfolioHealthPage/index.ts';
 
 export const router = createBrowserRouter([
   // ─── Public auth routes ───────────────────────────────────────────────────
@@ -34,6 +36,7 @@ export const router = createBrowserRouter([
       { path: 'portfolios/:id/trades',         element: <AuditLogPage /> },
       { path: 'portfolios/:id/signals',        element: <SignalsPage /> },
       { path: 'portfolios/:id/decisions',       element: <DecisionsPage /> },
+      { path: 'portfolios/:id/health',           element: <PortfolioHealthPage /> },
       {
         path: 'admin/overlap',
         element: (<RequireAdmin><AdminOverlapPage /></RequireAdmin>),
@@ -53,6 +56,18 @@ export const router = createBrowserRouter([
       {
         path: 'admin/replay-simulator',
         element: (<RequireAdmin><AdminReplaySimulatorPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/portfolio-health',
+        element: (<RequireAdmin><AdminPortfolioHealthPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/portfolio-health/at-risk',
+        element: (<RequireAdmin><AdminAtRiskPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/portfolio-health/config',
+        element: (<RequireAdmin><AdminHealthConfigPage /></RequireAdmin>),
       },
     ],
   },

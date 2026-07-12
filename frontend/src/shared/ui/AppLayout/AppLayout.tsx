@@ -65,7 +65,13 @@ export const AppLayout = () => {
           <Box display="flex" gap={0.5}>
             <Box component={NavLink} to="/" end sx={NAV_LINK_SX}>Portfolios</Box>
             {user?.isAdmin && (
-              <Box component={NavLink} to="/admin/overlap" sx={NAV_LINK_SX}>Admin</Box>
+              <>
+                <Box component={NavLink} to="/admin/overlap" sx={NAV_LINK_SX}>Overlap</Box>
+                <Box component={NavLink} to="/admin/decisions" sx={NAV_LINK_SX}>Decisions</Box>
+                <Box component={NavLink} to="/admin/portfolio-health" sx={NAV_LINK_SX}>Health</Box>
+                <Box component={NavLink} to="/admin/candidate-trace" sx={NAV_LINK_SX}>Candidates</Box>
+                <Box component={NavLink} to="/admin/replay-simulator" sx={NAV_LINK_SX}>Simulator</Box>
+              </>
             )}
           </Box>
 

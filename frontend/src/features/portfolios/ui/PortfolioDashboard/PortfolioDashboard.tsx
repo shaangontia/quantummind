@@ -23,6 +23,7 @@ import { ModelGovernanceBanner } from '../ModelGovernanceBanner/index.ts';
 import { KillSwitchStatusBar } from '../KillSwitchStatusBar/index.ts';
 import { PortfolioModeChip } from '../PortfolioModeChip/index.ts';
 import { PortfolioPolicyBadge } from '../PortfolioPolicyBadge/index.ts';
+import { PortfolioHealthSummaryCard } from '../PortfolioHealthPage/index.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -123,8 +124,14 @@ export const PortfolioDashboard = () => {
           <Button size="small" variant="outlined" component={Link} to={`/portfolios/${portfolioId}/decisions`}>
             Decisions
           </Button>
+          <Button size="small" variant="outlined" component={Link} to={`/portfolios/${portfolioId}/health`}>
+            Health
+          </Button>
         </Box>
       </Box>
+
+      {/* Phase 21: Compact health summary */}
+      <PortfolioHealthSummaryCard portfolioId={portfolioId} />
 
       {/* Market regime banner — Phase 13, self-hides if backend hasn't shipped field */}
       <KillSwitchStatusBar portfolioId={portfolioId} />
