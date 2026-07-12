@@ -232,6 +232,13 @@ async function runPortfolioTradingCycle(
         continue;
       }
 
+      // Phase 22: Virtual safety SELL gate — block non-risk-reducing SELLs during reconciliation halt.
+      const sellBlockCode = await assertCanSellVirtual(portfolioId, exitTypeForTrade ?? 'PROFIT').catch(() => null);
+      if (sellBlockCode) {
+        logger.warn({ job: 'market-cycle', portfolioId, symbol: h.symbol, sellType: exitTypeForTrade, reason: sellBlockCode, msg: 'Non-risk-reducing SELL blocked during virtual ledger halt' });
+        continue;
+      }
+
       sellSignalCount++;
       await run('INSERT INTO market_signals (portfolio_id,symbol,signal_type,strength,reason,price_at_signal,acted_upon) VALUES (?,?,?,?,?,?,1)',
         [portfolioId, h.symbol, 'SELL', signal.strength, reason, signal.price]);

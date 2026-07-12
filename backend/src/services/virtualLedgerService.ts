@@ -94,7 +94,7 @@ export async function reconstructVirtualCash(portfolioId: number): Promise<{
  * For each symbol: net_quantity = Σ(BUY qty) − Σ(SELL qty)
  * Average price = weighted average of BUY cost (cost basis method)
  */
-export async function reconstructVirtualPositions(portfolioId: number): Promise<ReconstructedPosition[]> {
+export async function reconstructVirtualPositions(portfolioId: number): Promise<{ positions: ReconstructedPosition[]; pricesStale: boolean }> {
   // Get all executed trades ordered by time
   const trades = await query(
     `SELECT symbol, action, quantity, price, net_amount
@@ -176,7 +176,7 @@ export async function reconstructVirtualPositions(portfolioId: number): Promise<
     });
   }
 
-  return positions;
+  return { positions, pricesStale: hasStalePrice };
 }
 
 /**
@@ -189,7 +189,7 @@ export async function reconstructVirtualNav(portfolioId: number): Promise<{
   marketValueOfPositions: number;
 }> {
   const cashResult = await reconstructVirtualCash(portfolioId);
-  const positions  = await reconstructVirtualPositions(portfolioId);
+  const { positions } = await reconstructVirtualPositions(portfolioId);
 
   const marketValueOfPositions = positions.reduce((sum, p) => sum + p.marketValue, 0);
   const expectedNav = cashResult.expectedCash + marketValueOfPositions;
@@ -230,12 +230,9 @@ export async function reconstructVirtualLedger(portfolioId: number): Promise<Rec
   logger.info({ service: 'virtual-ledger', portfolioId, msg: 'Starting virtual ledger reconstruction' });
 
   const cashResult = await reconstructVirtualCash(portfolioId);
-  const positions  = await reconstructVirtualPositions(portfolioId);
+  const { positions, pricesStale } = await reconstructVirtualPositions(portfolioId);
   const marketValueOfPositions = positions.reduce((sum, p) => sum + p.marketValue, 0);
   const expectedNav = cashResult.expectedCash + marketValueOfPositions;
-
-  // Detect stale prices: if any position has no lastKnownPrice or very old data
-  const pricesStale = positions.some(p => p.lastKnownPrice === 0);
 
   return {
     portfolioId,

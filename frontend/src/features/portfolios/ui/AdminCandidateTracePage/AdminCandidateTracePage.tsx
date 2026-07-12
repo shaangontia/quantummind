@@ -103,7 +103,7 @@ export const AdminCandidateTracePage = () => {
             </Typography>
             <Box display="flex" gap={1}>
               {(['EXECUTED', 'SKIPPED', 'VETOED', 'WEAK'] as const).map(a => {
-                const count = data.candidates.filter(c => c.actionTaken === a).length;
+                const count = (data.candidates ?? []).filter(c => c.actionTaken === a).length;
                 return count > 0 ? (
                   <Badge key={a} variant={ACTION_VARIANT[a]}>{a}: {count}</Badge>
                 ) : null;
@@ -128,7 +128,7 @@ export const AdminCandidateTracePage = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {data.candidates.map(c => (
+                  {(data.candidates ?? []).map(c => (
                     <TableRow key={c.candidateId} hover>
                       <TableCell>
                         <Box>
@@ -163,15 +163,15 @@ export const AdminCandidateTracePage = () => {
                       </TableCell>
                       <TableCell><Badge variant={ACTION_VARIANT[c.actionTaken]}>{c.actionTaken}</Badge></TableCell>
                       <TableCell>
-                        {c.filtersBlocked.length > 0 ? (
-                          <Tooltip title={c.filtersBlocked.join(', ')}>
+                        {(c.filtersBlocked ?? []).length > 0 ? (
+                          <Tooltip title={(c.filtersBlocked ?? []).join(', ')}>
                             <Box display="flex" gap={0.5} flexWrap="wrap" maxWidth={200}>
-                              {c.filtersBlocked.slice(0, 2).map(f => (
+                              {(c.filtersBlocked ?? []).slice(0, 2).map(f => (
                                 <Chip key={f} label={f} size="small"
                                   sx={{ fontSize: '0.6rem', height: 16, bgcolor: 'rgba(239,68,68,0.1)', color: 'error.light' }} />
                               ))}
-                              {c.filtersBlocked.length > 2 && (
-                                <Typography variant="caption" color="text.disabled">+{c.filtersBlocked.length - 2}</Typography>
+                              {(c.filtersBlocked ?? []).length > 2 && (
+                                <Typography variant="caption" color="text.disabled">+{(c.filtersBlocked ?? []).length - 2}</Typography>
                               )}
                             </Box>
                           </Tooltip>

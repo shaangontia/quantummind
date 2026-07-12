@@ -55,7 +55,7 @@ export type MismatchType =
   | 'POSITION_MISSING'
   | 'TRADE_WITHOUT_POSITION'
   | 'POSITION_WITHOUT_TRADE'
-  | 'EXIT_PLAN_QUANTITY_MISMATCH'
+  // EXIT_PLAN_QUANTITY_MISMATCH omitted: no exit-plan quantity field in schema yet (see compareExitPlans TODO)
   | 'NEGATIVE_CASH'
   | 'NEGATIVE_POSITION'
   | 'DUPLICATE_ORDER_EFFECT';
@@ -262,22 +262,13 @@ export async function compareExitPlans(
 
     const actualQty = Number(holding.quantity ?? 0);
 
-    // Exit plan quantity > actual holding quantity = data integrity issue
-    // (This would happen if an exit plan was registered for a quantity that was later partially sold
-    //  but the exit plan target was never updated)
-    // We flag it as WARNING rather than block (exit plan will be trimmed on next SELL)
-    if (exp.quantity > 0 && actualQty > 0 && exp.quantity > actualQty + 0.001) {
-      mismatches.push({
-        mismatchType:                'EXIT_PLAN_QUANTITY_MISMATCH',
-        severity:                    'CRITICAL',
-        symbol:                      exp.symbol,
-        expectedValue:               String(exp.quantity),
-        actualValue:                 String(actualQty),
-        differenceValue:             String((exp.quantity - actualQty).toFixed(4)),
-        blocksNewBuys:               true,
-        allowsOnlyRiskReducingSells: false,
-      });
-    }
+    // TODO: EXIT_PLAN_QUANTITY_MISMATCH — a proper check here would compare the quantity
+    // targeted by the exit plan (e.g. stop-loss target shares) vs the actual position quantity.
+    // The holdings schema does not currently store a separate exit-plan quantity field;
+    // atr_stop_price is a price, not a quantity. Comparing exp.quantity (reconstructed ledger qty)
+    // vs holding.quantity here would duplicate POSITION_QUANTITY_MISMATCH under a misleading label,
+    // and would never catch a case where an exit plan references a quantity that doesn't exist.
+    // Omitted until a dedicated exit-plan quantity column is added to the schema.
 
     // Missing exit plan for a position older than grace period
     if (holding.atr_stop_price == null) {
@@ -416,7 +407,7 @@ function buildReasonMessage(criticals: ReconciliationMismatch[]): string {
   if (types.includes('POSITION_QUANTITY_MISMATCH')) return `Position quantity mismatch detected. New BUYs blocked until reconciliation completes.`;
   if (types.includes('CASH_MISMATCH'))             return 'Virtual cash mismatch above tolerance. New BUYs paused.';
   if (types.includes('NAV_MISMATCH'))              return 'Virtual NAV mismatch above tolerance. New BUYs paused.';
-  if (types.includes('EXIT_PLAN_QUANTITY_MISMATCH')) return 'Exit plan quantity exceeds actual position. New BUYs blocked.';
+  // EXIT_PLAN_QUANTITY_MISMATCH branch removed — mismatch type is not generated until schema is extended
   return 'Virtual ledger mismatch detected. New BUY orders paused until reconciliation completes.';
 }
 

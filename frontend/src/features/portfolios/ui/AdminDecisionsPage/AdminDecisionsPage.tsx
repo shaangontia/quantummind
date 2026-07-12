@@ -82,7 +82,7 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
 
             {/* Feature snapshot */}
             <Typography variant="overline" sx={{ fontSize: '0.65rem', color: 'text.disabled', letterSpacing: 1.2, display: 'block', mb: 1 }}>Feature Snapshot</Typography>
-            {Object.entries(data.adminTrace.featureSnapshot).map(([k, v]) => (
+            {Object.entries(data.adminTrace.featureSnapshot ?? {}).map(([k, v]) => (
               <TraceRow key={k} label={k} value={v == null ? '—' : String(v)} />
             ))}
 
@@ -90,7 +90,7 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
 
             {/* Model trace */}
             <Typography variant="overline" sx={{ fontSize: '0.65rem', color: 'text.disabled', letterSpacing: 1.2, display: 'block', mb: 1 }}>Model Score Breakdown</Typography>
-            {data.adminTrace.modelTrace.map((m, i) => (
+            {(data.adminTrace.modelTrace ?? []).map((m, i) => (
               <TraceRow key={i} label={m.component} value={`score ${m.score.toFixed(3)} × w${m.weight.toFixed(2)} = ${m.contribution.toFixed(3)}${m.detail ? ` · ${m.detail}` : ''}`} />
             ))}
 
@@ -98,7 +98,7 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
 
             {/* Rule trace */}
             <Typography variant="overline" sx={{ fontSize: '0.65rem', color: 'text.disabled', letterSpacing: 1.2, display: 'block', mb: 1 }}>Rules</Typography>
-            {data.adminTrace.ruleTrace.map((r, i) => (
+            {(data.adminTrace.ruleTrace ?? []).map((r, i) => (
               <TraceRow key={i} label={r.rule} value={`${r.value ?? '—'} (threshold: ${r.threshold ?? '—'})`} passed={r.passed} />
             ))}
 
@@ -106,7 +106,7 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
 
             {/* Risk trace */}
             <Typography variant="overline" sx={{ fontSize: '0.65rem', color: 'text.disabled', letterSpacing: 1.2, display: 'block', mb: 1 }}>Risk Gates</Typography>
-            {data.adminTrace.riskTrace.map((r, i) => (
+            {(data.adminTrace.riskTrace ?? []).map((r, i) => (
               <TraceRow key={i} label={r.rule} value={`${r.value ?? '—'} (threshold: ${r.threshold ?? '—'})`} passed={r.passed} />
             ))}
 
@@ -118,11 +118,11 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
             <TraceRow label="Gemini Confidence" value={data.adminTrace.llmTrace.geminiConfidence != null ? `${(data.adminTrace.llmTrace.geminiConfidence * 100).toFixed(0)}%` : '—'} />
             <TraceRow label="Risk Level" value={data.adminTrace.llmTrace.geminiRiskLevel ?? '—'} />
             <TraceRow label="Groq Sentiment" value={data.adminTrace.llmTrace.groqSentimentScore != null ? String(data.adminTrace.llmTrace.groqSentimentScore) : '—'} />
-            {data.adminTrace.llmTrace.geminiRedFlags.length > 0 && (
+            {(data.adminTrace.llmTrace.geminiRedFlags ?? []).length > 0 && (
               <Box mt={1}>
                 <Typography variant="caption" color="text.disabled">Red flags:</Typography>
                 <Box display="flex" gap={0.5} flexWrap="wrap" mt={0.5}>
-                  {data.adminTrace.llmTrace.geminiRedFlags.map(f => (
+                  {(data.adminTrace.llmTrace.geminiRedFlags ?? []).map(f => (
                     <Chip key={f} label={f} size="small" sx={{ fontSize: '0.65rem', height: 18, bgcolor: 'rgba(239,68,68,0.12)', color: 'error.light' }} />
                   ))}
                 </Box>
@@ -154,7 +154,8 @@ export const AdminDecisionsPage = () => {
   const [applied, setApplied] = useState<AdminDecisionsParams>({ limit: 100, offset: 0 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { data: decisions = [], isLoading, isFetching } = useGetAdminDecisionsQuery(applied);
+  const { data: decisionsRaw, isLoading, isFetching } = useGetAdminDecisionsQuery(applied);
+  const decisions = Array.isArray(decisionsRaw) ? decisionsRaw : [];
 
   return (
     <Box>

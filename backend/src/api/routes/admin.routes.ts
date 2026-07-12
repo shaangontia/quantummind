@@ -106,9 +106,10 @@ router.get('/admin/decisions', verifyAuth, requireUserAdminAuth, async (req: Req
     }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const rows = await query(
-      `SELECT dre.id as decisionId, dre.portfolio_id, dre.decision_type as decision,
-              dre.decision_time, dre.explanation_version, dre.model_version, dre.policy_version,
-              dre.user_summary, dre.user_reason_codes_json,
+      `SELECT dre.id           AS decisionId,
+              dre.portfolio_id  AS portfolioId,
+              dre.decision_type AS decision,
+              dre.decision_time AS decisionTime,
               de.title,
               tc.symbol
        FROM decision_replay_events dre
@@ -124,7 +125,7 @@ router.get('/admin/decisions', verifyAuth, requireUserAdminAuth, async (req: Req
        LEFT JOIN trade_candidates tc ON tc.id = dre.candidate_id ${where}`,
       args,
     );
-    return res.json({ success: true, data: rows, pagination: { limit, offset, total: Number(total?.cnt ?? 0) } });
+    return res.json({ success: true, data: rows ?? [], pagination: { limit, offset, total: Number(total?.cnt ?? 0) } });
   } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
@@ -268,7 +269,8 @@ router.get('/admin/candidates/:portfolioId/trace', verifyAuth, requireUserAdminA
               ppe.utility_score, ppe.portfolio_rank, ppe.rejection_reasons_json,
               ppe.strategy_fit_multiplier, ppe.horizon_fit_multiplier, ppe.regime_fit_multiplier,
               ppe.selection_reason, ppe.created_at,
-              tc.symbol, tc.strategy_type, tc.signal_score
+              tc.symbol, tc.strategy_type, tc.signal_score,
+              tc.fundamental_score, tc.filters_blocked, tc.filters_passed
        FROM portfolio_policy_evaluations ppe
        JOIN trade_candidates tc ON tc.id = ppe.candidate_id
        WHERE ppe.portfolio_id = ?
@@ -277,26 +279,36 @@ router.get('/admin/candidates/:portfolioId/trace', verifyAuth, requireUserAdminA
       [portfolioId, dateFrom, dateTo],
     );
     const parseJ = (v: any) => { try { return v ? JSON.parse(String(v)) : []; } catch { return []; } };
+    const decisionToAction = (d: string): string => {
+      if (d === 'BUY')  return 'EXECUTED';
+      if (d === 'SKIP') return 'SKIPPED';
+      if (d === 'VETO') return 'VETOED';
+      return 'WEAK';
+    };
+    const candidates = evals.map((e: any) => ({
+      candidateId:       e.candidate_id,
+      symbol:            e.symbol,
+      companyName:       null,
+      sector:            null,
+      strategyType:      e.strategy_type ?? null,
+      signalScore:       e.signal_score ?? null,
+      utilityScore:      e.utility_score ?? null,
+      mlWinProbability:  null,
+      fundamentalScore:  e.fundamental_score ?? null,
+      actionTaken:       decisionToAction(e.decision),
+      filtersBlocked:    parseJ(e.rejection_reasons_json).length > 0
+                           ? parseJ(e.rejection_reasons_json)
+                           : parseJ(e.filters_blocked),
+      filtersPassed:     parseJ(e.filters_passed),
+    }));
     return res.json({
       success: true,
-      data: evals.map((e: any) => ({
-        evaluationId:      e.id,
-        candidateId:       e.candidate_id,
-        symbol:            e.symbol,
-        decision:          e.decision,
-        eligible:          Boolean(e.eligible),
-        utilityScore:      e.utility_score,
-        rank:              e.portfolio_rank,
-        rejectionReasons:  parseJ(e.rejection_reasons_json),
-        selectionReason:   e.selection_reason,
-        strategyType:      e.strategy_type,
-        multipliers: {
-          strategyFit: e.strategy_fit_multiplier,
-          horizonFit:  e.horizon_fit_multiplier,
-          regimeFit:   e.regime_fit_multiplier,
-        },
-        evaluatedAt: e.created_at,
-      })),
+      data: {
+        portfolioId,
+        date: dateFrom,
+        totalCandidates: candidates.length,
+        candidates,
+      },
     });
   } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
@@ -584,6 +596,7 @@ router.post('/admin/portfolio-health/recalculate-all', verifyAuth, requireUserAd
 
 import { getAdminVirtualExecutionQuality } from '../../services/virtualExecutionQualityService.js';
 import { runVirtualReconciliationForPortfolio } from '../../scheduler/virtualReconciliationJob.js';
+import { logger } from '../../lib/logger.js';
 
 /**
  * GET /api/admin/virtual-reconciliation/overview
@@ -690,7 +703,9 @@ router.post('/admin/virtual-reconciliation/mismatches/:id/resolve', verifyAuth, 
       if (openCriticals.length === 0) {
         // Auto-clear safety halt when all criticals resolved
         const { clearVirtualSafetyHalt } = await import('../../services/virtualSafetyService.js');
-        await clearVirtualSafetyHalt(Number(mismatch.portfolio_id)).catch(() => null);
+        await clearVirtualSafetyHalt(Number(mismatch.portfolio_id)).catch(err =>
+          logger.error({ service: 'admin-reconciliation', portfolioId: mismatch.portfolio_id, err: String(err), msg: 'Failed to clear virtual safety halt after mismatch resolution' })
+        );
       }
     }
 
