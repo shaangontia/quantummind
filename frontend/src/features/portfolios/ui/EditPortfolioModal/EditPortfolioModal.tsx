@@ -101,7 +101,8 @@ export const EditPortfolioModal = ({ portfolio, onClose, onSaved }: EditPortfoli
   const lockReason   = LOCK_REASON[editState?.state ?? 'ACTIVE'];
   const capitalFloor = editState?.editability.capitalFloor ?? 0;
   const isArchived   = editState?.state === 'ARCHIVED';
-  const isStrategyLocked = (editState?.meta.tradeCount ?? 0) > 0;
+  // Use portfolio.trade_count for immediate lock before editState loads (prevents race condition flash)
+  const isStrategyLocked = (portfolio.trade_count ?? 0) > 0 || (editState?.meta.tradeCount ?? 0) > 0;
 
   const toggleTag = (field: 'preferredCaps' | 'preferredSectors', value: string) => {
     if (isLocked(field as EditableField)) return;

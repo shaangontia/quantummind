@@ -64,6 +64,9 @@ export const AppLayout = () => {
           {/* Nav */}
           <Box display="flex" gap={0.5}>
             <Box component={NavLink} to="/" end sx={NAV_LINK_SX}>Portfolios</Box>
+            {user?.isAdmin && (
+              <Box component={NavLink} to="/admin/overlap" sx={NAV_LINK_SX}>Admin</Box>
+            )}
           </Box>
 
           <Box flex={1} />

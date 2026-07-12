@@ -21,7 +21,6 @@ import {
 } from '../../../../store/portfolios/index.ts';
 import { CreatePortfolioModal } from '../CreatePortfolioModal/CreatePortfolioModal.tsx';
 import { PortfolioPolicyBadge } from '../PortfolioPolicyBadge/index.ts';
-import { PortfolioOverlapPanel } from '../PortfolioOverlapPanel/index.ts';
 import { EditPortfolioModal } from '../EditPortfolioModal/EditPortfolioModal.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -83,14 +82,6 @@ export const PortfoliosPage = () => {
             </Button>
           }
         />
-      )}
-
-      {!isLoading && portfolios.length > 1 && (
-        <Box mb={3}>
-          <PortfolioOverlapPanel
-            portfolios={portfolios.map(p => ({ id: p.id, name: p.name }))}
-          />
-        </Box>
       )}
 
       {!isLoading && portfolios.length > 0 && (

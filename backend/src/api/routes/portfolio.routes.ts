@@ -153,6 +153,27 @@ router.patch('/portfolios/:id', verifyAuth, verifyOwner, async (req: Request, re
 router.delete('/portfolios/:id', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
   const id = parseIntParam(req.params.id);
   if (id === null) return res.status(400).json({ success: false, error: 'Invalid portfolio id' });
+
+  // Block deletion if portfolio has executed trades — strategy is permanent once trading begins
+  const tradesRow = await queryOne('SELECT COUNT(*) as cnt FROM trades WHERE portfolio_id = ?', [id]);
+  const tradeCount = Number(tradesRow?.cnt ?? 0);
+  if (tradeCount > 0) {
+    return res.status(403).json({
+      success: false,
+      error: `ACTIVE_TRADES_LOCK: Cannot delete portfolio with ${tradeCount} executed trade${tradeCount !== 1 ? 's' : ''}. Archive is not permitted once trading has begun.`,
+    });
+  }
+
+  // Also block if there are open holdings
+  const holdingsRow = await queryOne('SELECT COUNT(*) as cnt FROM holdings WHERE portfolio_id = ?', [id]);
+  const holdingsCount = Number(holdingsRow?.cnt ?? 0);
+  if (holdingsCount > 0) {
+    return res.status(403).json({
+      success: false,
+      error: `OPEN_HOLDINGS_LOCK: Cannot delete portfolio with ${holdingsCount} open position${holdingsCount !== 1 ? 's' : ''}. Close all positions before deleting.`,
+    });
+  }
+
   await run('UPDATE portfolios SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE id=?', [id]);
   res.json({ success: true });
 });
