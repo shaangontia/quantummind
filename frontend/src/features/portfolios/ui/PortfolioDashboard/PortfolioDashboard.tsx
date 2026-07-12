@@ -24,6 +24,7 @@ import { KillSwitchStatusBar } from '../KillSwitchStatusBar/index.ts';
 import { PortfolioModeChip } from '../PortfolioModeChip/index.ts';
 import { PortfolioPolicyBadge } from '../PortfolioPolicyBadge/index.ts';
 import { PortfolioHealthSummaryCard } from '../PortfolioHealthPage/index.ts';
+import { VirtualLedgerStatusCard } from '../VirtualReconciliationPage/index.ts';
 import { Spinner } from '../../../../shared/ui/Spinner/Spinner.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 import { Badge } from '../../../../shared/ui/Badge/Badge.tsx';
@@ -127,11 +128,17 @@ export const PortfolioDashboard = () => {
           <Button size="small" variant="outlined" component={Link} to={`/portfolios/${portfolioId}/health`}>
             Health
           </Button>
+          <Button size="small" variant="outlined" component={Link} to={`/portfolios/${portfolioId}/virtual-reconciliation`}>
+            Ledger
+          </Button>
         </Box>
       </Box>
 
       {/* Phase 21: Compact health summary */}
       <PortfolioHealthSummaryCard portfolioId={portfolioId} />
+
+      {/* Phase 22: Virtual ledger + execution quality status */}
+      <VirtualLedgerStatusCard portfolioId={portfolioId} />
 
       {/* Market regime banner — Phase 13, self-hides if backend hasn't shipped field */}
       <KillSwitchStatusBar portfolioId={portfolioId} />

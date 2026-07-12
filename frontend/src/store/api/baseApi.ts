@@ -4,6 +4,6 @@ import { zodBaseQuery } from './zodBaseQuery.ts';
 export const baseApi = createApi({
   reducerPath: 'api',
   baseQuery: zodBaseQuery,
-  tagTypes: ['Portfolio', 'PortfolioSummary', 'PortfolioEditState', 'Performance', 'Holdings', 'Signals', 'Benchmark', 'AuthUser', 'HealthConfig'],
+  tagTypes: ['Portfolio', 'PortfolioSummary', 'PortfolioEditState', 'Performance', 'Holdings', 'Signals', 'Benchmark', 'AuthUser', 'HealthConfig', 'VirtualRecon', 'VirtualMismatches'],
   endpoints: () => ({}),
 });

@@ -23,6 +23,11 @@ import { storePolicyEvaluation } from '../services/policyEvaluationStore.js';
 import { writeDecisionReplay } from '../services/decisionReplayWriter.js';
 // Phase 21: Portfolio Health Job
 import { runPortfolioHealthJob, runAllPortfoliosHealthJob } from './portfolioHealthJob.js';
+// Phase 22: Virtual Reconciliation + Safety
+import { assertCanBuyVirtual, assertCanSellVirtual } from '../services/virtualSafetyService.js';
+import { fireVirtualReconciliation, runVirtualReconciliationJob } from './virtualReconciliationJob.js';
+import { simulateVirtualFill, calculateVirtualCharges } from '../services/virtualFillSimulator.js';
+import { recordVirtualExecutionEvent } from '../services/virtualExecutionQualityService.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -248,6 +253,41 @@ async function runPortfolioTradingCycle(
       void runPortfolioHealthJob(portfolioId).catch(err =>
         logger.warn({ job: 'portfolio-health', portfolioId, phase: 'health', reason: String(err) })
       );
+      // Phase 22: Record SELL execution quality + fire reconciliation
+      if (sellTradeId) {
+        void (async () => {
+          try {
+            const adv = await getAvgDailyTradedValue(h.symbol).catch(() => undefined);
+            const fillResult = simulateVirtualFill({
+              symbol: h.symbol, side: 'SELL',
+              signalPrice: signal.price, intendedPrice: signal.price, currentPrice: signal.price,
+              quantity: h.quantity, orderValue: h.quantity * signal.price,
+              averageDailyValue: adv ?? undefined,
+            });
+            const charges = calculateVirtualCharges('SELL', fillResult.quantityFilled * fillResult.simulatedFillPrice);
+            await recordVirtualExecutionEvent({
+              portfolioId, tradeId: Number(sellTradeId),
+              virtualOrderId: `sell-${portfolioId}-${h.symbol}-${Date.now()}`,
+              symbol: h.symbol, side: 'SELL', quantityRequested: h.quantity,
+              quantityFilled: fillResult.quantityFilled,
+              orderType: exitTypeForTrade === 'STOP_LOSS' ? 'VIRTUAL_STOP'
+                : exitTypeForTrade === 'TRAILING_STOP' ? 'VIRTUAL_TRAILING_STOP'
+                : 'VIRTUAL_MARKET',
+              signalPrice: signal.price, intendedPrice: signal.price,
+              simulatedFillPrice: fillResult.simulatedFillPrice,
+              slippageAbs: fillResult.slippageAbs, slippagePct: fillResult.slippagePct,
+              fillStatus: fillResult.fillStatus,
+              simulatedLatencyMs: fillResult.simulatedLatencyMs,
+              brokerage: charges.brokerage, stt: charges.stt,
+              exchangeCharges: charges.exchangeCharges, sebiCharges: charges.sebiCharges,
+              gst: charges.gst, totalCharges: charges.totalCharges,
+            });
+            fireVirtualReconciliation(portfolioId, 'POST_SELL');
+          } catch (e) {
+            logger.warn({ job: 'virtual-execution', portfolioId, symbol: h.symbol, err: String(e), msg: 'SELL virtual execution recording failed' });
+          }
+        })();
+      }
       // Phase 20: write SELL replay event (fire-and-forget)
       if (sellTradeId) {
         const buyDate = h.createdAt ? new Date(String(h.createdAt)) : null;
@@ -375,6 +415,41 @@ async function runPortfolioTradingCycle(
 
   if (ksMult === 0) {
     logger.info({ job: 'market-cycle', portfolioId, phase: 'execution', action: 'SKIP', reason: 'Kill-switch active: no new BUYs this cycle' });
+    return { trades: tradeCount, signals: signalCount };
+  }
+
+  // Phase 22: Virtual ledger safety check — block new BUYs if ledger is inconsistent
+  const virtualSafetyBlockCode = await assertCanBuyVirtual(portfolioId).catch(() => null);
+  if (virtualSafetyBlockCode) {
+    logger.info({ job: 'market-cycle', portfolioId, phase: 'execution', action: 'SKIP',
+      reason: 'Virtual ledger reconciliation halt — new BUYs blocked' });
+    // Record in decision replay so users can see why BUYs were paused
+    void writeDecisionReplay({
+      portfolioId, candidateId: 0, symbol: 'SYSTEM', price: null,
+      decisionType: 'SKIP' as any, decisionTime: new Date(),
+      policyType: null, policyVersion: null, portfolioMode: null, positionSizePct: null,
+      policyEvaluationId: null, tradeId: null,
+      rsiValue: null, macdHistogram: null, volumeRatio: null, atrPct: null,
+      fundamentalScore: null, marketRegime: null, strategyType: null,
+      strategyConfidence: null, strategyReasonCodes: null,
+      mlPwin: null, modelStage: null, trainingRows: null, modelVersion: null,
+      eligibilityGateResults: [], utilityComponents: {
+        expectedValuePct: null, strategyFitMultiplier: null, horizonFitMultiplier: null,
+        regimeFitMultiplier: null, volatilityPenalty: null, drawdownPenalty: null,
+        sectorConcentrationPenalty: null, liquidityPenalty: null, finalScore: null,
+      },
+      rejectionReasons: [virtualSafetyBlockCode],
+      selectionReason: null,
+      killSwitchFlags: { virtualLedgerHalt: true },
+      stopPrice: null, targetPrice: null, riskAmountInr: null, drawdownPct: null,
+      llmVerdict: null, llmReasonCodes: ['VIRTUAL_LEDGER_RECONCILIATION_HALT'],
+      llmModel: null, llmPromptVersion: null, llmConfidence: null,
+      execution: { quantity: 0, averagePrice: 0, brokerage: 0, orderType: 'SKIP',
+        fillStatus: 'CANCELLED', quantityRequested: 0, quantityFilled: 0,
+        signalPrice: null, intendedPrice: null, executionPrice: null, brokerName: 'virtual' },
+      exitType: null, exitPrice: null, grossReturnPct: null, costAdjustedReturnPct: null,
+      holdingDays: null, entryPrice: null, strategyClassifierVersion: null,
+    }).catch(() => null);
     return { trades: tradeCount, signals: signalCount };
   }
 
@@ -923,6 +998,39 @@ async function runPortfolioTradingCycle(
       void runPortfolioHealthJob(portfolioId).catch(err =>
         logger.warn({ job: 'portfolio-health', portfolioId, phase: 'health', reason: String(err) })
       );
+      // Phase 22: Simulate fill quality + record execution event + fire reconciliation
+      void (async () => {
+        try {
+          const adv = await getAvgDailyTradedValue(symbol).catch(() => undefined);
+          const fillResult = simulateVirtualFill({
+            symbol, side: 'BUY',
+            signalPrice: signal.price, intendedPrice: signal.price, currentPrice: signal.price,
+            quantity: qty, orderValue: qty * signal.price,
+            volumeRatio: (signal as any).volumeRatio ?? 1.0,
+            averageDailyValue: adv ?? undefined,
+          });
+          const charges = calculateVirtualCharges('BUY', fillResult.quantityFilled * fillResult.simulatedFillPrice);
+          await recordVirtualExecutionEvent({
+            portfolioId, tradeId: Number(tradeId),
+            virtualOrderId: `buy-${portfolioId}-${symbol}-${Date.now()}`,
+            symbol, side: 'BUY', quantityRequested: qty,
+            quantityFilled: fillResult.quantityFilled,
+            orderType: 'VIRTUAL_MARKET',
+            signalPrice: signal.price, intendedPrice: signal.price,
+            simulatedFillPrice: fillResult.simulatedFillPrice,
+            slippageAbs: fillResult.slippageAbs, slippagePct: fillResult.slippagePct,
+            fillStatus: fillResult.fillStatus,
+            rejectionReason: fillResult.rejectionReason,
+            simulatedLatencyMs: fillResult.simulatedLatencyMs,
+            brokerage: charges.brokerage, stt: charges.stt,
+            exchangeCharges: charges.exchangeCharges, sebiCharges: charges.sebiCharges,
+            gst: charges.gst, stampDuty: charges.stampDuty, totalCharges: charges.totalCharges,
+          });
+          fireVirtualReconciliation(portfolioId, 'POST_BUY');
+        } catch (e) {
+          logger.warn({ job: 'virtual-execution', portfolioId, symbol, err: String(e), msg: 'Virtual execution recording failed' });
+        }
+      })();
     }
   }
   return { trades: tradeCount, signals: signalCount };
@@ -1110,6 +1218,10 @@ export function startScheduler(): void {
     } catch (err) { console.warn('[Gemini] Portfolio insight failed:', err); }
     // Phase 21: Nightly portfolio health refresh for all active portfolios
     await runAllPortfoliosHealthJob().catch(console.error);
+    // Phase 22: Nightly virtual ledger reconciliation for all active portfolios
+    await runVirtualReconciliationJob().catch(err =>
+      logger.error({ job: 'virtual-reconciliation-nightly', err: String(err), msg: 'Nightly reconciliation cron failed' })
+    );
   }, { timezone: 'Asia/Kolkata' });
 
   console.log('[Scheduler] All cron jobs active (IST)');

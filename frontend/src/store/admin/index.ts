@@ -11,6 +11,11 @@ export {
   useCreateAdminHealthConfigMutation,
   useRecalculatePortfolioHealthMutation,
   useRecalculateAllHealthMutation,
+  useGetAdminVirtualReconciliationOverviewQuery,
+  useGetAdminVirtualMismatchesQuery,
+  useResolveVirtualMismatchMutation,
+  useRetryVirtualReconciliationMutation,
+  useGetAdminVirtualExecutionQualityQuery,
 } from './admin.api.ts';
 
 export type {
@@ -27,4 +32,11 @@ export type {
   AtRiskPortfolio,
   HealthConfigVersion,
   CreateHealthConfigPayload,
+  AdminVirtualReconciliationOverview,
+  VirtualMismatch,
+  MismatchSeverity,
+  MismatchStatus,
+  ResolveMismatchPayload,
+  AdminVirtualExecutionQuality,
+  WorstSymbolSlippage,
 } from './admin.api.ts';

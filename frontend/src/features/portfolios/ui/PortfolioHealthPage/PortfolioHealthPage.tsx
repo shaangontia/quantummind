@@ -7,13 +7,56 @@ import Grid from '@mui/material/Grid';
 import CircularProgress from '@mui/material/CircularProgress';
 import Alert from '@mui/material/Alert';
 import Divider from '@mui/material/Divider';
-import { useGetPortfolioHealthQuery } from '../../../../store/portfolios/portfolios.api.ts';
+import {
+  useGetPortfolioHealthQuery,
+  useGetExecutionQualityQuery,
+} from '../../../../store/portfolios/portfolios.api.ts';
+import { VirtualLedgerStatusCard } from '../VirtualReconciliationPage/index.ts';
 import { HealthGradeChip } from './HealthGradeChip.tsx';
 import { GoalProbabilityCard } from './GoalProbabilityCard.tsx';
 import { HealthComponentBreakdown } from './HealthComponentBreakdown.tsx';
 import { HealthTrendChart } from './HealthTrendChart.tsx';
 import { HealthRecommendationsPanel } from './HealthRecommendationsPanel.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
+
+const scoreColor = (s: number) =>
+  s >= 85 ? '#10b981' : s >= 70 ? '#3b82f6' : s >= 50 ? '#f59e0b' : '#ef4444';
+
+const VirtualExecutionQualityCard = ({ portfolioId }: { portfolioId: number }) => {
+  const { data: quality } = useGetExecutionQualityQuery({ id: portfolioId, range: '30D' });
+  if (!quality) return null;
+  return (
+    <Paper elevation={0} sx={{ p: 2, mb: 2, border: '1px solid', borderColor: 'divider' }}>
+      <Typography variant="subtitle2" fontWeight={700} mb={1.5}>Virtual Execution Quality (30D)</Typography>
+      <Box display="flex" gap={3} flexWrap="wrap">
+        <Box>
+          <Typography variant="caption" color="text.disabled" display="block">Score</Typography>
+          <Typography variant="body1" fontWeight={700} sx={{ color: scoreColor(quality.executionScore) }}>
+            {quality.executionScore}/100
+          </Typography>
+        </Box>
+        <Box>
+          <Typography variant="caption" color="text.disabled" display="block">Avg Slippage</Typography>
+          <Typography variant="body1" fontWeight={700}>{quality.averageSlippagePct.toFixed(2)}%</Typography>
+        </Box>
+        <Box>
+          <Typography variant="caption" color="text.disabled" display="block">Rejected</Typography>
+          <Typography variant="body1" fontWeight={700} color={quality.rejectedOrders > 0 ? 'error.main' : 'text.primary'}>
+            {quality.rejectedOrders}
+          </Typography>
+        </Box>
+        <Box>
+          <Typography variant="caption" color="text.disabled" display="block">Partial fills</Typography>
+          <Typography variant="body1" fontWeight={700}>{quality.partialFills}</Typography>
+        </Box>
+        <Box>
+          <Typography variant="caption" color="text.disabled" display="block">Total orders</Typography>
+          <Typography variant="body1" fontWeight={700}>{quality.totalOrders}</Typography>
+        </Box>
+      </Box>
+    </Paper>
+  );
+};
 
 const MetricTile = ({ label, value, sub }: { label: string; value: string; sub?: string }) => (
   <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
@@ -150,6 +193,10 @@ export const PortfolioHealthPage = () => {
           <Paper elevation={0} sx={{ p: 2.5, mt: 2 }}>
             <HealthTrendChart portfolioId={portfolioId} />
           </Paper>
+
+          {/* Phase 22: Virtual Trading Integrity */}
+          <VirtualLedgerStatusCard portfolioId={portfolioId} />
+          <VirtualExecutionQualityCard portfolioId={portfolioId} />
         </>
       )}
 

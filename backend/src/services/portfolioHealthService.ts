@@ -221,9 +221,15 @@ function computeCashDeploymentScore(params: {
 
 // ── Component F: Execution Quality ───────────────────────────────────────────
 
-function computeExecutionQualityScore(): number {
-  // Phase 21 fallback — Phase 22 Broker Reconciliation will provide real slippage/fill data
-  return 70;
+// Loaded dynamically to avoid circular imports
+async function computeExecutionQualityScoreLive(portfolioId: number): Promise<number> {
+  try {
+    const { getPortfolioVirtualExecutionQuality } = await import('./virtualExecutionQualityService.js');
+    const quality = await getPortfolioVirtualExecutionQuality(portfolioId, '30D');
+    return quality.executionScore;
+  } catch {
+    return 70; // safe fallback if no execution events yet
+  }
 }
 
 // ── Component G: Model Confidence ────────────────────────────────────────────
@@ -405,7 +411,7 @@ export async function calculatePortfolioHealth(portfolioId: number): Promise<Por
     cashPct, policyType: pol?.policyType ?? null,
     marketRegime: reg?.label ?? null, coldStartMode,
   });
-  const eqScore   = computeExecutionQualityScore();
+  const eqScore   = await computeExecutionQualityScoreLive(portfolioId);
   const mcScore   = computeModelConfidenceScore({
     modelStage: gov?.stage ?? null, calibrationError, positiveWFWindowCount,
   });
@@ -436,6 +442,11 @@ export async function calculatePortfolioHealth(portfolioId: number): Promise<Por
     coldStartMode,
   });
 
+  // Phase 22: Pull virtual safety state for recommendations
+  const virtualSafety = await import('./virtualSafetyService.js')
+    .then(m => m.getVirtualSafetyState(portfolioId))
+    .catch(() => null);
+
   // Recommendations + top risks
   const recommendations = generateRecommendations({
     components, policy: pol, ksState: ks, modelStage: gov?.stage ?? 'CANDIDATE',
@@ -445,6 +456,9 @@ export async function calculatePortfolioHealth(portfolioId: number): Promise<Por
     maxSectorPct: sectorData.maxPct, maxSectorName: sectorData.maxSector,
     targetReturnPct, requiredMonthlyReturnPct: goalResult.requiredMonthlyReturnPct,
     strategyExposure,
+    virtualLedgerStatus:   virtualSafety?.reconciliationStatus ?? null,
+    virtualNewBuysBlocked: virtualSafety?.newBuysBlocked ?? false,
+    executionQualityScore: eqScore,
   });
   const topRisks = deriveTopRisks(components, ks, gov?.stage ?? 'CANDIDATE', goalResult.goalProbabilityPct);
 

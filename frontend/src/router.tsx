@@ -16,6 +16,12 @@ import { AdminCandidateTracePage } from './features/portfolios/ui/AdminCandidate
 import { AdminReplaySimulatorPage } from './features/portfolios/ui/AdminReplaySimulatorPage/index.ts';
 import { PortfolioHealthPage } from './features/portfolios/ui/PortfolioHealthPage/index.ts';
 import { AdminPortfolioHealthPage, AdminAtRiskPage, AdminHealthConfigPage } from './features/portfolios/ui/AdminPortfolioHealthPage/index.ts';
+import { VirtualReconciliationPage } from './features/portfolios/ui/VirtualReconciliationPage/index.ts';
+import {
+  AdminVirtualReconciliationPage,
+  AdminVirtualMismatchesPage,
+  AdminVirtualExecutionQualityPage,
+} from './features/portfolios/ui/AdminVirtualReconciliationPage/index.ts';
 
 export const router = createBrowserRouter([
   // ─── Public auth routes ───────────────────────────────────────────────────
@@ -36,7 +42,8 @@ export const router = createBrowserRouter([
       { path: 'portfolios/:id/trades',         element: <AuditLogPage /> },
       { path: 'portfolios/:id/signals',        element: <SignalsPage /> },
       { path: 'portfolios/:id/decisions',       element: <DecisionsPage /> },
-      { path: 'portfolios/:id/health',           element: <PortfolioHealthPage /> },
+      { path: 'portfolios/:id/health',                    element: <PortfolioHealthPage /> },
+      { path: 'portfolios/:id/virtual-reconciliation',     element: <VirtualReconciliationPage /> },
       {
         path: 'admin/overlap',
         element: (<RequireAdmin><AdminOverlapPage /></RequireAdmin>),
@@ -68,6 +75,18 @@ export const router = createBrowserRouter([
       {
         path: 'admin/portfolio-health/config',
         element: (<RequireAdmin><AdminHealthConfigPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/virtual-reconciliation',
+        element: (<RequireAdmin><AdminVirtualReconciliationPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/virtual-reconciliation/mismatches',
+        element: (<RequireAdmin><AdminVirtualMismatchesPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/virtual-execution-quality',
+        element: (<RequireAdmin><AdminVirtualExecutionQualityPage /></RequireAdmin>),
       },
     ],
   },

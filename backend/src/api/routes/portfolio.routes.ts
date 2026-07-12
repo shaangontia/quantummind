@@ -560,4 +560,87 @@ router.get('/portfolios/:id/health/history', verifyAuth, verifyOwner, async (req
   } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
+// ── Phase 22: Virtual Reconciliation + Execution Quality APIs ───────────────
+
+import { getVirtualSafetyState } from '../../services/virtualSafetyService.js';
+import { getPortfolioVirtualExecutionQuality } from '../../services/virtualExecutionQualityService.js';
+
+/**
+ * GET /api/portfolios/:id/virtual-reconciliation
+ * Latest virtual reconciliation status for a portfolio.
+ */
+router.get('/portfolios/:id/virtual-reconciliation', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  try {
+    const portfolioId = parseInt(req.params.id, 10);
+    if (isNaN(portfolioId)) return res.status(400).json({ error: 'Invalid portfolio ID' });
+
+    const safety = await getVirtualSafetyState(portfolioId);
+    const latestRun = await query(
+      `SELECT mismatch_count, critical_mismatch_count
+       FROM virtual_reconciliation_runs
+       WHERE portfolio_id = ?
+       ORDER BY run_started_at DESC LIMIT 1`,
+      [portfolioId],
+    );
+
+    return res.json({
+      portfolioId,
+      status:               safety.reconciliationStatus,
+      lastCheckedAt:        safety.lastReconciledAt,
+      newBuysBlocked:       safety.newBuysBlocked,
+      onlyRiskReducingSells: safety.onlyRiskReducingSells,
+      reason:               safety.reasonMessage ?? 'Virtual cash, positions, NAV, and exit plans are in sync.',
+      mismatchCount:        latestRun[0] ? Number(latestRun[0].mismatch_count ?? 0) : 0,
+      criticalMismatchCount: latestRun[0] ? Number(latestRun[0].critical_mismatch_count ?? 0) : 0,
+    });
+  } catch (err) { return res.status(500).json({ error: String(err) }); }
+});
+
+/**
+ * GET /api/portfolios/:id/execution-quality?range=7D|30D|90D
+ */
+router.get('/portfolios/:id/execution-quality', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  try {
+    const portfolioId = parseInt(req.params.id, 10);
+    if (isNaN(portfolioId)) return res.status(400).json({ error: 'Invalid portfolio ID' });
+    const range = String(req.query.range ?? '30D');
+    const quality = await getPortfolioVirtualExecutionQuality(portfolioId, range);
+    return res.json(quality);
+  } catch (err) { return res.status(500).json({ error: String(err) }); }
+});
+
+/**
+ * GET /api/portfolios/:id/execution-events?limit=20
+ */
+router.get('/portfolios/:id/execution-events', verifyAuth, verifyOwner, async (req: Request, res: Response) => {
+  try {
+    const portfolioId = parseInt(req.params.id, 10);
+    if (isNaN(portfolioId)) return res.status(400).json({ error: 'Invalid portfolio ID' });
+    const limit = Math.min(parseInt(String(req.query.limit ?? '20'), 10), 100);
+    const rows = await query(
+      `SELECT symbol, side, fill_status, quantity_requested, quantity_filled,
+              simulated_fill_price, slippage_pct, slippage_abs, execution_score,
+              total_charges, simulated_latency_ms, order_filled_at, created_at
+       FROM virtual_execution_quality_events
+       WHERE portfolio_id = ? ORDER BY created_at DESC LIMIT ?`,
+      [portfolioId, limit],
+    );
+    return res.json(rows.map((r: any) => ({
+      symbol:             r.symbol,
+      side:               r.side,
+      fillStatus:         r.fill_status,
+      quantityRequested:  Number(r.quantity_requested),
+      quantityFilled:     Number(r.quantity_filled),
+      simulatedFillPrice: r.simulated_fill_price != null ? Number(r.simulated_fill_price) : null,
+      slippagePct:        r.slippage_pct != null ? Number(r.slippage_pct) : null,
+      slippageAbs:        r.slippage_abs != null ? Number(r.slippage_abs) : null,
+      executionScore:     r.execution_score != null ? Number(r.execution_score) : null,
+      totalCharges:       r.total_charges != null ? Number(r.total_charges) : null,
+      simulatedLatencyMs: r.simulated_latency_ms != null ? Number(r.simulated_latency_ms) : null,
+      orderFilledAt:      r.order_filled_at,
+      createdAt:          r.created_at,
+    })));
+  } catch (err) { return res.status(500).json({ error: String(err) }); }
+});
+
 export default router;

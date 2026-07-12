@@ -39,6 +39,10 @@ export interface RecommendationInput {
   targetReturnPct:       number | null;
   requiredMonthlyReturnPct: number | null;
   strategyExposure:      Record<string, number>;
+  // Phase 22: Virtual safety state (optional — degraded gracefully if absent)
+  virtualLedgerStatus?:  'HEALTHY' | 'WARNING' | 'MISMATCH' | 'FAILED' | null;
+  virtualNewBuysBlocked?: boolean;
+  executionQualityScore?: number;
 }
 
 // ── Risk code ordering for severity sorting ────────────────────────────────────
@@ -197,6 +201,35 @@ export function generateRecommendations(input: RecommendationInput): Recommendat
     // Called inline — portfolioId is not in scope here; caller must handle alert creation separately
     // This function returns the recommendations; alert creation is done in the caller (portfolioHealthService)
     void 0;
+  }
+
+  // ── Phase 22: Virtual ledger + execution quality ──────────────────────
+  const { virtualLedgerStatus, virtualNewBuysBlocked, executionQualityScore } = input;
+
+  if (virtualLedgerStatus === 'MISMATCH' || virtualLedgerStatus === 'FAILED') {
+    recs.push({
+      severity: 'CRITICAL',
+      code:     'VIRTUAL_LEDGER_MISMATCH',
+      message:  `Virtual ledger mismatch detected. New BUY orders are paused until cash, positions, NAV, and exit plans are reconciled.`,
+      action:   'REVIEW_VIRTUAL_LEDGER',
+    });
+  } else if (virtualLedgerStatus === 'WARNING') {
+    recs.push({
+      severity: 'WARNING',
+      code:     'VIRTUAL_LEDGER_MISMATCH',
+      message:  `Minor virtual ledger discrepancy detected. Trading continues but reconciliation is recommended.`,
+      action:   'REVIEW_VIRTUAL_LEDGER',
+    });
+  }
+
+  if (executionQualityScore != null && executionQualityScore < 70) {
+    const sev: 'CRITICAL' | 'WARNING' = executionQualityScore < 50 ? 'CRITICAL' : 'WARNING';
+    recs.push({
+      severity: sev,
+      code:     'HIGH_SIMULATED_SLIPPAGE',
+      message:  `Virtual execution quality is ${executionQualityScore}/100. High simulated slippage or rejected orders are reducing realistic returns.`,
+      action:   'REVIEW_EXECUTION_QUALITY',
+    });
   }
 
   return recs.slice(0, 8); // cap at 8 recommendations

@@ -196,6 +196,60 @@ export interface CreateHealthConfigPayload {
   goal_probability_assumptions_json: string;
 }
 
+// ─── Phase 22: Admin Virtual Reconciliation types ──────────────────────────────────
+
+
+
+export interface AdminVirtualReconciliationOverview {
+  totalPortfolios: number;
+  healthy: number;
+  warning: number;
+  mismatch: number;
+  failed: number;
+  newBuysBlocked: number;
+  topMismatchTypes: string[];
+}
+
+export type MismatchSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
+export type MismatchStatus = 'OPEN' | 'AUTO_RESOLVED' | 'MANUALLY_RESOLVED' | 'IGNORED';
+
+export interface VirtualMismatch {
+  id: number;
+  portfolioId: number;
+  mismatchType: string;
+  severity: MismatchSeverity;
+  symbol: string | null;
+  expectedValue: string | null;
+  actualValue: string | null;
+  differenceValue: string | null;
+  blocksNewBuys: boolean;
+  status: MismatchStatus;
+  reason: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export interface ResolveMismatchPayload {
+  resolution: 'MANUALLY_RESOLVED' | 'IGNORED';
+  notes?: string;
+}
+
+export interface WorstSymbolSlippage {
+  symbol: string;
+  averageSlippagePct: number;
+}
+
+export interface AdminVirtualExecutionQuality {
+  range: string;
+  systemExecutionScore: number;
+  averageSlippagePct: number;
+  rejectedOrders: number;
+  failedOrders: number;
+  partialFills: number;
+  totalOrders: number;
+  worstSymbolsBySlippage: WorstSymbolSlippage[];
+}
+
 // ─── RTK Query Endpoints ──────────────────────────────────────────────────────
 
 export const adminApi = baseApi.injectEndpoints({
@@ -267,6 +321,46 @@ export const adminApi = baseApi.injectEndpoints({
       query: () => ({ url: '/admin/portfolio-health/recalculate-all', method: 'POST' }),
     }),
 
+    // ─── Phase 22: Admin Virtual Reconciliation endpoints ─────────────────────────
+
+    getAdminVirtualReconciliationOverview: builder.query<AdminVirtualReconciliationOverview, void>({
+      query: () => ({ url: '/admin/virtual-reconciliation/overview', method: 'GET' }),
+      keepUnusedDataFor: 60,
+      providesTags: ['VirtualRecon'],
+    }),
+
+    getAdminVirtualMismatches: builder.query<VirtualMismatch[], { status?: MismatchStatus; severity?: MismatchSeverity }>({
+      query: (params) => ({ url: '/admin/virtual-reconciliation/mismatches', params, method: 'GET' }),
+      keepUnusedDataFor: 30,
+      providesTags: ['VirtualMismatches'],
+    }),
+
+    resolveVirtualMismatch: builder.mutation<{ success: boolean }, { id: number; body: ResolveMismatchPayload }>({
+      query: ({ id, body }) => ({
+        url: `/admin/virtual-reconciliation/mismatches/${id}/resolve`,
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: ['VirtualMismatches', 'VirtualRecon'],
+    }),
+
+    retryVirtualReconciliation: builder.mutation<{ success: boolean }, number>({
+      query: (portfolioId) => ({
+        url: `/admin/virtual-reconciliation/${portfolioId}/retry`,
+        method: 'POST',
+      }),
+      invalidatesTags: ['VirtualRecon', 'VirtualMismatches'],
+    }),
+
+    getAdminVirtualExecutionQuality: builder.query<AdminVirtualExecutionQuality, { range?: string }>({
+      query: ({ range = '30D' } = {}) => ({
+        url: '/admin/virtual-execution-quality',
+        params: { range },
+        method: 'GET',
+      }),
+      keepUnusedDataFor: 60,
+    }),
+
     simulateDecisionReplay: builder.mutation<SimulateReplayResult, { decisionId: string; body: SimulateReplayPayload }>({
       query: ({ decisionId, body }) => ({
         url: `/admin/decisions/${decisionId}/replay/simulate`,
@@ -291,4 +385,9 @@ export const {
   useCreateAdminHealthConfigMutation,
   useRecalculatePortfolioHealthMutation,
   useRecalculateAllHealthMutation,
+  useGetAdminVirtualReconciliationOverviewQuery,
+  useGetAdminVirtualMismatchesQuery,
+  useResolveVirtualMismatchMutation,
+  useRetryVirtualReconciliationMutation,
+  useGetAdminVirtualExecutionQualityQuery,
 } = adminApi;

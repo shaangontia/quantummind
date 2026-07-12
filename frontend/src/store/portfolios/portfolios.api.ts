@@ -224,6 +224,53 @@ export interface ExpectancyReport {
   }>;
 }
 
+// ─── Phase 22: Virtual Reconciliation + Execution Quality types ───────────────────────
+
+export type VirtualReconciliationStatus = 'HEALTHY' | 'WARNING' | 'MISMATCH' | 'FAILED';
+
+export interface VirtualReconciliationSummary {
+  portfolioId: number;
+  status: VirtualReconciliationStatus;
+  lastCheckedAt: string;
+  newBuysBlocked: boolean;
+  onlyRiskReducingSells: boolean;
+  reason: string;
+  mismatchCount: number;
+  criticalMismatchCount: number;
+}
+
+export type ExecutionQualityRange = '7D' | '30D' | '90D';
+
+export interface ExecutionQualitySummary {
+  portfolioId: number;
+  range: ExecutionQualityRange;
+  executionScore: number;
+  averageSlippagePct: number;
+  rejectedOrders: number;
+  failedOrders: number;
+  partialFills: number;
+  averageSimulatedLatencyMs: number;
+  totalOrders: number;
+  summary: string;
+}
+
+export type FillStatus = 'FULL' | 'PARTIAL' | 'REJECTED' | 'CANCELLED' | 'FAILED' | 'EXPIRED';
+
+export interface ExecutionEvent {
+  id: number;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  fillStatus: FillStatus;
+  quantityRequested: number;
+  quantityFilled: number;
+  simulatedFillPrice: number | null;
+  slippagePct: number | null;
+  totalCharges: number | null;
+  executionScore: number | null;
+  orderFilledAt: string | null;
+  rejectionReason: string | null;
+}
+
 // ─── Phase 21: Portfolio Health types ──────────────────────────────────────────────────
 
 export type HealthGrade = 'EXCELLENT' | 'GOOD' | 'WARNING' | 'CRITICAL';
@@ -541,7 +588,33 @@ export const portfoliosApi = baseApi.injectEndpoints({
       keepUnusedDataFor: 60,
     }),
 
+    // ─── Phase 22: Virtual Reconciliation + Execution Quality (user-facing) ────────
+
+    getVirtualReconciliation: builder.query<VirtualReconciliationSummary, number>({
+      query: id => ({ url: `/portfolios/${id}/virtual-reconciliation`, method: 'GET' }),
+      keepUnusedDataFor: 60,
+    }),
+
+    getExecutionQuality: builder.query<ExecutionQualitySummary, { id: number; range?: ExecutionQualityRange }>({
+      query: ({ id, range = '30D' }) => ({
+        url: `/portfolios/${id}/execution-quality`,
+        params: { range },
+        method: 'GET',
+      }),
+      keepUnusedDataFor: 60,
+    }),
+
+    getExecutionEvents: builder.query<ExecutionEvent[], { id: number; limit?: number }>({
+      query: ({ id, limit = 20 }) => ({
+        url: `/portfolios/${id}/execution-events`,
+        params: { limit },
+        method: 'GET',
+      }),
+      keepUnusedDataFor: 60,
+    }),
+
     getDecisionReplay: builder.query<UserDecisionReplay, { portfolioId: number; decisionId: string }>({
+
       query: ({ portfolioId, decisionId }) => ({
         url: `/portfolios/${portfolioId}/decisions/${decisionId}/replay`,
         method: 'GET',
@@ -579,4 +652,7 @@ export const {
   useGetDecisionReplayQuery,
   useGetPortfolioHealthQuery,
   useGetPortfolioHealthHistoryQuery,
+  useGetVirtualReconciliationQuery,
+  useGetExecutionQualityQuery,
+  useGetExecutionEventsQuery,
 } = portfoliosApi;

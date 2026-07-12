@@ -580,4 +580,152 @@ router.post('/admin/portfolio-health/recalculate-all', verifyAuth, requireUserAd
   } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
+// ── Phase 22: Admin Virtual Reconciliation APIs ───────────────────────
+
+import { getAdminVirtualExecutionQuality } from '../../services/virtualExecutionQualityService.js';
+import { runVirtualReconciliationForPortfolio } from '../../scheduler/virtualReconciliationJob.js';
+
+/**
+ * GET /api/admin/virtual-reconciliation/overview
+ * System-wide reconciliation status summary.
+ */
+router.get('/admin/virtual-reconciliation/overview', verifyAuth, requireUserAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    // Latest reconciliation status per portfolio (one row each)
+    const statusRows = await query(
+      `SELECT reconciliation_status, new_buys_blocked FROM virtual_safety_states`,
+      [],
+    );
+
+    const total    = statusRows.length;
+    const healthy  = statusRows.filter((r: any) => r.reconciliation_status === 'HEALTHY').length;
+    const warning  = statusRows.filter((r: any) => r.reconciliation_status === 'WARNING').length;
+    const mismatch = statusRows.filter((r: any) => r.reconciliation_status === 'MISMATCH').length;
+    const failed   = statusRows.filter((r: any) => r.reconciliation_status === 'FAILED').length;
+    const blocked  = statusRows.filter((r: any) => Number(r.new_buys_blocked) === 1).length;
+
+    // Top mismatch types from open CRITICAL mismatches
+    const mismatchTypes = await query(
+      `SELECT mismatch_type, COUNT(*) AS cnt
+       FROM virtual_reconciliation_mismatches
+       WHERE status = 'OPEN' AND severity = 'CRITICAL'
+       GROUP BY mismatch_type ORDER BY cnt DESC LIMIT 5`,
+      [],
+    );
+
+    return res.json({
+      totalPortfolios: total,
+      healthy, warning, mismatch, failed,
+      newBuysBlocked: blocked,
+      topMismatchTypes: mismatchTypes.map((r: any) => r.mismatch_type),
+    });
+  } catch (err) { return res.status(500).json({ error: String(err) }); }
+});
+
+/**
+ * GET /api/admin/virtual-reconciliation/mismatches?status=OPEN&severity=CRITICAL
+ */
+router.get('/admin/virtual-reconciliation/mismatches', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const status   = req.query.status   ? String(req.query.status)   : null;
+    const severity = req.query.severity ? String(req.query.severity) : null;
+    const limit    = Math.min(parseInt(String(req.query.limit ?? '50'), 10), 200);
+
+    let sql = `SELECT id, reconciliation_run_id, portfolio_id, mismatch_type, severity,
+                      symbol, expected_value, actual_value, difference_value,
+                      blocks_new_buys, allows_only_risk_reducing_sells, status, reason, created_at
+               FROM virtual_reconciliation_mismatches WHERE 1=1`;
+    const args: any[] = [];
+
+    if (status)   { sql += ` AND status = ?`;   args.push(status); }
+    if (severity) { sql += ` AND severity = ?`; args.push(severity); }
+    sql += ` ORDER BY created_at DESC LIMIT ?`;
+    args.push(limit);
+
+    const rows = await query(sql, args);
+    return res.json(rows.map((r: any) => ({
+      id:                            Number(r.id),
+      portfolioId:                   Number(r.portfolio_id),
+      mismatchType:                  r.mismatch_type,
+      severity:                      r.severity,
+      symbol:                        r.symbol,
+      expectedValue:                 r.expected_value,
+      actualValue:                   r.actual_value,
+      differenceValue:               r.difference_value,
+      blocksNewBuys:                 Number(r.blocks_new_buys) === 1,
+      allowsOnlyRiskReducingSells:   Number(r.allows_only_risk_reducing_sells) === 1,
+      status:                        r.status,
+      reason:                        r.reason,
+      createdAt:                     r.created_at,
+    })));
+  } catch (err) { return res.status(500).json({ error: String(err) }); }
+});
+
+/**
+ * POST /api/admin/virtual-reconciliation/mismatches/:id/resolve
+ */
+router.post('/admin/virtual-reconciliation/mismatches/:id/resolve', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const id         = parseInt(req.params.id, 10);
+    const resolution = String(req.body?.resolution ?? 'MANUALLY_RESOLVED');
+    const notes      = req.body?.notes ? String(req.body.notes) : null;
+
+    await run(
+      `UPDATE virtual_reconciliation_mismatches
+       SET status = ?, reason = ?, resolved_at = ?
+       WHERE id = ?`,
+      [resolution, notes, new Date().toISOString(), id],
+    );
+
+    // Check if all CRITICAL mismatches for this portfolio are now resolved
+    const mismatch = await queryOne(
+      'SELECT portfolio_id FROM virtual_reconciliation_mismatches WHERE id = ?', [id],
+    );
+    if (mismatch?.portfolio_id) {
+      const openCriticals = await query(
+        `SELECT id FROM virtual_reconciliation_mismatches
+         WHERE portfolio_id = ? AND severity = 'CRITICAL' AND status = 'OPEN'`,
+        [mismatch.portfolio_id],
+      );
+      if (openCriticals.length === 0) {
+        // Auto-clear safety halt when all criticals resolved
+        const { clearVirtualSafetyHalt } = await import('../../services/virtualSafetyService.js');
+        await clearVirtualSafetyHalt(Number(mismatch.portfolio_id)).catch(() => null);
+      }
+    }
+
+    return res.json({ success: true, message: 'Mismatch resolved' });
+  } catch (err) { return res.status(500).json({ error: String(err) }); }
+});
+
+/**
+ * POST /api/admin/virtual-reconciliation/:portfolioId/retry
+ */
+router.post('/admin/virtual-reconciliation/:portfolioId/retry', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const portfolioId = parseInt(req.params.portfolioId, 10);
+    if (isNaN(portfolioId)) return res.status(400).json({ error: 'Invalid portfolio ID' });
+
+    const result = await runVirtualReconciliationForPortfolio(portfolioId);
+    return res.json({
+      success: true,
+      status:        result.status,
+      mismatchCount: result.mismatchCount,
+      criticalCount: result.criticalMismatchCount,
+      runId:         result.runId,
+    });
+  } catch (err) { return res.status(500).json({ error: String(err) }); }
+});
+
+/**
+ * GET /api/admin/virtual-execution-quality?range=7D|30D|90D
+ */
+router.get('/admin/virtual-execution-quality', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const range   = String(req.query.range ?? '30D');
+    const quality = await getAdminVirtualExecutionQuality(range);
+    return res.json(quality);
+  } catch (err) { return res.status(500).json({ error: String(err) }); }
+});
+
 export default router;
