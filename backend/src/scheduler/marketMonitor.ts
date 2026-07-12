@@ -246,7 +246,7 @@ async function runPortfolioTradingCycle(
       void recordTradeOutcome(portfolioId, sellPnlPct < 0).catch(() => null);
       // Phase 21: Refresh health snapshot after SELL
       void runPortfolioHealthJob(portfolioId).catch(err =>
-        logger.warn({ job: 'portfolio-health', portfolioId, phase: 'sell-trigger', reason: String(err) })
+        logger.warn({ job: 'portfolio-health', portfolioId, phase: 'health', reason: String(err) })
       );
       // Phase 20: write SELL replay event (fire-and-forget)
       if (sellTradeId) {
@@ -921,7 +921,7 @@ async function runPortfolioTradingCycle(
       }).catch(() => null);
       // Phase 21: Refresh health snapshot after BUY
       void runPortfolioHealthJob(portfolioId).catch(err =>
-        logger.warn({ job: 'portfolio-health', portfolioId, phase: 'buy-trigger', reason: String(err) })
+        logger.warn({ job: 'portfolio-health', portfolioId, phase: 'health', reason: String(err) })
       );
     }
   }
