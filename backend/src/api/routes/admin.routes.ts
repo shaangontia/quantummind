@@ -489,7 +489,7 @@ router.get('/admin/portfolio-health/overview', verifyAuth, requireUserAdminAuth,
       for (const code of parseJ(r.top_risks_json)) reasonCounts[code] = (reasonCounts[code] ?? 0) + 1;
     }
     const topRiskReasons = Object.entries(reasonCounts)
-      .sort(([, a], [, b]) => b - a).slice(0, 10).map(([code, count]) => ({ code, count }));
+      .sort(([, a], [, b]) => b - a).slice(0, 10).map(([code]) => code);
     return res.json({
       success: true,
       data: {
