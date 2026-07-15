@@ -25,23 +25,49 @@ import {
 import type { HealthDistribution } from '../../../../store/admin/admin.api.ts';
 
 const GRADE_CONFIG = {
-  EXCELLENT: { color: '#10b981', icon: <CheckCircleIcon sx={{ fontSize: '1.1rem' }} /> },
-  GOOD:      { color: '#3b82f6', icon: <CheckCircleIcon sx={{ fontSize: '1.1rem' }} /> },
-  WARNING:   { color: '#f59e0b', icon: <WarningIcon    sx={{ fontSize: '1.1rem' }} /> },
-  CRITICAL:  { color: '#ef4444', icon: <ErrorIcon       sx={{ fontSize: '1.1rem' }} /> },
+  EXCELLENT: {
+    color: '#10b981',
+    icon: <CheckCircleIcon sx={{ fontSize: '1.1rem' }} />,
+    scoreRange: '85 – 100',
+    description: 'All signals healthy. Strong momentum, low risk, on track for goal.',
+  },
+  GOOD: {
+    color: '#3b82f6',
+    icon: <CheckCircleIcon sx={{ fontSize: '1.1rem' }} />,
+    scoreRange: '70 – 84',
+    description: 'Minor concerns within acceptable range. No intervention needed.',
+  },
+  WARNING: {
+    color: '#f59e0b',
+    icon: <WarningIcon sx={{ fontSize: '1.1rem' }} />,
+    scoreRange: '50 – 69',
+    description: 'Degraded signals. Review recommended — goal probability dropping.',
+  },
+  CRITICAL: {
+    color: '#ef4444',
+    icon: <ErrorIcon sx={{ fontSize: '1.1rem' }} />,
+    scoreRange: '0 – 49',
+    description: 'Multiple risk factors triggered. Immediate attention required.',
+  },
 } as const;
 
 const GradeCard = ({ grade, count, total }: { grade: keyof HealthDistribution; count: number; total: number }) => {
-  const { color, icon } = GRADE_CONFIG[grade];
+  const { color, icon, scoreRange, description } = GRADE_CONFIG[grade];
   const pct = total > 0 ? ((count / total) * 100).toFixed(0) : '0';
   return (
-    <Paper elevation={0} sx={{ p: 2, border: '1px solid', borderColor: 'divider', textAlign: 'center' }}>
-      <Box display="flex" alignItems="center" justifyContent="center" gap={0.75} mb={0.75} sx={{ color }}>
+    <Paper elevation={0} sx={{ p: 2.5, border: '1px solid', borderColor: 'divider', textAlign: 'center', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+      <Box display="flex" alignItems="center" justifyContent="center" gap={0.75} sx={{ color }}>
         {icon}
         <Typography variant="caption" fontWeight={700} sx={{ color }}>{grade}</Typography>
       </Box>
-      <Typography variant="h4" fontWeight={800} sx={{ color }}>{count}</Typography>
-      <Typography variant="caption" color="text.disabled">{pct}% of portfolios</Typography>
+      <Typography variant="caption" sx={{ color, opacity: 0.75, fontVariantNumeric: 'tabular-nums' }}>
+        Score {scoreRange}
+      </Typography>
+      <Typography variant="h4" fontWeight={800} sx={{ color, my: 0.5 }}>{count}</Typography>
+      <Typography variant="caption" color="text.disabled" display="block">{pct}% of portfolios</Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, lineHeight: 1.4, maxWidth: 160 }}>
+        {description}
+      </Typography>
     </Paper>
   );
 };
