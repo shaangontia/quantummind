@@ -223,30 +223,47 @@ router.get('/admin/decisions/failed', verifyAuth, requireUserAdminAuth, async (r
     );
     const parseJ = (v: any) => { try { return v ? JSON.parse(String(v)) : []; } catch { return []; } };
 
+    const recentDecisions = rows.map((r: any) => ({
+      decisionId:   r.decisionId,
+      portfolioId:  r.portfolio_id,
+      symbol:       r.symbol ?? 'UNKNOWN',
+      decision:     r.decision_type,
+      title:        r.title ?? '',
+      userSummary:  r.user_summary ?? '',
+      reasonCodes:  parseJ(r.user_reason_codes_json),
+      decisionTime: r.decision_time,
+    }));
+
+    const totalFailed = recentDecisions.length;
+    const vetoCount   = recentDecisions.filter((d: any) => d.decision === 'VETO').length;
+    const skipCount   = recentDecisions.filter((d: any) => d.decision === 'SKIP').length;
+
     // Aggregate rejection reason counts
     const reasonCounts: Record<string, number> = {};
     for (const row of rows) {
       const codes: string[] = parseJ(row.user_reason_codes_json);
       for (const c of codes) reasonCounts[c] = (reasonCounts[c] ?? 0) + 1;
     }
+    const total = Object.values(reasonCounts).reduce((s, n) => s + n, 0) || 1;
     const topReasons = Object.entries(reasonCounts)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 20)
-      .map(([code, count]) => ({ code, count }));
+      .map(([code, count]) => ({
+        reasonCode: code,
+        label:      code.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        count,
+        pct:        (count / total) * 100,
+      }));
 
     return res.json({
       success: true,
-      data: rows.map((r: any) => ({
-        decisionId:    r.decisionId,
-        portfolioId:   r.portfolio_id,
-        symbol:        r.symbol ?? 'UNKNOWN',
-        decision:      r.decision_type,
-        title:         r.title ?? '',
-        userSummary:   r.user_summary ?? '',
-        reasonCodes:   parseJ(r.user_reason_codes_json),
-        decisionTime:  r.decision_time,
-      })),
-      topReasons,
+      data: {
+        totalFailed,
+        vetoCount,
+        skipCount,
+        topReasons,
+        recentDecisions,
+      },
       pagination: { limit, offset },
     });
   } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }

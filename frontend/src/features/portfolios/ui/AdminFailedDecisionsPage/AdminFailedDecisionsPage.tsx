@@ -71,7 +71,7 @@ export const AdminFailedDecisionsPage = () => {
                   {icon}
                   <Box>
                     <Typography variant="caption" color="text.secondary">{label}</Typography>
-                    <Typography variant="h5" fontWeight={700}>{value.toLocaleString()}</Typography>
+                    <Typography variant="h5" fontWeight={700}>{(value ?? 0).toLocaleString()}</Typography>
                   </Box>
                 </Paper>
               </Grid>
