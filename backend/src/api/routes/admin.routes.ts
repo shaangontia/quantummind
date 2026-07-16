@@ -8,6 +8,10 @@ import { verifyAuth } from '../../middleware/auth.js';
 
 const router = Router();
 
+/** Ensures parsed JSON is always an array; non-array values (objects, null, etc.) become []. */
+const ensureArray = (val: unknown): unknown[] =>
+  Array.isArray(val) ? val : [];
+
 // ─── Health checks ────────────────────────────────────────────────────────────
 router.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'OK', service: 'QuantumMind', ts: new Date().toISOString() });
@@ -173,9 +177,9 @@ router.get('/admin/decisions/:decisionId/replay', verifyAuth, requireUserAdminAu
         },
         adminTrace: {
           featureSnapshot:  parseJ(event.raw_feature_snapshot_json),
-          modelTrace:       parseJ(event.model_trace_json),
-          ruleTrace:        parseJ(event.rule_trace_json),
-          riskTrace:        parseJ(event.risk_trace_json),
+          modelTrace:       ensureArray(parseJ(event.model_trace_json)),
+          ruleTrace:        ensureArray(parseJ(event.rule_trace_json)),
+          riskTrace:        ensureArray(parseJ(event.risk_trace_json)),
           llmTrace:         parseJ(event.llm_trace_json),
           executionTrace:   parseJ(event.execution_trace_json),
           fullTrace:        parseJ(event.admin_trace_json),

@@ -90,7 +90,7 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
 
             {/* Model trace */}
             <Typography variant="overline" sx={{ fontSize: '0.65rem', color: 'text.disabled', letterSpacing: 1.2, display: 'block', mb: 1 }}>Model Score Breakdown</Typography>
-            {(data.adminTrace.modelTrace ?? []).map((m, i) => (
+            {(Array.isArray(data.adminTrace.modelTrace) ? data.adminTrace.modelTrace : []).map((m, i) => (
               <TraceRow key={i} label={m.component} value={`score ${m.score.toFixed(3)} × w${m.weight.toFixed(2)} = ${m.contribution.toFixed(3)}${m.detail ? ` · ${m.detail}` : ''}`} />
             ))}
 
@@ -98,7 +98,7 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
 
             {/* Rule trace */}
             <Typography variant="overline" sx={{ fontSize: '0.65rem', color: 'text.disabled', letterSpacing: 1.2, display: 'block', mb: 1 }}>Rules</Typography>
-            {(data.adminTrace.ruleTrace ?? []).map((r, i) => (
+            {(Array.isArray(data.adminTrace.ruleTrace) ? data.adminTrace.ruleTrace : []).map((r, i) => (
               <TraceRow key={i} label={r.rule} value={`${r.value ?? '—'} (threshold: ${r.threshold ?? '—'})`} passed={r.passed} />
             ))}
 
@@ -106,7 +106,7 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
 
             {/* Risk trace */}
             <Typography variant="overline" sx={{ fontSize: '0.65rem', color: 'text.disabled', letterSpacing: 1.2, display: 'block', mb: 1 }}>Risk Gates</Typography>
-            {(data.adminTrace.riskTrace ?? []).map((r, i) => (
+            {(Array.isArray(data.adminTrace.riskTrace) ? data.adminTrace.riskTrace : []).map((r, i) => (
               <TraceRow key={i} label={r.rule} value={`${r.value ?? '—'} (threshold: ${r.threshold ?? '—'})`} passed={r.passed} />
             ))}
 
