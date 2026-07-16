@@ -730,7 +730,7 @@ export async function executeTrade(
     const existing = holdingsForNAV.find((h: any) => h.symbol === symbol);
     if (existing) {
       const newQty = Number(existing.quantity) + quantity;
-      const newAvg = (Number(existing.quantity) * Number(existing.avg_buy_price) + amount) / newQty;
+      const newAvg = Math.round(((Number(existing.quantity) * Number(existing.avg_buy_price) + amount) / newQty) * 100) / 100;
       statements.push({ sql: 'UPDATE holdings SET quantity=?, avg_buy_price=?, current_price=?, updated_at=CURRENT_TIMESTAMP WHERE portfolio_id=? AND symbol=?', args: [newQty, newAvg, price, portfolioId, symbol] });
     } else {
       statements.push({ sql: 'INSERT INTO holdings (portfolio_id, symbol, company_name, quantity, avg_buy_price, current_price) VALUES (?,?,?,?,?,?)', args: [portfolioId, symbol, companyName, quantity, price, price] });

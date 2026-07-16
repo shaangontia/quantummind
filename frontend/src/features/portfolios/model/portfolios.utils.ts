@@ -1,5 +1,9 @@
 export const formatINR = (value: number): string =>
-  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
+  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+
+/** Per-share price formatter — always 2dp, e.g. ₹1,482.50 */
+export const formatPrice = (value: number): string =>
+  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 
 export const formatPct = (value: number): string =>
   `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;

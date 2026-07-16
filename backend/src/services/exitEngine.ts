@@ -49,9 +49,10 @@ export interface ExitDecision {
  */
 export function computeATRStop(entryPrice: number, atrPct: number = 0.015): { atrStop: number; trailingStop: number } {
   const atr = entryPrice * atrPct;
+  const r2 = (v: number) => Math.round(v * 100) / 100;
   return {
-    atrStop: entryPrice - 1.5 * atr,
-    trailingStop: entryPrice - 1.5 * atr,
+    atrStop: r2(entryPrice - 1.5 * atr),
+    trailingStop: r2(entryPrice - 1.5 * atr),
   };
 }
 

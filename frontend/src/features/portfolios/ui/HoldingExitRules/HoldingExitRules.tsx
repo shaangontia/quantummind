@@ -2,7 +2,7 @@ import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import type { HoldingExitRulesProps } from './HoldingExitRules.types.ts';
 
-const formatINR = (v: number) => `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+const formatINR = (v: number) => `₹${v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
 
 /**
