@@ -18,6 +18,7 @@
 
 import { query, run } from '../db/turso.js';
 import { logger } from '../lib/logger.js';
+import { getSymbolSector } from './marketData.js';
 
 export type ModelStage = 'CANDIDATE' | 'SHADOW' | 'ADVISORY' | 'PRODUCTION' | 'RETIRED';
 
@@ -50,9 +51,9 @@ export interface ModelGovernanceState {
  * maxSingleStrategyPct = maximum % of executed labels from any one strategy (concentration cap).
  */
 const THRESHOLDS = {
-  SHADOW:     { labels: 200,  wfWindows: 1, executedMin: 30,  strategyTypes: 2, maxSingleStrategyPct: 90 },
-  ADVISORY:   { labels: 500,  wfWindows: 3, executedMin: 100, strategyTypes: 4, maxSingleStrategyPct: 60 },
-  PRODUCTION: { labels: 1000, wfWindows: 6, executedMin: 250, strategyTypes: 4, maxSingleStrategyPct: 60 },
+  SHADOW:     { labels: 200,  wfWindows: 1, executedMin: 30,  strategyTypes: 2, sectors: 2, maxSingleStrategyPct: 90 },
+  ADVISORY:   { labels: 500,  wfWindows: 3, executedMin: 100, strategyTypes: 4, sectors: 5, maxSingleStrategyPct: 60 },
+  PRODUCTION: { labels: 1000, wfWindows: 6, executedMin: 250, strategyTypes: 4, sectors: 6, maxSingleStrategyPct: 60 },
 };
 
 /** Phase 23: Stage-aware daily trade limits (cold-start caps still apply for position size). */
@@ -98,6 +99,17 @@ export async function evaluateModelGovernance(portfolioId: number): Promise<Mode
     [portfolioId],
   ).then(r => Number(r[0]?.cnt ?? 0)).catch(() => 0);
 
+  // Phase 23: Sector diversity — count distinct GICS sectors across executed-label symbols.
+  // No sector column on trade_candidates; resolved in-process via getSymbolSector (O(n) lookup,
+  // acceptable for promotion check which runs nightly on at most a few hundred symbols).
+  const executedSymbols = await query(
+    `SELECT DISTINCT symbol FROM trade_candidates
+     WHERE portfolio_id=? AND action_taken='EXECUTED'
+       AND label_type='TARGET_BEFORE_STOP' AND target_hit_before_stop IS NOT NULL`,
+    [portfolioId],
+  ).then(r => r.map((x: any) => String(x.symbol))).catch(() => [] as string[]);
+  const sectorCount = new Set(executedSymbols.map(sym => getSymbolSector(sym)).filter(Boolean)).size;
+
   // Phase 23: Concentration check — max single strategy share of executed labels
   const maxStrategyConcPct = await query(
     `SELECT MAX(strategy_cnt * 100.0 / total_cnt) as max_pct
@@ -121,24 +133,27 @@ export async function evaluateModelGovernance(portfolioId: number): Promise<Mode
     [portfolioId],
   ).then(r => Number(r[0]?.cnt ?? 0)).catch(() => 0);
 
-  // Determine stage — Phase 23: all gates must pass (labels + executed + diversity + WF)
+  // Determine stage — Phase 23: all gates must pass (labels + executed + strategy + sector + WF)
   let stage: ModelStage = 'CANDIDATE';
   if (labelCount >= THRESHOLDS.PRODUCTION.labels
     && posWFWindows >= THRESHOLDS.PRODUCTION.wfWindows
     && executedLabelCount >= THRESHOLDS.PRODUCTION.executedMin
     && strategyTypeCount >= THRESHOLDS.PRODUCTION.strategyTypes
+    && sectorCount >= THRESHOLDS.PRODUCTION.sectors
     && maxStrategyConcPct <= THRESHOLDS.PRODUCTION.maxSingleStrategyPct) {
     stage = 'PRODUCTION';
   } else if (labelCount >= THRESHOLDS.ADVISORY.labels
     && posWFWindows >= THRESHOLDS.ADVISORY.wfWindows
     && executedLabelCount >= THRESHOLDS.ADVISORY.executedMin
     && strategyTypeCount >= THRESHOLDS.ADVISORY.strategyTypes
+    && sectorCount >= THRESHOLDS.ADVISORY.sectors
     && maxStrategyConcPct <= THRESHOLDS.ADVISORY.maxSingleStrategyPct) {
     stage = 'ADVISORY';
   } else if (labelCount >= THRESHOLDS.SHADOW.labels
     && posWFWindows >= THRESHOLDS.SHADOW.wfWindows
     && executedLabelCount >= THRESHOLDS.SHADOW.executedMin
-    && strategyTypeCount >= THRESHOLDS.SHADOW.strategyTypes) {
+    && strategyTypeCount >= THRESHOLDS.SHADOW.strategyTypes
+    && sectorCount >= THRESHOLDS.SHADOW.sectors) {
     stage = 'SHADOW';
   }
 

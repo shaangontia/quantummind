@@ -70,6 +70,16 @@ function evaluatePath(
 /**
  * Write label fields to a trade_candidates row.
  */
+/**
+ * NOTE: holdDays for shadow candidates = number of price-history rows (trading days),
+ * not calendar days. historical_prices only contains trading-day rows so the count
+ * under-reports calendar days by ~30% (15 trading days ≈ 21 calendar days).
+ * Field is informational only; not used for label outcome computation.
+ *
+ * NOTE: evaluatePath uses close-only data. A candle where close<stop is treated as
+ * stop-hit on that bar. Intraday low/high is not considered. If intraday data is
+ * ever added, evaluatePath must check low vs stop and high vs target per bar.
+ */
 async function writeLabel(
   id: number,
   win: boolean,
@@ -91,7 +101,11 @@ async function writeLabel(
          label_generated_at           = datetime('now')
      WHERE id = ?`,
     [win ? 1 : 0, mae, mfe, holdDays, costAdjReturn, labelType, id],
-  ).catch(() => null);
+  ).catch((err: unknown) => {
+    // Log but do not re-throw — nightly job continues; row stays PENDING and retries next run.
+    logger.warn({ job: 'label-generator', candidateId: id, err: String(err),
+      reason: 'writeLabel: DB update failed — candidate stays PENDING, will retry next nightly run' });
+  });
 }
 
 // ---------------------------------------------------------------------------
