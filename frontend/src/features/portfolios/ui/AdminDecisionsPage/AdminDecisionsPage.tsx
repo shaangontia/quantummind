@@ -73,6 +73,11 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
         {isLoading && <Box display="flex" justifyContent="center" py={6}><CircularProgress size={28} /></Box>}
         {error && <Alert severity="error">Failed to load trace.</Alert>}
         {data && (
+          <Alert severity="info" sx={{ mb: 2, fontSize: '0.75rem' }}>
+            Sections showing — indicate data not captured at decision time (pre-trace or LLM not called).
+          </Alert>
+        )}
+        {data && (
           <>
             {/* User explanation */}
             <Typography variant="overline" sx={{ fontSize: '0.65rem', color: 'text.disabled', letterSpacing: 1.2 }}>User Explanation</Typography>
@@ -91,7 +96,11 @@ const AdminReplayDrawer = ({ decisionId, onClose }: { decisionId: string | null;
             {/* Model trace */}
             <Typography variant="overline" sx={{ fontSize: '0.65rem', color: 'text.disabled', letterSpacing: 1.2, display: 'block', mb: 1 }}>Model Score Breakdown</Typography>
             {(Array.isArray(data.adminTrace.modelTrace) ? data.adminTrace.modelTrace : []).map((m, i) => (
-              <TraceRow key={i} label={m.component} value={`score ${m.score.toFixed(3)} × w${m.weight.toFixed(2)} = ${m.contribution.toFixed(3)}${m.detail ? ` · ${m.detail}` : ''}`} />
+              <TraceRow key={i} label={m.component} value={
+                m.score != null && m.contribution != null
+                  ? `${m.score.toFixed(3)} × w${(m.weight ?? 1).toFixed(2)} = ${m.contribution.toFixed(3)}${m.detail ? ` · ${m.detail}` : ''}`
+                  : (m.detail ?? '—')
+              } />
             ))}
 
             <Divider sx={{ my: 2 }} />

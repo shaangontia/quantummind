@@ -8,9 +8,6 @@ import { verifyAuth } from '../../middleware/auth.js';
 
 const router = Router();
 
-/** Ensures parsed JSON is always an array; non-array values (objects, null, etc.) become []. */
-const ensureArray = (val: unknown): unknown[] =>
-  Array.isArray(val) ? val : [];
 
 // ─── Health checks ────────────────────────────────────────────────────────────
 router.get('/health', (_req: Request, res: Response) => {
