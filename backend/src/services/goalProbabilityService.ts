@@ -140,39 +140,41 @@ export function calculateGoalProbability(input: GoalProbabilityInput): GoalProba
     riskReasonCodes.push('BEARISH_REGIME');
   }
 
-  // Model stage
+  // Model stage and cold-start penalties are about AI execution quality, not target difficulty.
+  // When the target requires <0.75%/month, scale these penalties down — a trivially easy
+  // target (e.g. 1% over 12m) does not depend on model maturity to be achievable.
+  const targetDifficultyFactor = requiredMonthlyReturnPct < 0.75 ? 0.25
+    : requiredMonthlyReturnPct < 1.25 ? 0.6
+    : 1.0;
+
   if (modelStage === 'PRODUCTION') {
     baseProbability += 10;
     riskReasonCodes.push('MODEL_PRODUCTION');
   } else if (modelStage === 'CANDIDATE') {
-    baseProbability -= 10;
+    baseProbability -= Math.round(10 * targetDifficultyFactor);
     riskReasonCodes.push('MODEL_CANDIDATE');
   }
 
   // Cold start
   if (coldStartMode) {
-    baseProbability -= 5;
+    baseProbability -= Math.round(5 * targetDifficultyFactor);
     riskReasonCodes.push('COLD_START_ACTIVE');
   }
 
-  // Negative current return
+  // Negative current return — also scale by difficulty: if target is tiny, a small
+  // negative return is barely meaningful vs the remaining runway.
   if (currentReturnPct < 0) {
-    baseProbability -= 10;
+    baseProbability -= Math.round(10 * targetDifficultyFactor);
     riskReasonCodes.push('NEGATIVE_RETURN');
   }
 
-  // Very new portfolio — neutral score, avoid harsh judgement
+  // Very new portfolio — add INSUFFICIENT_HISTORY signal but still score normally.
+  // A hard-coded 50% was incorrect: a 1% target over 12m requiring 0.15%/month
+  // is trivially achievable and should show high probability even on day 1.
+  // The cold-start and model-stage penalties already capture early-stage uncertainty.
   const elapsedDays = horizonDays - remaining;
   if (elapsedDays < 15) {
-    // Return 50% neutral; not enough history to judge progress
-    return {
-      goalProbabilityPct:       50,
-      requiredMonthlyReturnPct: Math.round(requiredMonthlyReturnPct * 100) / 100,
-      requiredReturnFromHerePct: Math.round(requiredReturnFromHerePct * 100) / 100,
-      riskReasonCodes:          ['INSUFFICIENT_HISTORY'],
-      impossible:               false,
-      impossibilityReason:      null,
-    };
+    riskReasonCodes.push('INSUFFICIENT_HISTORY');
   }
 
   return {
