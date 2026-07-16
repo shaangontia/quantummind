@@ -161,6 +161,67 @@ router.get('/admin/decisions/:decisionId/replay', verifyAuth, requireUserAdminAu
 
     const parseJ = (v: any) => { try { return v ? JSON.parse(String(v)) : null; } catch { return null; } };
 
+    // ── Transform raw stored objects into frontend-compatible shapes ──────────
+    const rawModel     = parseJ(event.model_trace_json)     ?? {};
+    const rawRule      = parseJ(event.rule_trace_json)      ?? {};
+    const rawRisk      = parseJ(event.risk_trace_json)      ?? {};
+    const rawLlm       = parseJ(event.llm_trace_json)       ?? {};
+    const rawExecution = parseJ(event.execution_trace_json) ?? {};
+
+    // modelTrace: flat object → [{component, score, weight, contribution, detail}]
+    const modelTrace = Object.entries(rawModel)
+      .filter(([, v]) => v != null)
+      .map(([k, v]) => ({
+        component:    k.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim(),
+        score:        typeof v === 'number' ? v : null,
+        weight:       1,
+        contribution: typeof v === 'number' ? v : null,
+        detail:       typeof v !== 'number' ? String(v) : null,
+      }));
+
+    // ruleTrace: eligibilityGateResults array + rejectionReasons → [{rule, passed, value, threshold}]
+    const eligibilityEntries: any[] = Array.isArray(rawRule?.eligibilityGateResults)
+      ? rawRule.eligibilityGateResults.map((g: any) => ({
+          rule:      g.gate ?? g.rule ?? g.name ?? 'Gate',
+          passed:    g.passed ?? false,
+          value:     g.value    != null ? String(g.value)     : null,
+          threshold: g.threshold != null ? String(g.threshold) : null,
+        }))
+      : [];
+    const rejectionEntries: any[] = Array.isArray(rawRule?.rejectionReasons)
+      ? rawRule.rejectionReasons.map((r: string) => ({ rule: r, passed: false, value: null, threshold: null }))
+      : [];
+    const ruleTrace = [...eligibilityEntries, ...rejectionEntries];
+
+    // riskTrace: flat object → [{rule, passed, value, threshold}]
+    const riskTrace = Object.entries(rawRisk)
+      .filter(([, v]) => v != null)
+      .map(([k, v]) => ({
+        rule:      k.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim(),
+        passed:    true,
+        value:     typeof v === 'object' ? JSON.stringify(v) : String(v),
+        threshold: null,
+      }));
+
+    // llmTrace: map backend field names to frontend field names
+    const llmTrace = {
+      geminiVerdict:      rawLlm?.verdict        ?? rawLlm?.geminiVerdict        ?? null,
+      geminiConfidence:   rawLlm?.confidence     ?? rawLlm?.geminiConfidence     ?? null,
+      geminiRiskLevel:    rawLlm?.riskLevel      ?? rawLlm?.geminiRiskLevel      ?? null,
+      geminiRedFlags:     rawLlm?.redFlags       ?? rawLlm?.geminiRedFlags       ??
+                          rawLlm?.reasonCodes    ?? [],
+      groqSentimentScore: rawLlm?.groqSentimentScore ?? null,
+    };
+
+    // executionTrace: map backend fields to frontend expected fields
+    const executionTrace = {
+      signalScore:   rawExecution?.signalScore   ?? rawExecution?.signalPrice    ?? null,
+      utilityScore:  rawExecution?.utilityScore  ?? null,
+      finalDecision: rawExecution?.fillStatus    ?? rawExecution?.orderSide      ?? null,
+      rejectedBy:    rawExecution?.rejectionReason ?? rawExecution?.brokerErrorCode ?? null,
+      executedAt:    rawExecution?.orderFilledAt ?? rawExecution?.orderPlacedAt  ?? null,
+    };
+
     return res.json({
       success: true,
       data: {
@@ -176,14 +237,14 @@ router.get('/admin/decisions/:decisionId/replay', verifyAuth, requireUserAdminAu
           metrics:     parseJ(userExp?.metrics_json),
         },
         adminTrace: {
-          featureSnapshot:  parseJ(event.raw_feature_snapshot_json),
-          modelTrace:       ensureArray(parseJ(event.model_trace_json)),
-          ruleTrace:        ensureArray(parseJ(event.rule_trace_json)),
-          riskTrace:        ensureArray(parseJ(event.risk_trace_json)),
-          llmTrace:         parseJ(event.llm_trace_json),
-          executionTrace:   parseJ(event.execution_trace_json),
-          fullTrace:        parseJ(event.admin_trace_json),
-          adminMetrics:     parseJ(adminExp?.metrics_json),
+          featureSnapshot: parseJ(event.raw_feature_snapshot_json),
+          modelTrace,
+          ruleTrace,
+          riskTrace,
+          llmTrace,
+          executionTrace,
+          fullTrace:       parseJ(event.admin_trace_json),
+          adminMetrics:    parseJ(adminExp?.metrics_json),
         },
         versions: {
           explanationVersion:          event.explanation_version,
