@@ -794,8 +794,8 @@ router.post('/admin/virtual-reconciliation/mismatches/:id/resolve', verifyAuth, 
       }
     }
 
-    return res.json({ success: true, message: 'Mismatch resolved' });
-  } catch (err) { return res.status(500).json({ error: String(err) }); }
+    return res.json({ success: true, data: { message: 'Mismatch resolved' } });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
 /**
@@ -809,12 +809,14 @@ router.post('/admin/virtual-reconciliation/:portfolioId/retry', verifyAuth, requ
     const result = await runVirtualReconciliationForPortfolio(portfolioId);
     return res.json({
       success: true,
-      status:        result.status,
-      mismatchCount: result.mismatchCount,
-      criticalCount: result.criticalMismatchCount,
-      runId:         result.runId,
+      data: {
+        status:        result.status,
+        mismatchCount: result.mismatchCount,
+        criticalCount: result.criticalMismatchCount,
+        runId:         result.runId,
+      },
     });
-  } catch (err) { return res.status(500).json({ error: String(err) }); }
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
 /**
