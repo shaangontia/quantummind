@@ -18,6 +18,7 @@
  */
 
 import { run } from '../db/turso.js';
+import type { PriceSource, DataSource, LabelQuality } from './buildCandidateLabelPlan.js';
 
 export type CandidateAction = 'EXECUTED' | 'VETOED' | 'WEAK' | 'SKIPPED';
 
@@ -49,6 +50,17 @@ export interface CandidateRecord {
   strategyReasonCodes?: string[] | null;
   strategyClassifierVersion?: string | null;
   strategySource?: string | null;        // 'REAL_TIME_CLASSIFIER' | 'INFERRED_BACKFILL'
+  // Phase 23: Shadow label learning
+  priceSource?:      PriceSource | null;
+  dataSource?:       DataSource | null;
+  labelQuality?:     LabelQuality | null;
+  learningEligible?: boolean;
+  learningWeight?:   number | null;
+  labelHorizonDays?: number | null;
+  labelReadyAt?:     string | null;
+  riskPerShare?:     number | null;
+  stopRMultiple?:    number | null;
+  targetRMultiple?:  number | null;
 }
 
 /**
@@ -63,8 +75,10 @@ export async function recordCandidate(c: CandidateRecord): Promise<number> {
         market_regime, fundamental_score, atr_pct, dma20_pct, dma50_pct, dist_52w_low_pct,
         llm_risk_level, llm_news_event_type, filters_passed, filters_blocked, action_taken,
         entry_price, stop_price, target_price, prediction_pwin, model_version,
-        strategy_confidence, strategy_reason_codes_json, strategy_classifier_version, strategy_source)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        strategy_confidence, strategy_reason_codes_json, strategy_classifier_version, strategy_source,
+        price_source, data_source, label_quality, learning_eligible, learning_weight,
+        label_horizon_days, label_ready_at, risk_per_share, stop_r_multiple, target_r_multiple)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       c.portfolioId, c.symbol,
       c.strategyType ?? null, c.signalScore,
@@ -83,6 +97,17 @@ export async function recordCandidate(c: CandidateRecord): Promise<number> {
       c.strategyReasonCodes ? JSON.stringify(c.strategyReasonCodes) : null,
       c.strategyClassifierVersion ?? null,
       c.strategySource ?? 'REAL_TIME_CLASSIFIER',
+      // Phase 23: shadow label fields
+      c.priceSource ?? null,
+      c.dataSource ?? null,
+      c.labelQuality ?? null,
+      c.learningEligible ? 1 : 0,
+      c.learningWeight ?? 0.0,
+      c.labelHorizonDays ?? 15,
+      c.labelReadyAt ?? null,
+      c.riskPerShare ?? null,
+      c.stopRMultiple ?? null,
+      c.targetRMultiple ?? null,
     ],
   ).catch(() => ({ lastInsertRowid: 0 }));
   return result.lastInsertRowid;

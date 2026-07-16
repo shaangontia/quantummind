@@ -83,17 +83,20 @@ function extractFeatures(row: {
  * Returns trained weights + bias, or null when insufficient data.
  */
 export async function trainModel(): Promise<ModelState | null> {
-  // Phase 16: Only train on TARGET_BEFORE_STOP labels (not proxy labels)
-  // Falls back to signal_patterns proxy when insufficient true labels
-  // Phase 16: Only train on TARGET_BEFORE_STOP labels with FINAL status
+  // Phase 23: Train on EXECUTED + SHADOW candidates (LIVE_PAPER_EXECUTED + LIVE_PAPER_SHADOW).
+  // Excludes POLICY_SIMULATION rows. Applies per-row learning_weight in gradient updates.
+  // Validation/promotion gates still require executed-only counts (enforced in modelLifecycle).
   let rows = await query(
     `SELECT rsi_value, volume_ratio, market_regime, strategy_type, fundamental_score,
-            target_hit_before_stop AS outcome_int
+            target_hit_before_stop AS outcome_int,
+            COALESCE(learning_weight, 1.0) AS sample_weight,
+            data_source
      FROM trade_candidates
-     WHERE action_taken='EXECUTED'
-       AND label_type='TARGET_BEFORE_STOP'
-       AND label_status='FINAL'
+     WHERE learning_eligible = 1
+       AND label_type = 'TARGET_BEFORE_STOP'
+       AND label_status = 'FINAL'
        AND target_hit_before_stop IS NOT NULL
+       AND (data_source IS NULL OR data_source != 'POLICY_SIMULATION')
      ORDER BY evaluated_at DESC LIMIT 2000`,
   ).then(r => r.map(x => ({ ...x, outcome: x.outcome_int === 1 ? 'WIN' : 'LOSS' }))).catch(() => []);
 
@@ -114,6 +117,8 @@ export async function trainModel(): Promise<ModelState | null> {
 
   const X: number[][] = rows.map(r => extractFeatures(r));
   const y: number[]   = rows.map(r => r.outcome === 'WIN' ? 1 : 0);
+  // Phase 23: per-sample weights (1.0 executed, 0.7 skipped, 0.5 weak, 0.3 vetoed)
+  const sampleWeights: number[] = rows.map(r => Number(r.sample_weight ?? 1.0));
 
   // Initialise weights to zero
   let weights = Array(N_FEATURES).fill(0) as number[];
@@ -128,18 +133,22 @@ export async function trainModel(): Promise<ModelState | null> {
       const batch = indices.slice(b, b + batchSize);
       const gradW = Array(N_FEATURES).fill(0) as number[];
       let gradB = 0;
+      let weightSum = 0;
       for (const i of batch) {
-        const z = dotProduct(weights, X[i]) + bias;
+        const z    = dotProduct(weights, X[i]) + bias;
         const pred = sigmoid(z);
-        const err = pred - y[i];
+        const w    = sampleWeights[i];
+        const err  = (pred - y[i]) * w;  // Phase 23: scale error by sample weight
         for (let j = 0; j < N_FEATURES; j++) gradW[j] += err * X[i][j];
-        gradB += err;
+        gradB   += err;
+        weightSum += w;
       }
-      // Update with L2 regularisation
+      const effectiveBatch = Math.max(weightSum, 1);  // use weight-sum as effective batch size
+      // Update with L2 regularisation (divided by effective batch weight sum)
       for (let j = 0; j < N_FEATURES; j++) {
-        weights[j] -= LEARNING_RATE * (gradW[j] / batch.length + LAMBDA * weights[j]);
+        weights[j] -= LEARNING_RATE * (gradW[j] / effectiveBatch + LAMBDA * weights[j]);
       }
-      bias -= LEARNING_RATE * (gradB / batch.length);
+      bias -= LEARNING_RATE * (gradB / effectiveBatch);
     }
   }
 

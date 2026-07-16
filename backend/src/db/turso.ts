@@ -659,6 +659,32 @@ export async function runMigrations(): Promise<void> {
   } catch (_) { /* exists */ }
 
   console.log('[DB] Migration: Phase 21 portfolio health + goal probability schema done');
+
+  // ── Phase 23: Shadow Label Learning Acceleration ───────────────────────────────
+  // New columns on trade_candidates for shadow/learning metadata
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN price_source TEXT DEFAULT 'THEORETICAL_EVALUATION'"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN data_source TEXT DEFAULT 'LIVE_PAPER_SHADOW'"); } catch (_) { /* exists */ }
+  try { await db.execute("ALTER TABLE trade_candidates ADD COLUMN label_quality TEXT"); } catch (_) { /* exists */ }
+  try { await db.execute('ALTER TABLE trade_candidates ADD COLUMN learning_eligible INTEGER DEFAULT 0'); } catch (_) { /* exists */ }
+  try { await db.execute('ALTER TABLE trade_candidates ADD COLUMN learning_weight REAL DEFAULT 0.0'); } catch (_) { /* exists */ }
+  try { await db.execute('ALTER TABLE trade_candidates ADD COLUMN label_horizon_days INTEGER DEFAULT 15'); } catch (_) { /* exists */ }
+  try { await db.execute('ALTER TABLE trade_candidates ADD COLUMN label_ready_at TEXT'); } catch (_) { /* exists */ }
+  try { await db.execute('ALTER TABLE trade_candidates ADD COLUMN risk_per_share REAL'); } catch (_) { /* exists */ }
+  try { await db.execute('ALTER TABLE trade_candidates ADD COLUMN stop_r_multiple REAL DEFAULT 1.5'); } catch (_) { /* exists */ }
+  try { await db.execute('ALTER TABLE trade_candidates ADD COLUMN target_r_multiple REAL DEFAULT 2.0'); } catch (_) { /* exists */ }
+  // Backfill EXECUTED rows to correct data_source / learning metadata
+  try {
+    await db.execute(`UPDATE trade_candidates SET
+      price_source='EXECUTED_FILL', data_source='LIVE_PAPER_EXECUTED',
+      label_quality='ACTUAL_EXECUTED', learning_eligible=1, learning_weight=1.0,
+      stop_r_multiple=1.5, target_r_multiple=2.0,
+      risk_per_share=CASE WHEN entry_price IS NOT NULL AND stop_price IS NOT NULL THEN entry_price-stop_price ELSE NULL END,
+      label_ready_at=COALESCE(label_ready_at, date(evaluated_at,'+21 days'))
+    WHERE action_taken='EXECUTED' AND (data_source IS NULL OR data_source!='LIVE_PAPER_EXECUTED')`);
+  } catch (_) { /* ignore */ }
+  // Add index for learning_eligible + label_ready_at (used by labelGenerator shadow query)
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_tc_learning ON trade_candidates(learning_eligible, label_ready_at, action_taken)'); } catch (_) { /* exists */ }
+  console.log('[DB] Migration: Phase 23 shadow label learning schema done');
 }
 
 export async function query(sql: string, args: any[] = []): Promise<any[]> {

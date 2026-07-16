@@ -13,6 +13,7 @@ import { evaluateKillSwitch, killSwitchSizeMultiplier, circuitBreakerBlocksSell,
 import { registerExitPlan, evaluateExits, updateTrailingStop } from '../services/exitEngine.js';
 import { classifyMarketRegime } from '../services/regimeEngine.js';
 import { recordCandidate } from '../services/candidateRecorder.js';
+import { buildCandidateLabelPlan } from '../services/buildCandidateLabelPlan.js';
 import { getModelGovernanceState } from '../services/modelLifecycle.js';
 // Phase 19: Portfolio-aware ranking
 import { getPortfolioPolicy, snapshotPolicy } from '../services/portfolioPolicy.js';
@@ -582,11 +583,16 @@ async function runPortfolioTradingCycle(
           fundamentalScore: signal.fundamentalScore ?? null,
           filtersPassed: [], filtersBlocked: ['score_or_direction'],
           actionTaken: 'WEAK',
+          // Non-BUY signal — no label plan (not a BUY candidate)
+          dataSource: 'LIVE_PAPER_SHADOW', labelQuality: 'SHADOW_THEORETICAL',
+          learningEligible: false, learningWeight: 0.0,
         }).catch(() => null);
       }
       continue;
     }
     if (signal.strength === 'WEAK') {
+      // Phase 23: WEAK BUY signal — shadow-label at theoretical entry/stop/target
+      const weakPlan = buildCandidateLabelPlan('WEAK', signal.price);
       void recordCandidate({
         portfolioId, symbol,
         strategyType: signal.strategyType ?? null,
@@ -599,6 +605,7 @@ async function runPortfolioTradingCycle(
         fundamentalScore: signal.fundamentalScore ?? null,
         filtersPassed: [], filtersBlocked: ['weak_score'],
         actionTaken: 'WEAK',
+        ...weakPlan,
       }).catch(() => null);
       continue;
     }
@@ -608,6 +615,8 @@ async function runPortfolioTradingCycle(
     const avgDTV = await getAvgDailyTradedValue(symbol).catch(() => null);
     if (avgDTV !== null && avgDTV < allocationCapInr * 20) {
       logger.info({ job: 'market-cycle', portfolioId, symbol, phase: 'execution', action: 'SKIP', reason: `Liquidity gate: avg DTV ₹${(avgDTV/1e7).toFixed(1)}Cr < 20× trade size` });
+      // Phase 23: SKIPPED BUY — high-quality shadow label (passed direction/score gates)
+      const skipPlan = buildCandidateLabelPlan('SKIPPED', signal.price);
       void recordCandidate({
         portfolioId, symbol,
         strategyType: signal.strategyType ?? null,
@@ -619,6 +628,7 @@ async function runPortfolioTradingCycle(
         marketRegime: signal.marketRegimeLabel ?? null,
         filtersPassed: ['score', 'direction'], filtersBlocked: ['liquidity_gate'],
         actionTaken: 'SKIPPED',
+        ...skipPlan,
       }).catch(() => null);
       continue;
     }
@@ -655,6 +665,9 @@ async function runPortfolioTradingCycle(
       const eligResult19 = checkEligibility(eligInput19, portfolioPolicy19, portfolioExposure19, modelStage19);
 
       // Record candidate first so we have an id for the evaluation row
+      // Phase 23: Build label plan (VETOED=soft here — policy gate is a soft veto, not a hard risk block)
+      const policyAction = eligResult19.eligible ? 'EXECUTED' : 'VETOED';
+      const policyPlan = buildCandidateLabelPlan(policyAction, signal.price, 'soft');
       policyEvaluationCandidateId19 = await recordCandidate({
         portfolioId, symbol,
         strategyType: signal.strategyType ?? null,
@@ -667,7 +680,8 @@ async function runPortfolioTradingCycle(
         fundamentalScore: signal.fundamentalScore ?? null,
         filtersPassed: ['score', 'direction', 'liquidity'],
         filtersBlocked: eligResult19.eligible ? [] : eligResult19.rejectionReasons,
-        actionTaken: eligResult19.eligible ? 'EXECUTED' : 'VETOED',
+        actionTaken: policyAction,
+        ...policyPlan,
       });
 
       if (!eligResult19.eligible) {
@@ -894,13 +908,25 @@ async function runPortfolioTradingCycle(
       const stopPrice  = signal.price * (1 - 0.015 * 1.5);
       const targetPrice = signal.price * (1 + 0.015 * 3);  // 2R target
       if (policyEvaluationCandidateId19 > 0) {
-        // Update existing candidate row (already inserted in Phase 19 gate)
+        // Update existing candidate row — stamp actual fill prices + Phase 23 learning metadata
+        const execPlan = buildCandidateLabelPlan('EXECUTED', signal.price);
         void run(
-          `UPDATE trade_candidates SET action_taken='EXECUTED', entry_price=?, stop_price=?, target_price=? WHERE id=?`,
-          [signal.price, stopPrice, targetPrice, policyEvaluationCandidateId19],
+          `UPDATE trade_candidates
+           SET action_taken='EXECUTED', entry_price=?, stop_price=?, target_price=?,
+               price_source=?, data_source=?, label_quality=?,
+               learning_eligible=1, learning_weight=1.0,
+               risk_per_share=?, stop_r_multiple=?, target_r_multiple=?,
+               label_horizon_days=?, label_ready_at=?
+           WHERE id=?`,
+          [signal.price, stopPrice, targetPrice,
+           execPlan.priceSource, execPlan.dataSource, execPlan.labelQuality,
+           execPlan.riskPerShare, execPlan.stopRMultiple, execPlan.targetRMultiple,
+           execPlan.labelHorizonDays, execPlan.labelReadyAt,
+           policyEvaluationCandidateId19],
         ).catch(() => null);
       } else {
         // Phase 19 not active (policy load failed) — insert candidate the old way
+        const execPlan = buildCandidateLabelPlan('EXECUTED', signal.price);
         void recordCandidate({
           portfolioId, symbol,
           strategyType: signal.strategyType ?? null,
@@ -914,9 +940,7 @@ async function runPortfolioTradingCycle(
           filtersPassed: ['score', 'liquidity', 'fundamental', 'regime'],
           filtersBlocked: [],
           actionTaken: 'EXECUTED',
-          entryPrice: signal.price,
-          stopPrice,
-          targetPrice,
+          ...execPlan,
         }).catch(() => null);
       }
       // Phase 13: Persist strategy type on holding

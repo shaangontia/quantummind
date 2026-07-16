@@ -43,10 +43,25 @@ export interface ModelGovernanceState {
   };
 }
 
+/**
+ * Phase 23: Promotion thresholds updated with executed-minimum + strategy diversity.
+ * executedMin  = minimum number of ACTUAL_EXECUTED labels (shadow alone is not enough).
+ * strategyTypes = minimum distinct strategy_type values in executed labels.
+ * maxSingleStrategyPct = maximum % of executed labels from any one strategy (concentration cap).
+ */
 const THRESHOLDS = {
-  SHADOW:     { labels: 200, wfWindows: 1 },
-  ADVISORY:   { labels: 500, wfWindows: 3 },
-  PRODUCTION: { labels: 1000, wfWindows: 6 },
+  SHADOW:     { labels: 200,  wfWindows: 1, executedMin: 30,  strategyTypes: 2, maxSingleStrategyPct: 90 },
+  ADVISORY:   { labels: 500,  wfWindows: 3, executedMin: 100, strategyTypes: 4, maxSingleStrategyPct: 60 },
+  PRODUCTION: { labels: 1000, wfWindows: 6, executedMin: 250, strategyTypes: 4, maxSingleStrategyPct: 60 },
+};
+
+/** Phase 23: Stage-aware daily trade limits (cold-start caps still apply for position size). */
+const STAGE_TRADE_LIMITS: Record<string, number | null> = {
+  CANDIDATE:  2,
+  SHADOW:     3,
+  ADVISORY:   5,
+  PRODUCTION: null,  // policy-based — no hard override
+  RETIRED:    2,
 };
 
 // ─── In-process cache ─────────────────────────────────────────────────────────
@@ -59,12 +74,45 @@ const CACHE_TTL_MS = 15 * 60 * 1000; // 15 min
  * Called nightly after walk-forward and model training.
  */
 export async function evaluateModelGovernance(portfolioId: number): Promise<ModelGovernanceState> {
-  // Count TARGET_BEFORE_STOP labels
+  // Count TARGET_BEFORE_STOP labels (total = executed + shadow)
   const labelCount = await query(
     `SELECT COUNT(*) as cnt FROM trade_candidates
      WHERE portfolio_id=? AND label_type='TARGET_BEFORE_STOP' AND target_hit_before_stop IS NOT NULL`,
     [portfolioId],
   ).then(r => Number(r[0]?.cnt ?? 0)).catch(() => 0);
+
+  // Phase 23: Count EXECUTED-only labels (for promotion diversity gate)
+  const executedLabelCount = await query(
+    `SELECT COUNT(*) as cnt FROM trade_candidates
+     WHERE portfolio_id=? AND action_taken='EXECUTED'
+       AND label_type='TARGET_BEFORE_STOP' AND target_hit_before_stop IS NOT NULL`,
+    [portfolioId],
+  ).then(r => Number(r[0]?.cnt ?? 0)).catch(() => 0);
+
+  // Phase 23: Count distinct strategy types in executed labels (diversity gate)
+  const strategyTypeCount = await query(
+    `SELECT COUNT(DISTINCT strategy_type) as cnt FROM trade_candidates
+     WHERE portfolio_id=? AND action_taken='EXECUTED'
+       AND label_type='TARGET_BEFORE_STOP' AND target_hit_before_stop IS NOT NULL
+       AND strategy_type IS NOT NULL`,
+    [portfolioId],
+  ).then(r => Number(r[0]?.cnt ?? 0)).catch(() => 0);
+
+  // Phase 23: Concentration check — max single strategy share of executed labels
+  const maxStrategyConcPct = await query(
+    `SELECT MAX(strategy_cnt * 100.0 / total_cnt) as max_pct
+     FROM (
+       SELECT strategy_type, COUNT(*) as strategy_cnt,
+              (SELECT COUNT(*) FROM trade_candidates WHERE portfolio_id=? AND action_taken='EXECUTED'
+               AND label_type='TARGET_BEFORE_STOP' AND target_hit_before_stop IS NOT NULL) as total_cnt
+       FROM trade_candidates
+       WHERE portfolio_id=? AND action_taken='EXECUTED'
+         AND label_type='TARGET_BEFORE_STOP' AND target_hit_before_stop IS NOT NULL
+         AND strategy_type IS NOT NULL
+       GROUP BY strategy_type
+     )`,
+    [portfolioId, portfolioId],
+  ).then(r => Number(r[0]?.max_pct ?? 100)).catch(() => 100);
 
   // Count walk-forward windows with positive expectancy
   const posWFWindows = await query(
@@ -73,13 +121,24 @@ export async function evaluateModelGovernance(portfolioId: number): Promise<Mode
     [portfolioId],
   ).then(r => Number(r[0]?.cnt ?? 0)).catch(() => 0);
 
-  // Determine stage
+  // Determine stage — Phase 23: all gates must pass (labels + executed + diversity + WF)
   let stage: ModelStage = 'CANDIDATE';
-  if (labelCount >= THRESHOLDS.PRODUCTION.labels && posWFWindows >= THRESHOLDS.PRODUCTION.wfWindows) {
+  if (labelCount >= THRESHOLDS.PRODUCTION.labels
+    && posWFWindows >= THRESHOLDS.PRODUCTION.wfWindows
+    && executedLabelCount >= THRESHOLDS.PRODUCTION.executedMin
+    && strategyTypeCount >= THRESHOLDS.PRODUCTION.strategyTypes
+    && maxStrategyConcPct <= THRESHOLDS.PRODUCTION.maxSingleStrategyPct) {
     stage = 'PRODUCTION';
-  } else if (labelCount >= THRESHOLDS.ADVISORY.labels && posWFWindows >= THRESHOLDS.ADVISORY.wfWindows) {
+  } else if (labelCount >= THRESHOLDS.ADVISORY.labels
+    && posWFWindows >= THRESHOLDS.ADVISORY.wfWindows
+    && executedLabelCount >= THRESHOLDS.ADVISORY.executedMin
+    && strategyTypeCount >= THRESHOLDS.ADVISORY.strategyTypes
+    && maxStrategyConcPct <= THRESHOLDS.ADVISORY.maxSingleStrategyPct) {
     stage = 'ADVISORY';
-  } else if (labelCount >= THRESHOLDS.SHADOW.labels && posWFWindows >= THRESHOLDS.SHADOW.wfWindows) {
+  } else if (labelCount >= THRESHOLDS.SHADOW.labels
+    && posWFWindows >= THRESHOLDS.SHADOW.wfWindows
+    && executedLabelCount >= THRESHOLDS.SHADOW.executedMin
+    && strategyTypeCount >= THRESHOLDS.SHADOW.strategyTypes) {
     stage = 'SHADOW';
   }
 
@@ -97,13 +156,16 @@ export async function evaluateModelGovernance(portfolioId: number): Promise<Mode
     available: false, maxErrorPct: null, activeBuckets: 0,
   }));
 
+  // Phase 23: Stage-aware daily trade limit (no longer flat 2 for all cold-start stages)
+  const stageTradeLimit = STAGE_TRADE_LIMITS[stage] ?? null;
+
   const state: ModelGovernanceState = {
     stage,
     trueLabelCount: labelCount,
     positiveWFWindows: posWFWindows,
     isColdStart,
     maxPositionPctOverride: isColdStart ? 0.01 : null,
-    maxTradesPerDayOverride: isColdStart ? 2 : null,
+    maxTradesPerDayOverride: stageTradeLimit,
     maxOpenPositionsOverride: isColdStart ? 5 : null,
     promotionGaps: { labelsNeeded, wfWindowsNeeded, nextStage, weakSignalsBlocked: isColdStart },
     calibration: calibrationSummary,
@@ -153,7 +215,7 @@ export async function getModelGovernanceState(portfolioId: number): Promise<Mode
       positiveWFWindows: 0,
       isColdStart: true,
       maxPositionPctOverride: 0.01,
-      maxTradesPerDayOverride: 2,
+      maxTradesPerDayOverride: STAGE_TRADE_LIMITS['CANDIDATE'] ?? 2,
       maxOpenPositionsOverride: 5,
       promotionGaps: { labelsNeeded: 200, wfWindowsNeeded: 1, nextStage: 'SHADOW', weakSignalsBlocked: true },
       calibration: { available: false, maxErrorPct: null, activeBuckets: 0 },
@@ -172,13 +234,15 @@ export async function getModelGovernanceState(portfolioId: number): Promise<Mode
   const loadedNextThresh = THRESHOLDS[loadedNextStage as keyof typeof THRESHOLDS] ?? THRESHOLDS.PRODUCTION;
   const loadedCalib = await getCalibrationSummary('buy_win_probability_v1').catch(() => ({ available: false, maxErrorPct: null, activeBuckets: 0 }));
 
+  const loadedTradeLimit = STAGE_TRADE_LIMITS[loadedStage] ?? null;
+
   const state: ModelGovernanceState = {
     stage: loadedStage,
     trueLabelCount: loadedLabels,
     positiveWFWindows: loadedWF,
     isColdStart: loadedCold,
     maxPositionPctOverride: loadedCold ? 0.01 : null,
-    maxTradesPerDayOverride: loadedCold ? 2 : null,
+    maxTradesPerDayOverride: loadedTradeLimit,
     maxOpenPositionsOverride: loadedCold ? 5 : null,
     promotionGaps: {
       labelsNeeded: Math.max(0, loadedNextThresh.labels - loadedLabels),
