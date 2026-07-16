@@ -706,12 +706,15 @@ router.get('/admin/virtual-reconciliation/overview', verifyAuth, requireUserAdmi
     );
 
     return res.json({
-      totalPortfolios: total,
-      healthy, warning, mismatch, failed,
-      newBuysBlocked: blocked,
-      topMismatchTypes: mismatchTypes.map((r: any) => r.mismatch_type),
+      success: true,
+      data: {
+        totalPortfolios: total,
+        healthy, warning, mismatch, failed,
+        newBuysBlocked: blocked,
+        topMismatchTypes: mismatchTypes.map((r: any) => r.mismatch_type),
+      },
     });
-  } catch (err) { return res.status(500).json({ error: String(err) }); }
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
 /**
@@ -735,22 +738,25 @@ router.get('/admin/virtual-reconciliation/mismatches', verifyAuth, requireUserAd
     args.push(limit);
 
     const rows = await query(sql, args);
-    return res.json(rows.map((r: any) => ({
-      id:                            Number(r.id),
-      portfolioId:                   Number(r.portfolio_id),
-      mismatchType:                  r.mismatch_type,
-      severity:                      r.severity,
-      symbol:                        r.symbol,
-      expectedValue:                 r.expected_value,
-      actualValue:                   r.actual_value,
-      differenceValue:               r.difference_value,
-      blocksNewBuys:                 Number(r.blocks_new_buys) === 1,
-      allowsOnlyRiskReducingSells:   Number(r.allows_only_risk_reducing_sells) === 1,
-      status:                        r.status,
-      reason:                        r.reason,
-      createdAt:                     r.created_at,
-    })));
-  } catch (err) { return res.status(500).json({ error: String(err) }); }
+    return res.json({
+      success: true,
+      data: rows.map((r: any) => ({
+        id:                            Number(r.id),
+        portfolioId:                   Number(r.portfolio_id),
+        mismatchType:                  r.mismatch_type,
+        severity:                      r.severity,
+        symbol:                        r.symbol,
+        expectedValue:                 r.expected_value,
+        actualValue:                   r.actual_value,
+        differenceValue:               r.difference_value,
+        blocksNewBuys:                 Number(r.blocks_new_buys) === 1,
+        allowsOnlyRiskReducingSells:   Number(r.allows_only_risk_reducing_sells) === 1,
+        status:                        r.status,
+        reason:                        r.reason,
+        createdAt:                     r.created_at,
+      })),
+    });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
 /**
@@ -818,8 +824,8 @@ router.get('/admin/virtual-execution-quality', verifyAuth, requireUserAdminAuth,
   try {
     const range   = String(req.query.range ?? '30D');
     const quality = await getAdminVirtualExecutionQuality(range);
-    return res.json(quality);
-  } catch (err) { return res.status(500).json({ error: String(err) }); }
+    return res.json({ success: true, data: quality });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
 export default router;
