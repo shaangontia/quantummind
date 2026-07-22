@@ -121,6 +121,16 @@ async function writeLabel(
 // ---------------------------------------------------------------------------
 
 async function labelExecutedCandidates(): Promise<number> {
+  // Latency fix (2026-07-22): previously gated on `evaluated_at <= now - 15
+  // days` before even looking at a row — so a trade that was ALREADY SOLD
+  // (via target hit, stop-loss, or trailing stop) on day 2 still sat
+  // unlabelled for up to 13 more days for no reason. The `sellTrade` lookup
+  // below is the real, definitive gate: if the position has been sold, the
+  // outcome is already known and can be labelled immediately. This directly
+  // speeds up the executedMin promotion gate (modelLifecycle.ts), which was
+  // previously bottlenecked as much by this artificial wait as by the
+  // trade-entry cap itself. See chat discussion 2026-07-22 re: model
+  // learning speed.
   const pending = await query(
     `SELECT id, symbol, entry_price, stop_price, target_price, evaluated_at
      FROM trade_candidates
@@ -129,7 +139,6 @@ async function labelExecutedCandidates(): Promise<number> {
        AND entry_price IS NOT NULL
        AND stop_price IS NOT NULL
        AND target_price IS NOT NULL
-       AND evaluated_at <= datetime('now', '-15 days')
      ORDER BY evaluated_at ASC LIMIT 200`,
   ).catch(() => []);
 
@@ -190,13 +199,30 @@ async function labelExecutedCandidates(): Promise<number> {
 // ---------------------------------------------------------------------------
 
 async function labelShadowCandidates(): Promise<number> {
-  // Only label shadow candidates with:
-  //   1. learning_eligible = 1 (excludes hard-veto rows)
-  //   2. theoretical entry/stop/target recorded at evaluation time
-  //   3. enough time elapsed (label_horizon_days calendar days via label_ready_at)
-  //   4. not already labelled
+  // Latency fix (2026-07-22): previously required BOTH `evaluated_at <= now
+  // - 15 days` AND `label_ready_at <= today` (~21 calendar days) before even
+  // querying a row — so a shadow candidate whose theoretical target was hit
+  // on day 2 still sat unlabelled until day 21. That flat wait was sized for
+  // the "neither stop nor target hit — fall back to last close" case, but
+  // was being applied unconditionally to every row, including the ones that
+  // already resolved early.
+  //
+  // Now: query as soon as *some* price history plausibly exists (2 days is
+  // enough for evaluatePath to find an early stop/target hit), and decide
+  // in-loop whether the row is actually resolvable yet:
+  //   - target or stop already hit in the available history → label now,
+  //     definitively, regardless of label_ready_at.
+  //   - neither hit yet AND label_ready_at hasn't passed → still pending,
+  //     skip (retried next nightly run).
+  //   - neither hit AND label_ready_at has passed → fall back to last close
+  //     (unchanged behaviour from before).
+  //
+  // This directly speeds up the 200-total-label SHADOW-promotion gate
+  // (modelLifecycle.ts) for the many candidates that resolve quickly instead
+  // of waiting out a fixed horizon on all of them. See chat discussion
+  // 2026-07-22 re: model learning speed.
   const pending = await query(
-    `SELECT id, symbol, entry_price, stop_price, target_price, evaluated_at, learning_weight
+    `SELECT id, symbol, entry_price, stop_price, target_price, evaluated_at, label_ready_at, learning_weight
      FROM trade_candidates
      WHERE action_taken IN ('SKIPPED', 'WEAK', 'VETOED')
        AND learning_eligible = 1
@@ -204,18 +230,19 @@ async function labelShadowCandidates(): Promise<number> {
        AND entry_price IS NOT NULL
        AND stop_price IS NOT NULL
        AND target_price IS NOT NULL
-       AND (label_ready_at IS NULL OR label_ready_at <= date('now'))
-       AND evaluated_at <= datetime('now', '-15 days')
+       AND evaluated_at <= datetime('now', '-2 days')
      ORDER BY evaluated_at ASC LIMIT 500`,
   ).catch(() => []);
 
   let labelled = 0;
   for (const row of pending) {
-    const entryDate   = String(row.evaluated_at).slice(0, 10);
-    const entryPrice  = Number(row.entry_price);
-    const stopPrice   = Number(row.stop_price);
-    const targetPrice = Number(row.target_price);
-    const symbol      = String(row.symbol);
+    const entryDate    = String(row.evaluated_at).slice(0, 10);
+    const entryPrice   = Number(row.entry_price);
+    const stopPrice    = Number(row.stop_price);
+    const targetPrice  = Number(row.target_price);
+    const symbol       = String(row.symbol);
+    const labelReadyAt = row.label_ready_at ? String(row.label_ready_at) : null;
+    const horizonElapsed = !labelReadyAt || labelReadyAt <= new Date().toISOString().slice(0, 10);
 
     // Shadow labels require price history — we cannot use a sell trade
     // because the portfolio never executed this position.
@@ -227,6 +254,14 @@ async function labelShadowCandidates(): Promise<number> {
     }
 
     const { targetHit, stopHit, mae, mfe } = evaluatePath(priceHistory, entryPrice, stopPrice, targetPrice);
+    const resolvedEarly = targetHit || stopHit;
+
+    if (!resolvedEarly && !horizonElapsed) {
+      // Neither hit yet, and the full label horizon hasn't passed — this
+      // row's fate genuinely isn't determined yet. Leave PENDING, retry
+      // next nightly run (unchanged from before for the still-undecided case).
+      continue;
+    }
 
     // For shadow candidates, if neither stop nor target hit within horizon, use last close
     const lastClose     = priceHistory[priceHistory.length - 1].close;

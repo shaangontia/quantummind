@@ -35,6 +35,28 @@ Vercel free plan = max 1 cron/day. Use **cron-job.org** (free) for 5-min cycles:
    - **Schedule**: Every 5 minutes
    - **Execution days**: Mon–Fri only
    - **Execution times**: 09:15–15:45 IST (03:45–10:15 UTC)
+   - **Authentication**: add header `Authorization: Bearer <CRON_SECRET>` (same value as the `CRON_SECRET` env var set in Vercel) — the route rejects requests without it.
+
+## Step 4 — Nightly Learning Job Cron (added 2026-07-22)
+
+The nightly pipeline (label generation → model-governance promotion →
+ML retrain → walk-forward validation) is registered via in-process
+`node-cron` too, but that never fires on Vercel's serverless deployment —
+there's no persistent process for the timer, and the one Vercel Hobby cron
+slot is already spent on Step 3. Without a second, externally-triggered job
+hitting this route, the model never generates labels, never promotes past
+CANDIDATE/SHADOW, and never retrains — independent of trade volume.
+
+Add a **second** cron-job.org job pointed at the new endpoint:
+
+1. In the same cron-job.org account used for Step 3, create another job:
+   - **URL**: `https://<your-vercel-url>/api/cron/nightly-training`
+   - **Method**: POST
+   - **Schedule**: Once daily
+   - **Execution days**: Mon–Fri only
+   - **Execution time**: 20:00 IST (14:30 UTC) — well after market close so exit prices have settled
+   - **Authentication**: same header as Step 3 — `Authorization: Bearer <CRON_SECRET>`
+2. The route responds immediately (fire-and-forget) and runs the full pipeline in the background; check Vercel function logs for `[Admin] Nightly training job complete` to confirm it finished, or `FAILED` with the error if not.
 
 ## Cache hierarchy (auto-detected, no config needed)
 ```

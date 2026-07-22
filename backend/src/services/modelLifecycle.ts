@@ -10,8 +10,21 @@
  *
  * Cold-start mode:
  *   Active when model is CANDIDATE or SHADOW
- *   Caps: position size 1% NAV, max 2 trades/day, max 5 open positions
+ *   Caps: position size 1% NAV, max 5 trades/day, max 5 open positions
  *   Blocks all WEAK signals (score < 3)
+ *
+ *   (2026-07-22: daily trade cap raised 2→5 for CANDIDATE, 3→5 for SHADOW.
+ *   Worst-case cold-start exposure is actually bounded by position size ×
+ *   max open positions = 1% × 5 = 5% NAV, completely independent of the
+ *   daily entry count — once 5 positions are open, marketMonitor.ts blocks
+ *   further entries outright regardless of the daily cap. The daily cap was
+ *   therefore a second, redundant throttle that mostly just slowed down how
+ *   fast the model could accumulate the executedMin-labelled trades needed
+ *   for promotion, without reducing worst-case risk. Aligning it to the
+ *   position-count ceiling (5) removes that redundant throttle. ADVISORY is
+ *   NOT cold-start — it uses normal (non-capped) position sizing — so its
+ *   daily limit was left unchanged; raising it would be a real risk
+ *   decision, not just a redundant-throttle removal.)
  *
  * Promotion evaluated nightly — automatic, no manual intervention.
  */
@@ -56,10 +69,26 @@ const THRESHOLDS = {
   PRODUCTION: { labels: 1000, wfWindows: 6, executedMin: 250, strategyTypes: 4, sectors: 6, maxSingleStrategyPct: 60 },
 };
 
-/** Phase 23: Stage-aware daily trade limits (cold-start caps still apply for position size). */
+/**
+ * Phase 23: Stage-aware daily trade limits (cold-start caps still apply for position size).
+ *
+ * CANDIDATE/SHADOW raised 2/3 → 5 (2026-07-22): both stages are cold-start
+ * (isColdStart = true), meaning worst-case exposure is already hard-bounded
+ * by maxPositionPctOverride (1% NAV) × maxOpenPositionsOverride (5 positions)
+ * = 5% NAV, enforced independently in marketMonitor.ts regardless of the
+ * daily entry count. Setting the daily cap to 5 aligns it with that
+ * position-count ceiling so it's no longer a second, tighter throttle on
+ * top of a cap that already does the job — it was previously the binding
+ * constraint on how fast the model could accumulate the executed-trade
+ * labels (executedMin: 30 for SHADOW) needed to be promoted.
+ *
+ * ADVISORY is NOT cold-start (uses normal, non-capped position sizing per
+ * riskTolerance) — its limit was intentionally left unchanged since raising
+ * it is a real risk decision, not a redundant-throttle removal.
+ */
 const STAGE_TRADE_LIMITS: Record<string, number | null> = {
-  CANDIDATE:  2,
-  SHADOW:     3,
+  CANDIDATE:  5,
+  SHADOW:     5,
   ADVISORY:   5,
   PRODUCTION: null,  // policy-based — no hard override
   RETIRED:    2,

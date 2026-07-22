@@ -295,6 +295,7 @@ Market regimes:
 |--------|------|-------------|
 | POST | `/api/cron/market-cycle` | Full trading cycle |
 | POST | `/api/cron/price-update` | Price-only refresh |
+| POST | `/api/cron/nightly-training` | Label generation + model governance + ML retrain + walk-forward (added 2026-07-22 — see Cron Schedule below) |
 | POST | `/api/admin/trading-enabled` | Toggle kill switch |
 | POST | `/api/admin/backtest/run` | Bootstrap signal weights |
 
@@ -308,6 +309,17 @@ Market regimes:
 | 16:00 | `0 16 * * 1-5` | After-market snapshot |
 | 20:00 | `0 20 * * 1-5` | Adaptive learning + Gemini portfolio insights |
 | Sunday 08:00 | `0 8 * * 0` | Weekly earnings calendar refresh |
+
+**Important (2026-07-22):** the 20:00 row above is registered via in-process
+`node-cron`, which only fires on a persistently-running process. This app
+deploys as a Vercel serverless function (no persistent process), and
+Vercel's Hobby-plan native cron support (`vercel.json`) is limited to one
+job — already used by the 5-min market cycle. **The 20:00 job will not run
+in production unless an external scheduler hits
+`POST /api/cron/nightly-training` directly** (same `cron-job.org` pattern as
+Step 3 in `DEPLOY.md` — see that file for the exact job config). Without
+this, labels never generate, the model never promotes past CANDIDATE/SHADOW,
+and it never retrains, regardless of trade volume.
 
 ## Environment Variables
 

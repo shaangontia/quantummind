@@ -53,7 +53,15 @@ function scoreAnnouncement(text: string): { score: number; label: CorporateAnnou
   return { score: clamped, label };
 }
 
-function nseGet(path: string): Promise<any> {
+// Bug fix (2026-07-22): same missing-timeout issue found and fixed in
+// marketData.ts's httpsGet() — this had no request timeout either, and
+// www.nseindia.com is known to hang/rate-limit non-browser traffic from
+// cloud IPs. fetchAnnouncements() is called synchronously inside
+// runMarketCycle()'s Gemini-sector-focus step, so a hang here stalls the
+// entire cron cycle the same way. See marketData.ts httpsGet() comment for
+// the full incident context (production market-cycle cron timing out on
+// every single 5-min run).
+function nseGet(path: string, timeoutMs = 8000): Promise<any> {
   return new Promise((resolve, reject) => {
     const opts = {
       hostname: 'www.nseindia.com',
@@ -65,13 +73,19 @@ function nseGet(path: string): Promise<any> {
         'Referer': 'https://www.nseindia.com/',
       },
     };
-    https.get(opts, (res) => {
+    const req = https.get(opts, (res) => {
       let data = '';
       res.on('data', (d: Buffer) => { data += d; });
       res.on('end', () => {
         try { resolve(JSON.parse(data)); } catch (e) { reject(new Error(`Parse error: ${data.slice(0, 100)}`)); }
       });
-    }).on('error', reject);
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      reject(new Error(`nseGet timeout after ${timeoutMs}ms: ${path}`));
+    });
   });
 }
 

@@ -1135,24 +1135,34 @@ export async function runMarketCycle(): Promise<void> {
   }
 }
 
-export function startScheduler(): void {
-  // Market hours: every 5 min (IST 9:00–15:45 Mon-Fri)
-  cron.schedule('*/5 9-15 * * 1-5', () => { runMarketCycle().catch(console.error); }, { timezone: 'Asia/Kolkata' });
-  // Pre-market
-  cron.schedule('55 8 * * 1-5', () => { updateAllPrices().catch(console.error); }, { timezone: 'Asia/Kolkata' });
-  // Hourly snapshot
-  cron.schedule('0 * * * *', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
-  // After-market snapshot
-  cron.schedule('0 16 * * 1-5', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
-  // Weekly earnings calendar refresh — every Sunday at 08:00 IST
-  cron.schedule('0 8 * * 0', async () => {
-    const { getCycleWatchlist } = await import('../services/marketData.js');
-    const allSyms = getCycleWatchlist(0, 200);
-    await fetchEarningsCalendar(allSyms).catch(console.error);
-  }, { timezone: 'Asia/Kolkata' });
-  // Nightly adaptive learning: resolve signal outcomes + recalibrate weights + Gemini portfolio insights
-  // Runs at 20:00 IST on weekdays — 5+ hours after market close so exit prices are settled
-  cron.schedule('0 20 * * 1-5', async () => {
+/**
+ * Nightly adaptive-learning pipeline: resolve signal outcomes → generate
+ * TARGET_BEFORE_STOP labels (executed + shadow) → evaluate model governance
+ * stage → retrain the ML win-probability model → walk-forward validation →
+ * Gemini portfolio insights → health/reconciliation refresh.
+ *
+ * Extracted (2026-07-22) into its own exported function, mirroring
+ * runMarketCycle() above, so it can be triggered two ways:
+ *   1. In-process node-cron (cron.schedule below) — only fires if the Node
+ *      process stays alive continuously (true for a persistent server; NOT
+ *      guaranteed on serverless).
+ *   2. POST /api/cron/nightly-training (admin.routes.ts) — an external
+ *      scheduler (e.g. cron-job.org, the same service already used per
+ *      TECHNICAL_DECISIONS.md for the 5-min market cycle) can hit this once
+ *      a day.
+ *
+ * Why (2) matters: this app deploys to Vercel (see vercel.json) as a
+ * serverless function. Vercel's Hobby-plan native `crons` block supports
+ * only ONE entry, and that slot is already used by /api/cron/market-cycle.
+ * A node-cron timer registered inside a serverless function has no
+ * persistent process to fire on — so without an external trigger hitting
+ * route (2), this entire nightly pipeline (labels, governance promotion,
+ * model retraining, walk-forward) may never run in production regardless
+ * of how many trades execute. See chat discussion 2026-07-22 re: model
+ * learning speed — confirmed there was no external trigger for this job
+ * before this fix; only market-cycle had one.
+ */
+export async function runNightlyLearningJob(): Promise<void> {
     await resolveSignalOutcomes().catch(console.error);
     // Update sector-level accuracy weights from resolved trade outcomes
     await computeSectorAccuracy().catch(console.error);
@@ -1226,7 +1236,30 @@ export function startScheduler(): void {
     await runVirtualReconciliationJob().catch(err =>
       logger.error({ job: 'virtual-reconciliation-nightly', err: String(err), msg: 'Nightly reconciliation cron failed' })
     );
+}
+
+export function startScheduler(): void {
+  // Market hours: every 5 min (IST 9:00–15:45 Mon-Fri)
+  cron.schedule('*/5 9-15 * * 1-5', () => { runMarketCycle().catch(console.error); }, { timezone: 'Asia/Kolkata' });
+  // Pre-market
+  cron.schedule('55 8 * * 1-5', () => { updateAllPrices().catch(console.error); }, { timezone: 'Asia/Kolkata' });
+  // Hourly snapshot
+  cron.schedule('0 * * * *', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
+  // After-market snapshot
+  cron.schedule('0 16 * * 1-5', () => { snapshotAll().catch(console.error); }, { timezone: 'Asia/Kolkata' });
+  // Weekly earnings calendar refresh — every Sunday at 08:00 IST
+  cron.schedule('0 8 * * 0', async () => {
+    const { getCycleWatchlist } = await import('../services/marketData.js');
+    const allSyms = getCycleWatchlist(0, 200);
+    await fetchEarningsCalendar(allSyms).catch(console.error);
   }, { timezone: 'Asia/Kolkata' });
+  // Nightly adaptive learning: resolve signal outcomes + recalibrate weights + Gemini portfolio insights
+  // Runs at 20:00 IST on weekdays — 5+ hours after market close so exit prices are settled.
+  // NOTE: this in-process timer only fires on a persistently-running Node process. In the
+  // Vercel serverless deployment (see vercel.json), rely on POST /api/cron/nightly-training
+  // (admin.routes.ts) triggered by an external scheduler instead — see runNightlyLearningJob()
+  // doc comment above for why.
+  cron.schedule('0 20 * * 1-5', () => { runNightlyLearningJob().catch(console.error); }, { timezone: 'Asia/Kolkata' });
 
   console.log('[Scheduler] All cron jobs active (IST)');
 }

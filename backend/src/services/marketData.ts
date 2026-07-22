@@ -174,11 +174,25 @@ export async function getDynamicCycleWatchlist(rotationSeed: number, sampleSize 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 interface FetchResult { data: any; statusCode: number; latencyMs: number }
 
-function httpsGet(url: string, headers: Record<string, string> = {}): Promise<FetchResult> {
+// Bug fix (2026-07-22): this helper had NO request timeout. Every other raw
+// https.get() caller in this codebase sets one (fetchNseEquityList above
+// uses 10s; fundamentalService/indexData use fetch's AbortSignal.timeout),
+// but this shared helper — used by getRsi, getQuote, getExecutableQuote,
+// getMultipleQuotes, and (since the P2.14 fix routing mlEngine.ts through
+// this function) every ML momentum/MACD/EMA/Kelly calculation too — did not.
+// If Yahoo/Twelve Data accepts the TCP connection but never sends a full
+// response (observed in production: cron-job.org's market-cycle job timing
+// out on every single 5-min run, not just occasionally), the returned
+// Promise never resolves or rejects, so `await httpsGet(...)` hangs
+// indefinitely. Since generateSignal() calls this repeatedly per candidate
+// (up to 8 candidates per portfolio per cycle) and callers already all wrap
+// this in try/catch with graceful fallbacks, a request timeout that turns a
+// silent hang into a fast rejection is a safe, low-risk fix.
+function httpsGet(url: string, headers: Record<string, string> = {}, timeoutMs = 8000): Promise<FetchResult> {
   const start = Date.now();
   return new Promise((resolve, reject) => {
     const opts = { headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36', ...headers } };
-    https.get(url, opts, (res) => {
+    const req = https.get(url, opts, (res) => {
       let data = '';
       res.on('data', (d: Buffer) => { data += d; });
       res.on('end', () => {
@@ -189,7 +203,13 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<Fe
           reject(new Error(`JSON parse failed (status=${res.statusCode}, latency=${latencyMs}ms)`));
         }
       });
-    }).on('error', reject);
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      reject(new Error(`httpsGet timeout after ${timeoutMs}ms: ${url}`));
+    });
   });
 }
 

@@ -84,6 +84,42 @@ router.post('/cron/price-update', requireAdminAuth, async (_req: Request, res: R
   } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
 });
 
+/**
+ * POST /api/cron/nightly-training
+ *
+ * Added 2026-07-22: the nightly adaptive-learning pipeline (label generation,
+ * model-governance promotion, ML retraining, walk-forward validation — see
+ * runNightlyLearningJob() in marketMonitor.ts) was previously ONLY registered
+ * via in-process node-cron ('0 20 * * 1-5'). That never fires on this app's
+ * Vercel serverless deployment: there's no persistent process for the timer
+ * to run on, and Vercel Hobby's native `crons` block (vercel.json) supports
+ * only one entry, already spent on /api/cron/market-cycle. Without this
+ * route there was no way to trigger the nightly job at all in production —
+ * meaning labels never generated, the model never promoted out of
+ * CANDIDATE/SHADOW, and it never retrained, regardless of trade volume.
+ *
+ * Point an external scheduler (e.g. cron-job.org — already used per
+ * TECHNICAL_DECISIONS.md for the 5-min market cycle) at this endpoint once
+ * daily, e.g. 20:00 IST / 14:30 UTC, well after market close so exit prices
+ * have settled.
+ *
+ * Fire-and-forget (like /admin/backtest/run above): the full pipeline can
+ * run long (label generation + retraining + walk-forward across every
+ * active portfolio), which risks exceeding a serverless request timeout if
+ * awaited synchronously. Responds immediately; failures are logged, not
+ * returned to the caller.
+ */
+router.post('/cron/nightly-training', requireAdminAuth, async (_req: Request, res: Response) => {
+  res.json({ success: true, started: new Date().toISOString() });
+  setImmediate(() => {
+    (async () => {
+      const { runNightlyLearningJob } = await import('../../scheduler/marketMonitor.js');
+      await runNightlyLearningJob();
+      console.log('[Admin] Nightly training job complete');
+    })().catch(e => console.error('[Admin] Nightly training job FAILED:', String(e)));
+  });
+});
+
 // ─── Phase 20: Decision Replay — Admin endpoints ─────────────────────────────────
 
 /**
