@@ -161,23 +161,40 @@ export async function runBacktest(symbols: string[]): Promise<{
   summaries: BacktestSummary[];
   totalSignalsProcessed: number;
   symbolsProcessed: number;
+  /** P1.9 fix (2026-07-22): explicit, machine-readable flag — true whenever
+   * the fundamental filter ran, so every consumer of backtest output (API
+   * responses, bootstrapSignalWeights logs, admin dashboards) can surface
+   * the look-ahead-bias caveat instead of it living only in a code comment
+   * nobody reading the output ever sees. See details below and
+   * QuantumMind_Algorithm_Analysis.md §3.3. */
+  lookAheadBiasWarning: string | null;
 }> {
   const allSignals: BacktestSignal[] = [];
   let symbolsProcessed = 0;
+  let fundamentalFilterApplied = false;
 
   for (const symbol of symbols) {
     try {
-      // ── Fundamental filter (look-ahead caveat: uses latest available report) ──
-      // Note: historical quarterly data per trade-date is not available via Twelve Data free tier.
-      // We use the most recent report as a proxy. Symbols with current fundamental VETO are
-      // excluded from backtest — this is conservative and avoids including structurally weak
-      // companies in the signal weight calibration dataset.
+      // ── Fundamental filter (LOOK-AHEAD BIAS — see warning below) ──────────
+      // Twelve Data's free tier doesn't expose historical quarterly reports
+      // per trade-date, so this uses each company's MOST RECENT (i.e.
+      // today's) fundamental snapshot to decide whether to include a
+      // 1-2-year-old historical signal in the backtest. A company whose
+      // fundamentals have since improved gets its historical losing signals
+      // excluded (they'd have been vetoed today, even though they wouldn't
+      // have been vetoed *at the time*); a company that has since
+      // deteriorated gets its historical winning signals excluded. Both
+      // directions bias the reported win rate upward for what actually
+      // happened. This directly feeds bootstrapSignalWeights(), so treat any
+      // weight it produces as optimistic until historical point-in-time
+      // fundamentals are sourced.
+      fundamentalFilterApplied = true;
       try {
         const snapshot = await getFundamentalSnapshot(symbol);
         if (snapshot) {
           const verdict = computeFundamentalVerdict(snapshot);
           if (verdict.vetoed) {
-            logger.debug({ reason: `[Backtest] ${symbol}: skipped — fundamental VETO (${verdict.vetoReasons.join('; ')})` });
+            logger.debug({ reason: `[Backtest] ${symbol}: skipped — fundamental VETO (${verdict.vetoReasons.join('; ')}) [LOOK-AHEAD: using today's fundamentals against historical signals]` });
             continue;
           }
         }
@@ -198,6 +215,10 @@ export async function runBacktest(symbols: string[]): Promise<{
 
   const summaries = summarise(allSignals);
   const summaryStr = summaries.map(s => `${s.signalType}: ${(s.winRate * 100).toFixed(1)}% WR`).join(', ');
+  const lookAheadBiasWarning = fundamentalFilterApplied
+    ? 'Fundamental filter used TODAY\'S snapshot to include/exclude historical signals — reported win rates are optimistically biased. See QuantumMind_Algorithm_Analysis.md §3.3.'
+    : null;
+  if (lookAheadBiasWarning) logger.warn({ reason: `[Backtest] LOOK-AHEAD BIAS WARNING: ${lookAheadBiasWarning}` });
   logger.info({ reason: `[Backtest] Complete — ${symbolsProcessed} symbols, ${allSignals.length} signals: ${summaryStr}` });
-  return { summaries, totalSignalsProcessed: allSignals.length, symbolsProcessed };
+  return { summaries, totalSignalsProcessed: allSignals.length, symbolsProcessed, lookAheadBiasWarning };
 }

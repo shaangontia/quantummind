@@ -12,6 +12,7 @@
 
 import { query, run } from '../db/turso.js';
 import { logger } from '../lib/logger.js';
+import { CLASSIFIER_VERSION } from './strategyClassifier.js';
 
 export type StrategyType = 'MEAN_REVERSION' | 'MOMENTUM' | 'VALUE' | 'NEWS_CATALYST' | 'UNKNOWN';
 
@@ -29,12 +30,31 @@ export interface StrategyWFResult {
   autoDisabled: boolean;
 }
 
-const TRADE_COSTS_PCT = 0.004;
 const CONSECUTIVE_NEGATIVE_DISABLE = 3; // disable after 3 consecutive negative-expectancy windows
 
 /**
  * Evaluate strategy-level metrics for a given test window.
  * Uses trade_candidates (EXECUTED, labelled) as primary; falls back to signal_patterns.
+ *
+ * P1.8 fix (2026-07-22): the primary query now filters on
+ * strategy_classifier_version = CLASSIFIER_VERSION so a strategy's
+ * auto-disable decision only weighs evidence generated under the CURRENT
+ * classification rules — previously this mixed data from however many
+ * "Phase N" rule-versions the code has been through, so a window's
+ * "negative expectancy" could really be an artifact of an old, already-
+ * superseded rule set rather than a verdict on today's strategy. See
+ * QuantumMind_Algorithm_Analysis.md §3.2.
+ *
+ * KNOWN LIMITATION (documented rather than silently glossed over): this
+ * only version-gates the trade_candidates path. The signal_patterns fallback
+ * below has no version column yet (added as a TODO — signal_patterns predates
+ * the classifier-version tracking added in Phase 19) and a true point-in-time
+ * replay of generateSignal() against arbitrary historical dates is out of
+ * scope here entirely, since generateSignal() depends on live external calls
+ * (Groq/Gemini sentiment on today's news, today's fundamental snapshot) that
+ * cannot be faithfully replayed against a past date without new point-in-time
+ * data infrastructure — attempting to fake it would just introduce the same
+ * class of look-ahead bias flagged in backtestEngine.ts (§3.3).
  */
 async function evaluateStrategyWindow(
   portfolioId: number,
@@ -42,18 +62,19 @@ async function evaluateStrategyWindow(
   testStart: string,
   testEnd: string,
 ): Promise<StrategyWFResult | null> {
-  // Primary: trade_candidates with TARGET_BEFORE_STOP labels
+  // Primary: trade_candidates with TARGET_BEFORE_STOP labels, current classifier version only
   let rows = await query(
     `SELECT target_hit_before_stop as win_int, cost_adjusted_return_pct as ret,
             max_adverse_excursion_pct as mae, max_favorable_excursion_pct as mfe
      FROM trade_candidates
      WHERE portfolio_id=? AND strategy_type=? AND action_taken='EXECUTED'
        AND label_type='TARGET_BEFORE_STOP' AND label_status='FINAL'
+       AND strategy_classifier_version=?
        AND evaluated_at >= ? AND evaluated_at < ?`,
-    [portfolioId, strategy, testStart, testEnd],
+    [portfolioId, strategy, CLASSIFIER_VERSION, testStart, testEnd],
   ).catch(() => []);
 
-  // Fallback: signal_patterns
+  // Fallback: signal_patterns (no version column yet — see KNOWN LIMITATION above)
   if (rows.length === 0) {
     rows = await query(
       `SELECT (CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as win_int,
@@ -73,7 +94,15 @@ async function evaluateStrategyWindow(
 
   const avgWin   = wins.length   > 0 ? wins.reduce((s, r) => s + Number(r.ret ?? 0), 0) / wins.length : 0;
   const avgLoss  = losses.length > 0 ? Math.abs(losses.reduce((s, r) => s + Number(r.ret ?? 0), 0) / losses.length) : 0;
-  const expectancyPct = winRate * avgWin - (1 - winRate) * avgLoss - TRADE_COSTS_PCT * 100;
+  // P0.5/single-source-of-truth cost fix: `ret` is already cost-net —
+  // cost_adjusted_return_pct is net by definition, and realized_pnl_pct (the
+  // fallback path) is now computed from execution charges that include the
+  // full itemized round-trip cost (see tradingEngine.executeTrade). A further
+  // flat-0.4% subtraction here would double-charge costs that are already
+  // baked into every row. Previously this used a hardcoded TRADE_COSTS_PCT
+  // (0.4%) that both double-counted cost AND disagreed with every other
+  // cost assumption in the codebase — see QuantumMind_Algorithm_Analysis.md §2.4.
+  const expectancyPct = winRate * avgWin - (1 - winRate) * avgLoss;
 
   const grossWins = wins.reduce((s, r) => s + Number(r.ret ?? 0), 0);
   const grossLoss = losses.reduce((s, r) => s + Math.abs(Number(r.ret ?? 0)), 0);

@@ -151,7 +151,12 @@ async function evaluateWindow(
   const lossReturns = rows.filter(r => r.outcome === 'LOSS').map(r => Number(r.realized_pnl_pct ?? 0));
   const avgWinPct  = winReturns.length  > 0 ? winReturns.reduce((a, b) => a + b, 0)  / winReturns.length  : 0;
   const avgLossPct = lossReturns.length > 0 ? Math.abs(lossReturns.reduce((a, b) => a + b, 0) / lossReturns.length) : 0;
-  const expectancyPct = winRate * avgWinPct - (1 - winRate) * avgLossPct - 0.4; // 0.4% costs
+  // Single-source-of-truth cost fix (2026-07-22): realized_pnl_pct is already
+  // net of the actual itemized round-trip transaction cost (see
+  // tradingEngine.executeTrade / tradingCosts.ts) — subtracting a further
+  // hardcoded 0.4% here double-charged cost and disagreed with the ledger's
+  // real cost model. See QuantumMind_Algorithm_Analysis.md §2.4.
+  const expectancyPct = winRate * avgWinPct - (1 - winRate) * avgLossPct;
 
   const grossWins  = winReturns.reduce((a, b)  => a + b, 0);
   const grossLoss  = lossReturns.reduce((a, b) => a + Math.abs(b), 0);

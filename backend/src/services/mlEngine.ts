@@ -6,7 +6,11 @@
  * and correlation-aware signal boosting.
  */
 
-import https from 'https';
+// P2.14 fix (2026-07-22): historical-price fetches now route through
+// marketData.ts's getHistoricalCloses() instead of a second, parallel
+// https.get() implementation, so Yahoo failures from the ML layer register
+// with killSwitch.recordApiFailure() like every other data path.
+import { getHistoricalCloses } from './marketData.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -42,22 +46,8 @@ function linearRegressionSlope(y: number[]): number {
 
 // ─── Historical data fetching ─────────────────────────────────────────────────
 
-function yahooGet(url: string): Promise<any> {
-  return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }, (res) => {
-      let d = '';
-      res.on('data', (x: Buffer) => { d += x; });
-      res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
-    }).on('error', reject);
-  });
-}
-
 export async function getHistoricalReturns(symbol: string, days = 60): Promise<number[]> {
-  const sym = symbol.endsWith('.NS') ? symbol : `${symbol}.NS`;
-  const json = await yahooGet(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=3mo`);
-  const closes: number[] = (json.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [])
-    .filter((c: any) => c !== null)
-    .slice(-days);
+  const closes = await getHistoricalCloses(symbol, days, '3mo');
 
   if (closes.length < 2) return [];
   const returns: number[] = [];
@@ -312,13 +302,9 @@ export interface TrendIndicators {
 /** Compute MACD + EMA crossover from historical prices for a symbol */
 export async function computeTrendIndicators(symbol: string): Promise<TrendIndicators> {
   try {
-    // Fetch 90-day history for enough EMA warmup (need 52+ prices)
-    const sym = symbol.endsWith('.NS') ? symbol : `${symbol}.NS`;
-    const json = await yahooGet(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=6mo`
-    );
-    const closes: number[] = (json.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [])
-      .filter((c: any) => c !== null);
+    // Fetch ~6mo history for enough EMA warmup (need 52+ prices); cap of 200
+    // comfortably exceeds the ~125 trading days a 6mo range returns.
+    const closes = await getHistoricalCloses(symbol, 200, '6mo');
 
     if (closes.length < 35) return { macd: null, emaCrossover: null };
     return {

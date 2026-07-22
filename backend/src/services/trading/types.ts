@@ -1,3 +1,11 @@
+/**
+ * ⚠️ DEPRECATED / UNUSED — DO NOT IMPORT.
+ * Belongs to the dead ./signal.ts fork. tradingEngine.ts defines its own
+ * TradeSignal/HoldingSummary/PortfolioSummary/PortfolioSignalContext types
+ * inline (and they've since diverged from these). See ./signal.ts for the
+ * full explanation. Left in place per explicit request.
+ */
+
 /** Shared types for the trading engine. */
 
 export interface TradeSignal {

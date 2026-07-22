@@ -1,4 +1,23 @@
 /**
+ * ⚠️ DEPRECATED / UNUSED — DO NOT IMPORT.
+ *
+ * This is an earlier fork of the signal engine. The live scheduler
+ * (backend/src/scheduler/marketMonitor.ts) imports generateSignal() from
+ * ../tradingEngine.ts, NOT from this file. Nothing in the codebase imports
+ * this module (verified via repo-wide grep, 2026-07-22).
+ *
+ * The two have already drifted apart — e.g. this file triggers a BUY at
+ * score ≥2 / STRONG at ≥4, while tradingEngine.ts (the real, live logic)
+ * requires ≥3 / ≥5.5, and tradingEngine.ts additionally runs the
+ * fundamental gate, EV gate, ML win-probability gate, strategy classifier,
+ * and regime gate that this file lacks entirely. Reading this file to
+ * understand "how the bot trades" will give you a wrong answer.
+ *
+ * Left in place (not deleted) per explicit request — kept only as
+ * historical reference. See backend/src/services/tradingEngine.ts for the
+ * logic that actually runs.
+ *
+ * ── Original header ──
  * signal.ts — generateSignal(): produces a BUY/SELL/HOLD TradeSignal for a given symbol.
  * Runs all data sources in parallel, scores them, and optionally passes through Gemini veto.
  */

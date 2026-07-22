@@ -67,7 +67,9 @@ Adaptive Engine
   ▼
 Execution Simulator
   ├── Atomic LibSQL batch (all-or-nothing)
-  ├── Brokerage: 0.2% flat
+  ├── Costs: flat ₹5 brokerage + itemized STT/exchange/SEBI/GST/stamp duty
+  │          (single source of truth: virtualFillSimulator.calculateVirtualCharges,
+  │           applied directly to the ledger — see tradingCosts.ts)
   └── Gemini trade veto (STRONG signals only)
 ```
 

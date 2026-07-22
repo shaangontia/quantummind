@@ -21,9 +21,17 @@
 
 import { query, run } from '../db/turso.js';
 import { logger } from '../lib/logger.js';
+import { roundTripCostPct, TYPICAL_POSITION_VALUE_INR } from './tradingCosts.js';
 
 const MAX_LABEL_HORIZON = 15; // trading days
-const TRADE_COSTS_PCT   = 0.004;
+// Single-source-of-truth cost fix (2026-07-22): this was a hardcoded 0.4%
+// flat guess, one of four disagreeing cost assumptions in the codebase (see
+// QuantumMind_Algorithm_Analysis.md §2.4). Labels here are generated from
+// price-only % returns with no concrete position size (especially for
+// shadow/never-executed candidates), so there's no real trade value to plug
+// into the itemized cost model — TYPICAL_POSITION_VALUE_INR is used as the
+// representative size, same convention as patternEngine.computeExpectedValue.
+const ROUND_TRIP_COST_PCT = roundTripCostPct(TYPICAL_POSITION_VALUE_INR);
 
 /**
  * Fetch price history for a symbol since a given date.
@@ -168,7 +176,7 @@ async function labelExecutedCandidates(): Promise<number> {
     }
 
     const grossReturn   = (exitPrice - entryPrice) / entryPrice * 100;
-    const costAdjReturn = grossReturn - TRADE_COSTS_PCT * 100;
+    const costAdjReturn = grossReturn - ROUND_TRIP_COST_PCT;
 
     await writeLabel(row.id, win, mae, mfe, holdDays, costAdjReturn, labelType);
     labelled++;
@@ -228,7 +236,7 @@ async function labelShadowCandidates(): Promise<number> {
     const grossReturn   = (effectiveExit - entryPrice) / entryPrice * 100;
     // Shadow labels do not incur actual round-trip costs — still subtract theoretical cost
     // so that the model learns to account for execution friction even on shadow samples.
-    const costAdjReturn = grossReturn - TRADE_COSTS_PCT * 100;
+    const costAdjReturn = grossReturn - ROUND_TRIP_COST_PCT;
     const win           = targetHit && !stopHit;
 
     await writeLabel(row.id, win, mae, mfe, holdDays, costAdjReturn, 'TARGET_BEFORE_STOP');

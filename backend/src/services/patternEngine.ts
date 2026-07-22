@@ -303,7 +303,6 @@ export async function buildPortfolioPatternContext(symbols: string[]): Promise<s
 
 // ─── Expected Value Gate ────────────────────────────────────────────────────────
 
-const TRADE_COSTS_PCT = 0.004; // 0.4% round-trip: brokerage + STT + exchange + GST + stamp
 const MIN_EV_PCT      = 1.0;   // only trade when EV > 1% after costs
 const MIN_EV_SAMPLES  = 15;    // need at least 15 resolved trades to compute EV
 
@@ -349,7 +348,12 @@ export async function computeExpectedValue(
   const avgWinPct  = wins.length  > 0 ? wins.reduce((s, r)  => s + Number(r.realized_pnl_pct), 0)  / wins.length  : 0;
   const avgLossPct = losses.length > 0 ? Math.abs(losses.reduce((s, r) => s + Number(r.realized_pnl_pct), 0) / losses.length) : 0;
 
-  const ev = pWin * avgWinPct - (1 - pWin) * avgLossPct - TRADE_COSTS_PCT * 100;
+  // Single-source-of-truth cost fix (2026-07-22): avgWinPct/avgLossPct come
+  // from realized_pnl_pct, which is already net of the actual itemized
+  // round-trip transaction cost applied at execution (tradingEngine.
+  // executeTrade / tradingCosts.ts) — subtracting a further hardcoded 0.4%
+  // here double-charged cost. See QuantumMind_Algorithm_Analysis.md §2.4.
+  const ev = pWin * avgWinPct - (1 - pWin) * avgLossPct;
 
   return {
     ev,

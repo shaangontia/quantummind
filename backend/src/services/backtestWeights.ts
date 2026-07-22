@@ -18,13 +18,21 @@ import { fetchAndStoreHistory } from './backtestData.js';
 import { runBacktest, type BacktestSummary } from './backtestEngine.js';
 import { NSE_UNIVERSE } from './marketData.js';
 import { logger } from '../lib/logger.js';
+import { SIGNAL_SOURCES, ALL_SIGNAL_SOURCES } from './adaptiveEngine.js';
 
-// Mapping from backtestEngine SignalType → signal_weights.source row
+// P0.1/P0.2 fix (2026-07-22): this used to map to 'rsi'/'momentum'/'range'/
+// 'combined' (lowercase, backtest-specific names) while the live engine read
+// weights via w('RSI') (uppercase) — the two never matched, so the backtest
+// bootstrap silently never influenced live scoring. Now maps onto the same
+// canonical SIGNAL_SOURCES used by tradingEngine.ts and adaptiveEngine.ts.
+// rsi_oversold + momentum_breakout + combined all map to the live engine's
+// blended trend_composite (RSI/MACD/EMA/momentum); range_low maps to
+// price_action (52W range is part of that composite in the live engine).
 const SIGNAL_TYPE_MAP: Record<string, string> = {
-  rsi_oversold:       'rsi',
-  momentum_breakout:  'momentum',
-  range_low:          'range',
-  combined:           'combined',
+  rsi_oversold:       SIGNAL_SOURCES.TREND_COMPOSITE,
+  momentum_breakout:  SIGNAL_SOURCES.TREND_COMPOSITE,
+  range_low:          SIGNAL_SOURCES.PRICE_ACTION,
+  combined:           SIGNAL_SOURCES.TREND_COMPOSITE,
 };
 
 /**
@@ -46,7 +54,7 @@ function winRateToWeight(winRate: number, totalSignals: number): number {
  */
 async function upsertWeight(
   source: string,
-  summary: BacktestSummary
+  summary: { totalSignals: number; wins: number; winRate: number }
 ): Promise<void> {
   const weight = winRateToWeight(summary.winRate, summary.totalSignals);
   await run(
@@ -71,6 +79,10 @@ export interface BootstrapResult {
   signalsProcessed: number;
   weightsWritten: number;
   summaries: BacktestSummary[];
+  /** P1.9 fix: surfaced from runBacktest() so any caller of this bootstrap
+   * (admin API, scheduled job logs) sees the look-ahead-bias caveat instead
+   * of it being buried in a source comment. */
+  lookAheadBiasWarning: string | null;
 }
 
 /**
@@ -96,24 +108,48 @@ export async function bootstrapSignalWeights(
   logger.info({ reason: `[BacktestWeights] Data fetch: ${fetched} new, ${skipped} skipped, ${failed.length} failed` });
 
   // Step 2: Run backtest
-  const { summaries, totalSignalsProcessed } = await runBacktest(symbols);
+  const { summaries, totalSignalsProcessed, lookAheadBiasWarning } = await runBacktest(symbols);
+  if (lookAheadBiasWarning) {
+    logger.warn({ reason: `[BacktestWeights] ${lookAheadBiasWarning}` });
+  }
 
-  // Step 3: Write weights
-  let weightsWritten = 0;
+  // Step 3: Write weights.
+  // P0.1/P0.2 fix (2026-07-22): multiple backtest signal types now map onto
+  // the same canonical live source (rsi_oversold/momentum_breakout/combined
+  // all → trend_composite), so they're aggregated here first — otherwise
+  // upserting each in a loop with INSERT OR REPLACE would just clobber the
+  // previous one and silently drop most of the backtest evidence.
+  const bySource = new Map<string, { totalSignals: number; wins: number; losses: number }>();
   for (const summary of summaries) {
-    if (summary.totalSignals < 10) {
-      logger.warn({ reason: `[BacktestWeights] ${summary.signalType}: too few signals (${summary.totalSignals}), skipping` });
-      continue;
-    }
     const source = SIGNAL_TYPE_MAP[summary.signalType];
     if (!source) continue;
-    await upsertWeight(source, summary);
+    const agg = bySource.get(source) ?? { totalSignals: 0, wins: 0, losses: 0 };
+    agg.totalSignals += summary.totalSignals;
+    agg.wins += summary.wins;
+    agg.losses += summary.losses;
+    bySource.set(source, agg);
+  }
+
+  let weightsWritten = 0;
+  for (const [source, agg] of bySource) {
+    if (agg.totalSignals < 10) {
+      logger.warn({ reason: `[BacktestWeights] ${source}: too few signals (${agg.totalSignals}), skipping` });
+      continue;
+    }
+    const winRate = agg.totalSignals > 0 ? agg.wins / agg.totalSignals : 0.5;
+    await upsertWeight(source, { totalSignals: agg.totalSignals, wins: agg.wins, winRate });
     weightsWritten++;
   }
 
-  // Ensure all expected signal_weights rows exist (init missing ones to 1.0)
+  // Ensure all expected signal_weights rows exist (init missing ones to 1.0).
+  // 'valuation', 'news_sentiment', and 'news_llm' have no backtest coverage
+  // (backtestEngine.ts only replays RSI/momentum/range technical signals —
+  // see P1.8/§3.3 in QuantumMind_Algorithm_Analysis.md for the broader gap
+  // that the backtest doesn't replay the full live generateSignal() pipeline)
+  // so those three always start neutral at 1.0 and are only ever updated by
+  // the live adaptiveEngine.recalibrateWeights() feedback loop.
   const existingSources = (await query('SELECT source FROM signal_weights')).map((r: any) => r.source as string);
-  const allExpected = ['rsi', 'momentum', 'range', 'combined', 'news', 'regime'];
+  const allExpected = ALL_SIGNAL_SOURCES;
   for (const src of allExpected) {
     if (!existingSources.includes(src)) {
       await run(
@@ -133,5 +169,6 @@ export async function bootstrapSignalWeights(
     signalsProcessed: totalSignalsProcessed,
     weightsWritten,
     summaries,
+    lookAheadBiasWarning,
   };
 }

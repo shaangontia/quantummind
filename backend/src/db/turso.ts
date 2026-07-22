@@ -219,6 +219,14 @@ export async function runMigrations(): Promise<void> {
   await ensurePatternTables();
   console.log('[DB] Migration: signal_patterns tables ensured');
 
+  // P0.2 fix (2026-07-22): signal_weights previously existed only via an
+  // untracked/manual migration with no CREATE TABLE anywhere in source —
+  // see QuantumMind_Algorithm_Analysis.md §2.2. Making it explicit here so
+  // the schema is reproducible and the canonical source names are seeded.
+  const { ensureSignalWeightsTable } = await import('../services/adaptiveEngine.js');
+  await ensureSignalWeightsTable();
+  console.log('[DB] Migration: signal_weights table ensured');
+
   // Phase 13: Exit engine + strategy classification columns on holdings
   const holdingsCols = [
     "ALTER TABLE holdings ADD COLUMN strategy_type TEXT",
@@ -263,6 +271,18 @@ export async function runMigrations(): Promise<void> {
       recall_score REAL
     )`);
   } catch (_) { /* already exists */ }
+  // P1.7 fix (2026-07-22): trainModel() previously reported `accuracy`
+  // computed on the SAME rows used for training (in-sample only), which
+  // systematically overstates true predictive power — especially with as
+  // few as 30 training samples. These columns hold a proper chronological
+  // holdout evaluation (train on the oldest ~80%, evaluate on the most
+  // recent ~20% the model never saw), which is what actually gets surfaced
+  // to modelLifecycle's calibration checks. See
+  // QuantumMind_Algorithm_Analysis.md §3.1.
+  try { await db.execute('ALTER TABLE ml_model_weights ADD COLUMN holdout_accuracy REAL'); } catch (_) { /* already exists */ }
+  try { await db.execute('ALTER TABLE ml_model_weights ADD COLUMN holdout_auc REAL'); } catch (_) { /* already exists */ }
+  try { await db.execute('ALTER TABLE ml_model_weights ADD COLUMN holdout_brier REAL'); } catch (_) { /* already exists */ }
+  try { await db.execute('ALTER TABLE ml_model_weights ADD COLUMN holdout_count INTEGER'); } catch (_) { /* already exists */ }
   try {
     await db.execute(`CREATE TABLE IF NOT EXISTS walk_forward_results (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

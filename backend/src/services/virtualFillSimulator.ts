@@ -44,6 +44,18 @@ export type VirtualFillResult = {
 
 // ── Fee constants (Indian market approximations) ──────────────────────────────
 
+/**
+ * Flat brokerage commission per order, in INR — single source of truth
+ * (2026-07-22 fix). Every module that needs a transaction-cost assumption
+ * (the ledger, the EV gate, walk-forward expectancy) now derives its number
+ * from calculateVirtualCharges() below via tradingCosts.ts, instead of each
+ * hardcoding its own guess (previously: README said 0.2%, the ledger charged
+ * a separately-hardcoded flat ₹5, and the EV/walk-forward gates assumed
+ * 0.4% — three numbers that never agreed). The itemized STT/exchange/
+ * SEBI/GST/stamp-duty components below are intentionally left as-is.
+ */
+export const FLAT_BROKERAGE_INR = 5;
+
 export type VirtualCharges = {
   brokerage:        number;  // Flat ₹5 per order (matching platform config)
   stt:              number;  // Securities Transaction Tax
@@ -62,7 +74,7 @@ export function calculateVirtualCharges(
   side: 'BUY' | 'SELL',
   turnover: number,
 ): VirtualCharges {
-  const brokerage      = 5;                              // Flat ₹5
+  const brokerage      = FLAT_BROKERAGE_INR;              // Flat ₹5 — see constant above
   const stt            = side === 'SELL'
     ? turnover * 0.001                                   // 0.1% on SELL delivery
     : turnover * 0.001;                                  // 0.1% on BUY delivery too (budget 2024)

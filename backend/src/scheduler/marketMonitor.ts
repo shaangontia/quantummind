@@ -26,9 +26,12 @@ import { writeDecisionReplay } from '../services/decisionReplayWriter.js';
 import { runPortfolioHealthJob, runAllPortfoliosHealthJob } from './portfolioHealthJob.js';
 // Phase 22: Virtual Reconciliation + Safety
 import { assertCanBuyVirtual, assertCanSellVirtual } from '../services/virtualSafetyService.js';
-import { fireVirtualReconciliation, runVirtualReconciliationJob } from './virtualReconciliationJob.js';
-import { simulateVirtualFill, calculateVirtualCharges } from '../services/virtualFillSimulator.js';
-import { recordVirtualExecutionEvent } from '../services/virtualExecutionQualityService.js';
+import { runVirtualReconciliationJob } from './virtualReconciliationJob.js';
+// P0.5 fix (2026-07-22): simulateVirtualFill/calculateVirtualCharges/
+// recordVirtualExecutionEvent/fireVirtualReconciliation calls moved into
+// tradingEngine.executeTrade() itself so the audit trail matches what was
+// actually applied to the ledger — no longer called from this file.
+import { roundTripCostPct, calculateVirtualCharges } from '../services/tradingCosts.js';
 
 /**
  * Write a cycle-level summary to TARS memory so RAG can surface recent
@@ -261,48 +264,36 @@ async function runPortfolioTradingCycle(
       void runPortfolioHealthJob(portfolioId).catch(err =>
         logger.warn({ job: 'portfolio-health', portfolioId, phase: 'health', reason: String(err) })
       );
-      // Phase 22: Record SELL execution quality + fire reconciliation
-      if (sellTradeId) {
-        void (async () => {
-          try {
-            const adv = await getAvgDailyTradedValue(h.symbol).catch(() => undefined);
-            const fillResult = simulateVirtualFill({
-              symbol: h.symbol, side: 'SELL',
-              signalPrice: signal.price, intendedPrice: signal.price, currentPrice: signal.price,
-              quantity: h.quantity, orderValue: h.quantity * signal.price,
-              averageDailyValue: adv ?? undefined,
-            });
-            const charges = calculateVirtualCharges('SELL', fillResult.quantityFilled * fillResult.simulatedFillPrice);
-            await recordVirtualExecutionEvent({
-              portfolioId, tradeId: Number(sellTradeId),
-              virtualOrderId: `sell-${portfolioId}-${h.symbol}-${Date.now()}`,
-              symbol: h.symbol, side: 'SELL', quantityRequested: h.quantity,
-              quantityFilled: fillResult.quantityFilled,
-              orderType: exitTypeForTrade === 'STOP_LOSS' ? 'VIRTUAL_STOP'
-                : exitTypeForTrade === 'TRAILING_STOP' ? 'VIRTUAL_TRAILING_STOP'
-                : 'VIRTUAL_MARKET',
-              signalPrice: signal.price, intendedPrice: signal.price,
-              simulatedFillPrice: fillResult.simulatedFillPrice,
-              slippageAbs: fillResult.slippageAbs, slippagePct: fillResult.slippagePct,
-              fillStatus: fillResult.fillStatus,
-              simulatedLatencyMs: fillResult.simulatedLatencyMs,
-              brokerage: charges.brokerage, stt: charges.stt,
-              exchangeCharges: charges.exchangeCharges, sebiCharges: charges.sebiCharges,
-              gst: charges.gst, totalCharges: charges.totalCharges,
-            });
-            fireVirtualReconciliation(portfolioId, 'POST_SELL');
-          } catch (e) {
-            logger.warn({ job: 'virtual-execution', portfolioId, symbol: h.symbol, err: String(e), msg: 'SELL virtual execution recording failed' });
-          }
-        })();
-      }
+      // P0.5 fix (2026-07-22): fill-quality/charges recording moved INSIDE
+      // executeTrade() itself (tradingEngine.ts) so the audit log always
+      // reflects the exact numbers actually applied to the ledger — this
+      // used to recompute simulateVirtualFill/calculateVirtualCharges
+      // independently here, AFTER executeTrade had already committed
+      // different (unrealistic, flat-₹5, no-slippage) numbers to cash/
+      // holdings/P&L, so the "realistic execution" audit trail and the real
+      // ledger could disagree. See QuantumMind_Algorithm_Analysis.md §2.5.
+      // Note: sellPnlPct below is computed from signal.price (pre-slippage)
+      // as a close approximation for pattern-outcome/consecutive-loss
+      // tracking — the true post-slippage fill price lives in the trades
+      // table (executeTrade sets it) but isn't threaded back through this
+      // call's return value, which is still just a tradeId.
       // Phase 20: write SELL replay event (fire-and-forget)
       if (sellTradeId) {
         const buyDate = h.createdAt ? new Date(String(h.createdAt)) : null;
         const holdingDays20 = buyDate ? Math.floor((Date.now() - buyDate.getTime()) / 86_400_000) : null;
         const grossReturnPct20 = sellPnlPct;
-        const brokerage20 = 5; // flat ₹5
-        const costAdjustedPct20 = sellPnlPct - (brokerage20 * 2 / (h.avgBuyPrice * h.quantity)) * 100;
+        // Single source of truth for round-trip cost — see tradingCosts.ts.
+        const costAdjustedPct20 = sellPnlPct - roundTripCostPct(h.avgBuyPrice * h.quantity);
+        // Bug fix (2026-07-22): this replay event describes the SELL leg's
+        // own execution, so it needs the SELL-side charges only (not the
+        // round-trip figure used for costAdjustedPct20 above). Previously
+        // referenced a local `brokerage20 = 5` that was removed when this
+        // block was de-duplicated from the old post-hoc fill-simulation
+        // code — that left `brokerage20` undefined (TS2304) with no
+        // replacement wired in. Now sourced from the same itemized model
+        // that tradingEngine.executeTrade() actually applied to the ledger.
+        const sellCharges20 = calculateVirtualCharges('SELL', h.avgBuyPrice * h.quantity);
+        const brokerage20 = sellCharges20.totalCharges;
         void writeDecisionReplay({
           candidateId:             0, // SELL has no candidate row; linked via trade_id
           portfolioId,
@@ -883,7 +874,16 @@ async function runPortfolioTradingCycle(
     const riskBasedQty = stopDistanceInr > 0 ? Math.floor(riskPerTradeInr / stopDistanceInr) : 0;
     const allocBasedQty = Math.floor(allocationCapInr / signal.price);
     const cashCapQty    = Math.floor(refreshed.cashBalance * 0.3 / signal.price);
-    const qty = Math.min(riskBasedQty, allocBasedQty, cashCapQty);
+    // P1.11 fix (2026-07-22): half-Kelly cap derived from this strategy+
+    // symbol's own resolved win/loss history (see kellyFraction comment in
+    // tradingEngine.ts). Only ever REDUCES size, same as every other cap
+    // here — when there isn't enough resolved history yet (kellyFraction is
+    // null), this imposes no additional constraint and sizing falls back to
+    // the existing risk/allocation/cash caps exactly as before.
+    const kellyBasedQty = signal.kellyFraction != null
+      ? Math.floor((refreshed.totalValue * signal.kellyFraction) / signal.price)
+      : Infinity;
+    const qty = Math.min(riskBasedQty, allocBasedQty, cashCapQty, kellyBasedQty);
     if (qty <= 0) continue;
 
     const sigRes = await run('INSERT INTO market_signals (portfolio_id,symbol,signal_type,strength,reason,price_at_signal) VALUES (?,?,?,?,?,?)',
@@ -896,7 +896,8 @@ async function runPortfolioTradingCycle(
       portfolioId, symbol, symbol.replace('.NS', ''), 'BUY', qty, signal.price, signal.reason,
       undefined,
       { groqSentiment: signal.groqSentiment, momentumScore: signal.mlBoost, regime: refreshed.riskTolerance,
-        fundamentalScore: signal.fundamentalScore, fundamentalReasoning: signal.fundamentalReasoning }
+        fundamentalScore: signal.fundamentalScore, fundamentalReasoning: signal.fundamentalReasoning,
+        dominantSource: signal.dominantSource }
     );
     if (tradeId && sigRes.lastInsertRowid) {
       await run('UPDATE market_signals SET acted_upon=1, trade_id=? WHERE id=?', [tradeId, sigRes.lastInsertRowid]);
@@ -1029,39 +1030,11 @@ async function runPortfolioTradingCycle(
       void runPortfolioHealthJob(portfolioId).catch(err =>
         logger.warn({ job: 'portfolio-health', portfolioId, phase: 'health', reason: String(err) })
       );
-      // Phase 22: Simulate fill quality + record execution event + fire reconciliation
-      void (async () => {
-        try {
-          const adv = await getAvgDailyTradedValue(symbol).catch(() => undefined);
-          const fillResult = simulateVirtualFill({
-            symbol, side: 'BUY',
-            signalPrice: signal.price, intendedPrice: signal.price, currentPrice: signal.price,
-            quantity: qty, orderValue: qty * signal.price,
-            volumeRatio: (signal as any).volumeRatio ?? 1.0,
-            averageDailyValue: adv ?? undefined,
-          });
-          const charges = calculateVirtualCharges('BUY', fillResult.quantityFilled * fillResult.simulatedFillPrice);
-          await recordVirtualExecutionEvent({
-            portfolioId, tradeId: Number(tradeId),
-            virtualOrderId: `buy-${portfolioId}-${symbol}-${Date.now()}`,
-            symbol, side: 'BUY', quantityRequested: qty,
-            quantityFilled: fillResult.quantityFilled,
-            orderType: 'VIRTUAL_MARKET',
-            signalPrice: signal.price, intendedPrice: signal.price,
-            simulatedFillPrice: fillResult.simulatedFillPrice,
-            slippageAbs: fillResult.slippageAbs, slippagePct: fillResult.slippagePct,
-            fillStatus: fillResult.fillStatus,
-            rejectionReason: fillResult.rejectionReason,
-            simulatedLatencyMs: fillResult.simulatedLatencyMs,
-            brokerage: charges.brokerage, stt: charges.stt,
-            exchangeCharges: charges.exchangeCharges, sebiCharges: charges.sebiCharges,
-            gst: charges.gst, stampDuty: charges.stampDuty, totalCharges: charges.totalCharges,
-          });
-          fireVirtualReconciliation(portfolioId, 'POST_BUY');
-        } catch (e) {
-          logger.warn({ job: 'virtual-execution', portfolioId, symbol, err: String(e), msg: 'Virtual execution recording failed' });
-        }
-      })();
+      // P0.5 fix (2026-07-22): fill-quality/charges recording moved inside
+      // executeTrade() itself — see comment at the SELL call site above for
+      // the full explanation. This duplicate post-hoc recomputation (which
+      // ran after the ledger had already committed different numbers) has
+      // been removed.
     }
   }
   return { trades: tradeCount, signals: signalCount };

@@ -310,7 +310,11 @@ export async function computeCalibration(modelName: string): Promise<void> {
     const lossRets = rows.filter(r => Number(r.win_int) === 0).map(r => Math.abs(Number(r.ret ?? 0)));
     const avgWin  = winRets.length  > 0 ? winRets.reduce((a, b) => a + b, 0) / winRets.length : 0;
     const avgLoss = lossRets.length > 0 ? lossRets.reduce((a, b) => a + b, 0) / lossRets.length : 0;
-    const expectancy = actualWinRate * avgWin - (1 - actualWinRate) * avgLoss - 0.4;
+    // Single-source-of-truth cost fix (2026-07-22): `ret` is
+    // cost_adjusted_return_pct, already net of round-trip transaction cost —
+    // subtracting a further hardcoded 0.4% double-charged cost. See
+    // QuantumMind_Algorithm_Analysis.md §2.4.
+    const expectancy = actualWinRate * avgWin - (1 - actualWinRate) * avgLoss;
 
     const grossW = winRets.reduce((a, b) => a + b, 0);
     const grossL = lossRets.reduce((a, b) => a + b, 0);

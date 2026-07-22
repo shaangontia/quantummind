@@ -8,6 +8,7 @@
 
 import { query, queryOne, run } from '../db/turso.js';
 import { getQuote, getRsi, toNseSymbol } from './marketData.js';
+import { classifyMarketRegime as classifyDmaRegime, type MarketRegimeLabel } from './regimeEngine.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,63 @@ export interface MarketRegime {
 
 // ─── Signal Weight Management ─────────────────────────────────────────────────
 
+/**
+ * Canonical, case-sensitive adaptive-weight source names.
+ * P0.1/P0.2 fix (2026-07-22): previously tradingEngine.ts read a weight for
+ * 'RSI' (uppercase) while backtestWeights.ts seeded 'rsi' (lowercase) and
+ * recordSignalForTracking wrote yet a third set of names — none of them
+ * matched, so 5 of 6 advertised "adaptive weights" never affected live
+ * scoring. This is now the single source of truth; every scoring block in
+ * generateSignal() reads exactly one of these via w(SOURCE).
+ * See QuantumMind_Algorithm_Analysis.md §2.1/§2.2 for the full writeup.
+ */
+export const SIGNAL_SOURCES = {
+  TREND_COMPOSITE: 'trend_composite', // blended RSI + MACD + EMA crossover + ML momentum
+  PRICE_ACTION:    'price_action',    // 52W range position + day change + volume confirmation
+  VALUATION:       'valuation',       // sector-relative P/E
+  NEWS_SENTIMENT:  'news_sentiment',  // rule-based NSE announcement keyword scoring
+  NEWS_LLM:        'news_llm',        // Groq/Gemini LLM sentiment
+} as const;
+export type SignalSource = typeof SIGNAL_SOURCES[keyof typeof SIGNAL_SOURCES];
+export const ALL_SIGNAL_SOURCES: SignalSource[] = Object.values(SIGNAL_SOURCES);
+
+/**
+ * Idempotent table creation + seed, called once at startup from turso.ts
+ * runMigrations() (mirrors patternEngine.ensurePatternTables()). This table
+ * previously existed only via an untracked manual migration with no CREATE
+ * TABLE anywhere in source control.
+ */
+export async function ensureSignalWeightsTable(): Promise<void> {
+  try {
+    await run(`CREATE TABLE IF NOT EXISTS signal_weights (
+      source          TEXT PRIMARY KEY,
+      weight          REAL NOT NULL DEFAULT 1.0,
+      win_rate        REAL NOT NULL DEFAULT 0.5,
+      total_signals   INTEGER NOT NULL DEFAULT 0,
+      winning_signals INTEGER NOT NULL DEFAULT 0,
+      last_updated    DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`, []);
+  } catch (_) { /* already exists */ }
+
+  for (const source of ALL_SIGNAL_SOURCES) {
+    await run(
+      `INSERT OR IGNORE INTO signal_weights (source, weight, win_rate, total_signals, winning_signals) VALUES (?, 1.0, 0.5, 0, 0)`,
+      [source],
+    ).catch(() => null);
+  }
+}
+
+// In-process cache — P2.13 fix (2026-07-22): generateSignal() previously ran
+// `SELECT * FROM signal_weights` once per symbol per cycle (dozens of times
+// per 5-minute tick against a small, slow-changing table). Short TTL cache,
+// same pattern as regimeEngine.ts's regime cache.
+const WEIGHTS_CACHE_TTL_MS = 60 * 1000; // 60s — long enough to dedupe within one cycle, short enough to pick up recalibration same-day
+let _weightsCache: { data: Map<string, SignalWeight>; ts: number } | null = null;
+
 export async function getSignalWeights(): Promise<Map<string, SignalWeight>> {
+  if (_weightsCache && Date.now() - _weightsCache.ts < WEIGHTS_CACHE_TTL_MS) {
+    return _weightsCache.data;
+  }
   const rows = await query('SELECT * FROM signal_weights');
   const map = new Map<string, SignalWeight>();
   for (const r of rows) {
@@ -45,7 +102,13 @@ export async function getSignalWeights(): Promise<Map<string, SignalWeight>> {
       winningSignals: Number(r.winning_signals),
     });
   }
+  _weightsCache = { data: map, ts: Date.now() };
   return map;
+}
+
+/** Invalidate the in-process weights cache (call after recalibrateWeights()). */
+export function invalidateSignalWeightsCache(): void {
+  _weightsCache = null;
 }
 
 // Record a new signal for outcome tracking
@@ -133,13 +196,41 @@ async function recalibrateWeights(): Promise<void> {
     console.log(`[Adaptive] ${r.source}: winRate=${(winRate*100).toFixed(1)}% n=${totalSignals} base=${baseWeight.toFixed(2)} confidence=${(confidenceFactor*100).toFixed(0)}% → weight=${newWeight.toFixed(3)}`);
     await run('UPDATE signal_weights SET weight = ? WHERE source = ?', [newWeight, r.source]);
   }
+  invalidateSignalWeightsCache();
 }
 
 // ─── Market Regime Detection ──────────────────────────────────────────────────
 
+/** Maps regimeEngine's DMA-based label onto this module's legacy BULL/BEAR/SIDEWAYS naming. */
+const REGIME_LABEL_MAP: Record<MarketRegimeLabel, 'BULL' | 'BEAR' | 'SIDEWAYS'> = {
+  BULLISH: 'BULL',
+  NEUTRAL: 'SIDEWAYS',
+  BEARISH: 'BEAR',
+};
+
+/**
+ * P0.3 fix (2026-07-22): this function previously classified its own
+ * BULL/BEAR/SIDEWAYS regime independently from Nifty RSI + day change, while
+ * regimeEngine.classifyMarketRegime() separately classified
+ * BULLISH/NEUTRAL/BEARISH from 50/200-day moving averages — two parallel
+ * regime systems, computed from different underlying signals, that could
+ * (and did) disagree in the same trading cycle. E.g. this RSI-based logic
+ * could say BULL (wider stop-loss tolerance, more permissive RSI buy
+ * threshold) in the same cycle regimeEngine said BEARISH (restricting
+ * trading to VALUE-only strategies and cutting position size to 40%),
+ * because a short-term RSI pop and a sub-200-DMA downtrend are not
+ * contradictory facts about the market — but the two engines never talked to
+ * each other about it. See QuantumMind_Algorithm_Analysis.md §2.3.
+ *
+ * regimeEngine's 50/200-DMA classification (the more standard,
+ * harder-to-whipsaw signal) is now the single authoritative regime label.
+ * The Nifty-RSI/day-change read below no longer produces a competing
+ * classification — it only nudges the threshold numbers *within* whatever
+ * regime regimeEngine has already decided we're in.
+ */
 export async function detectMarketRegime(): Promise<MarketRegime> {
-  // Use NIFTY50 proxy (use Nifty 50 index or HDFC/Reliance as bellwether)
-  const [niftyQuote, niftyRsi] = await Promise.all([
+  const [dmaRegime, niftyQuote, niftyRsi] = await Promise.all([
+    classifyDmaRegime().catch(() => null),
     getQuote('NSEI').catch(() => getQuote('RELIANCE.NS')), // NSEI = Nifty50 index
     getRsi('NSEI', 21).catch(() => getRsi('RELIANCE.NS', 21)),
   ]);
@@ -150,34 +241,37 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
   // Volatility proxy: absolute daily change
   const volatility = Math.abs(changePct);
 
-  let regime: 'BULL' | 'BEAR' | 'SIDEWAYS';
-  let rsiBuy: number;
-  let rsiSell: number;
-  let stopLoss: number;
-  let notes: string;
+  // Authoritative label from the DMA-based classifier. Fall back to the old
+  // RSI-only heuristic only when regimeEngine has no data at all yet (e.g. a
+  // fresh DB with fewer than 51 days of index_prices history).
+  const authoritativeLabel: MarketRegimeLabel = dmaRegime?.label
+    ?? (rsi > 60 && changePct > 0 ? 'BULLISH' : (rsi < 40 || changePct < -1.5) ? 'BEARISH' : 'NEUTRAL');
+  const regime = REGIME_LABEL_MAP[authoritativeLabel];
 
-  if (rsi > 60 && changePct > 0) {
-    regime = 'BULL';
-    // In bull market: be more selective on buys (higher RSI threshold), let winners run
-    rsiBuy = 45;     // Buy on slight dips, not just oversold
-    rsiSell = 80;    // Let momentum run before selling
-    stopLoss = 0.10; // Tighter stop — protect gains
-    notes = `Bull market (Nifty RSI ${rsi.toFixed(0)}, +${changePct.toFixed(1)}%): trend-following mode`;
-  } else if (rsi < 40 || changePct < -1.5) {
-    regime = 'BEAR';
-    // In bear market: buy only deeply oversold, sell quickly
-    rsiBuy = 28;     // Only buy at extreme oversold
-    rsiSell = 60;    // Sell earlier
-    stopLoss = 0.06; // Tight stop — capital preservation
-    notes = `Bear market (Nifty RSI ${rsi.toFixed(0)}, ${changePct.toFixed(1)}%): defensive mode`;
+  // Base thresholds by authoritative regime — same numbers this function
+  // used before the fix, just now keyed off the DMA-based label.
+  let rsiBuy: number, rsiSell: number, stopLoss: number, baseDesc: string;
+  if (regime === 'BULL') {
+    rsiBuy = 45; rsiSell = 80; stopLoss = 0.10;
+    baseDesc = `Bull market (${authoritativeLabel} — Nifty vs 50/200 DMA: ${dmaRegime?.niftyVs50Dma ?? 'n/a'}/${dmaRegime?.niftyVs200Dma ?? 'n/a'}): trend-following mode`;
+  } else if (regime === 'BEAR') {
+    rsiBuy = 28; rsiSell = 60; stopLoss = 0.06;
+    baseDesc = `Bear market (${authoritativeLabel} — Nifty vs 50/200 DMA: ${dmaRegime?.niftyVs50Dma ?? 'n/a'}/${dmaRegime?.niftyVs200Dma ?? 'n/a'}): defensive mode`;
   } else {
-    regime = 'SIDEWAYS';
-    // Range-bound: classic mean-reversion
-    rsiBuy = 35;
-    rsiSell = 68;
-    stopLoss = 0.08;
-    notes = `Sideways market (Nifty RSI ${rsi.toFixed(0)}): mean-reversion mode`;
+    rsiBuy = 35; rsiSell = 68; stopLoss = 0.08;
+    baseDesc = `Sideways market (${authoritativeLabel}): mean-reversion mode`;
   }
+
+  // Within-regime strength modifier: nudge (not override) the thresholds
+  // based on how far Nifty RSI sits from neutral (50). Capped at ±3 RSI
+  // points and ±1pp stop-loss so a strong/weak RSI reading inside the
+  // current regime can still matter without ever flipping the regime itself.
+  const strength = Math.max(-1, Math.min(1, (rsi - 50) / 25)); // -1..+1
+  rsiBuy = Math.round(rsiBuy + strength * 3);
+  rsiSell = Math.round(rsiSell + strength * 3);
+  stopLoss = Math.max(0.03, Math.min(0.15, stopLoss + strength * 0.01));
+
+  const notes = `${baseDesc} (Nifty RSI ${rsi.toFixed(0)}, ${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%, strength modifier ${(strength * 100).toFixed(0)}%)`;
 
   // Persist regime snapshot
   await run(
@@ -229,8 +323,8 @@ export async function getAdaptiveLearningReport(): Promise<AdaptiveLearningRepor
   ]);
 
   const weights = Array.from(weightsMap.values()).sort((a, b) => b.weight - a.weight);
-  const best = weights[0]?.source ?? 'RSI';
-  const worst = weights[weights.length - 1]?.source ?? 'RSI';
+  const best = weights[0]?.source ?? SIGNAL_SOURCES.TREND_COMPOSITE;
+  const worst = weights[weights.length - 1]?.source ?? SIGNAL_SOURCES.TREND_COMPOSITE;
 
   const recentOutcomes = recentRows.map((r: any) => ({
     source: r.signal_source as string,

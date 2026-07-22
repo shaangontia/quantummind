@@ -41,6 +41,38 @@ function dotProduct(w: number[], x: number[]): number {
   return w.reduce((sum, wi, i) => sum + wi * (x[i] ?? 0), 0);
 }
 
+// ─── Holdout evaluation metrics (P1.7 fix, 2026-07-22) ────────────────────────
+// trainModel() previously reported `accuracy` computed on the same rows used
+// for training — in-sample accuracy systematically overstates a model's true
+// predictive power, especially with L2 λ=0.01 over as few as 30 rows. These
+// helpers score the trained model on a chronological holdout split it never
+// saw during gradient descent. See QuantumMind_Algorithm_Analysis.md §3.1.
+
+/** Brier score: mean squared error between predicted probability and actual
+ * outcome. 0 = perfect, 0.25 = no-better-than-chance on a balanced 50/50 set. */
+function brierScore(probs: number[], labels: number[]): number {
+  if (probs.length === 0) return NaN;
+  const sumSq = probs.reduce((s, p, i) => s + (p - labels[i]) ** 2, 0);
+  return sumSq / probs.length;
+}
+
+/** AUC-ROC via the rank-based (Mann-Whitney U) formula. Returns null when the
+ * holdout has only one class present (AUC undefined). */
+function computeAUC(probs: number[], labels: number[]): number | null {
+  const posProbs = probs.filter((_, i) => labels[i] === 1);
+  const negProbs = probs.filter((_, i) => labels[i] === 0);
+  if (posProbs.length === 0 || negProbs.length === 0) return null;
+  let concordant = 0;
+  let tied = 0;
+  for (const p of posProbs) {
+    for (const n of negProbs) {
+      if (p > n) concordant++;
+      else if (p === n) tied++;
+    }
+  }
+  return (concordant + 0.5 * tied) / (posProbs.length * negProbs.length);
+}
+
 // ─── In-process model cache ───────────────────────────────────────────────────
 
 interface ModelState {
@@ -48,7 +80,16 @@ interface ModelState {
   bias: number;
   sampleCount: number;
   trainedAt: number;
+  /** In-sample training accuracy — kept for backward compatibility/debugging.
+   * Prefer holdoutAccuracy for any statement about real predictive power. */
   accuracy: number;
+  /** P1.7 fix: out-of-sample metrics from a chronological holdout split the
+   * model never trained on. Null when there wasn't enough data for a
+   * meaningful holdout (falls back to in-sample-only, see trainModel()). */
+  holdoutAccuracy: number | null;
+  holdoutAuc: number | null;
+  holdoutBrier: number | null;
+  holdoutCount: number;
 }
 
 let _model: ModelState | null = null;
@@ -115,17 +156,32 @@ export async function trainModel(): Promise<ModelState | null> {
     return null;
   }
 
-  const X: number[][] = rows.map(r => extractFeatures(r));
-  const y: number[]   = rows.map(r => r.outcome === 'WIN' ? 1 : 0);
+  // P1.7 fix (2026-07-22): chronological train/holdout split — train only on
+  // the older ~80% of rows, evaluate on the most recent ~20% the model never
+  // saw during gradient descent. Rows above were fetched ORDER BY ... DESC
+  // (most recent first), so reverse to chronological order before splitting.
+  // A minimum holdout size is required for the metrics to mean anything;
+  // below that we still train on everything (same as before) but report
+  // holdout metrics as null rather than a misleadingly tiny-sample number.
+  const chronological = [...rows].reverse();
+  const MIN_HOLDOUT = 10;
+  const holdoutSize = Math.floor(chronological.length * 0.2);
+  const hasHoldout = holdoutSize >= MIN_HOLDOUT && (chronological.length - holdoutSize) >= MIN_TRAIN_SAMPLES;
+  const splitIdx = hasHoldout ? chronological.length - holdoutSize : chronological.length;
+  const trainRows = chronological.slice(0, splitIdx);
+  const holdoutRows = chronological.slice(splitIdx);
+
+  const X: number[][] = trainRows.map(r => extractFeatures(r));
+  const y: number[]   = trainRows.map(r => r.outcome === 'WIN' ? 1 : 0);
   // Phase 23: per-sample weights (1.0 executed, 0.7 skipped, 0.5 weak, 0.3 vetoed)
-  const sampleWeights: number[] = rows.map(r => Number(r.sample_weight ?? 1.0));
+  const sampleWeights: number[] = trainRows.map(r => Number(r.sample_weight ?? 1.0));
 
   // Initialise weights to zero
   let weights = Array(N_FEATURES).fill(0) as number[];
   let bias = 0;
 
   // Mini-batch gradient descent
-  const batchSize = Math.min(32, Math.ceil(rows.length / 4));
+  const batchSize = Math.min(32, Math.ceil(trainRows.length / 4));
   for (let epoch = 0; epoch < MAX_EPOCHS; epoch++) {
     // Shuffle
     const indices = X.map((_, i) => i).sort(() => Math.random() - 0.5);
@@ -152,7 +208,7 @@ export async function trainModel(): Promise<ModelState | null> {
     }
   }
 
-  // Evaluate accuracy on training set
+  // In-sample accuracy — kept for backward compatibility/debugging only.
   let correct = 0;
   for (let i = 0; i < X.length; i++) {
     const pred = sigmoid(dotProduct(weights, X[i]) + bias) >= 0.5 ? 1 : 0;
@@ -160,24 +216,55 @@ export async function trainModel(): Promise<ModelState | null> {
   }
   const accuracy = correct / X.length;
 
+  // Out-of-sample holdout metrics — the numbers that should actually inform
+  // whether this model is any good.
+  let holdoutAccuracy: number | null = null;
+  let holdoutAuc: number | null = null;
+  let holdoutBrier: number | null = null;
+  if (hasHoldout) {
+    const Xh = holdoutRows.map(r => extractFeatures(r));
+    const yh = holdoutRows.map(r => r.outcome === 'WIN' ? 1 : 0);
+    const probsH = Xh.map(x => sigmoid(dotProduct(weights, x) + bias));
+    let hCorrect = 0;
+    for (let i = 0; i < Xh.length; i++) {
+      if ((probsH[i] >= 0.5 ? 1 : 0) === yh[i]) hCorrect++;
+    }
+    holdoutAccuracy = hCorrect / Xh.length;
+    holdoutAuc = computeAUC(probsH, yh);
+    holdoutBrier = brierScore(probsH, yh);
+  }
+
   const state: ModelState = {
     weights,
     bias,
     sampleCount: rows.length,
     trainedAt: Date.now(),
     accuracy,
+    holdoutAccuracy,
+    holdoutAuc,
+    holdoutBrier,
+    holdoutCount: holdoutRows.length,
   };
 
   // Persist to DB
   await run(
     `INSERT INTO ml_model_weights
-       (model_name, trained_at, sample_count, feature_names, weights, bias, accuracy)
-     VALUES (?, datetime('now'), ?, ?, ?, ?, ?)`,
-    [MODEL_NAME, rows.length, JSON.stringify(FEATURE_NAMES), JSON.stringify(weights), bias, accuracy],
+       (model_name, trained_at, sample_count, feature_names, weights, bias, accuracy,
+        holdout_accuracy, holdout_auc, holdout_brier, holdout_count)
+     VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [MODEL_NAME, rows.length, JSON.stringify(FEATURE_NAMES), JSON.stringify(weights), bias, accuracy,
+     holdoutAccuracy, holdoutAuc, holdoutBrier, holdoutRows.length],
   ).catch(() => null);
 
   _model = state;
-  logger.info({ job: 'ml-model', samples: rows.length, accuracy: (accuracy * 100).toFixed(1) + '%', reason: 'Model trained and persisted' });
+  logger.info({
+    job: 'ml-model', samples: rows.length, trainRows: trainRows.length,
+    inSampleAccuracy: (accuracy * 100).toFixed(1) + '%',
+    holdoutAccuracy: holdoutAccuracy !== null ? (holdoutAccuracy * 100).toFixed(1) + '%' : 'n/a (insufficient data for holdout)',
+    holdoutAuc: holdoutAuc !== null ? holdoutAuc.toFixed(3) : 'n/a',
+    holdoutBrier: holdoutBrier !== null ? holdoutBrier.toFixed(3) : 'n/a',
+    reason: 'Model trained and persisted',
+  });
   return state;
 }
 
@@ -186,7 +273,9 @@ export async function trainModel(): Promise<ModelState | null> {
  */
 async function loadModelFromDB(): Promise<ModelState | null> {
   const row = await query(
-    `SELECT weights, bias, sample_count, accuracy, strftime('%s', trained_at) * 1000 as trained_ms
+    `SELECT weights, bias, sample_count, accuracy,
+            holdout_accuracy, holdout_auc, holdout_brier, holdout_count,
+            strftime('%s', trained_at) * 1000 as trained_ms
      FROM ml_model_weights WHERE model_name=?
      ORDER BY id DESC LIMIT 1`,
     [MODEL_NAME],
@@ -200,6 +289,10 @@ async function loadModelFromDB(): Promise<ModelState | null> {
       sampleCount: Number(row.sample_count),
       trainedAt: Number(row.trained_ms ?? 0),
       accuracy: Number(row.accuracy ?? 0),
+      holdoutAccuracy: row.holdout_accuracy != null ? Number(row.holdout_accuracy) : null,
+      holdoutAuc: row.holdout_auc != null ? Number(row.holdout_auc) : null,
+      holdoutBrier: row.holdout_brier != null ? Number(row.holdout_brier) : null,
+      holdoutCount: Number(row.holdout_count ?? 0),
     };
   } catch {
     return null;
@@ -222,6 +315,12 @@ export interface WinProbabilityResult {
   meetsThreshold: boolean; // pWin ≥ WIN_PROB_THRESHOLD
   modelAvailable: boolean; // false when insufficient training data
   sampleCount: number;
+  /** P1.7: out-of-sample holdout accuracy/AUC — null when the model hasn't
+   * had enough data for a chronological holdout split yet. Surfaced so
+   * callers (e.g. modelLifecycle governance, admin dashboards) can tell a
+   * genuinely validated model from one that's only been checked in-sample. */
+  holdoutAccuracy: number | null;
+  holdoutAuc: number | null;
 }
 
 /**
@@ -238,7 +337,8 @@ export async function getWinProbability(ctx: {
   const model = await getModel().catch(() => null);
 
   if (!model || model.sampleCount < MIN_PREDICT_SAMPLES) {
-    return { pWin: 0.5, meetsThreshold: true, modelAvailable: false, sampleCount: model?.sampleCount ?? 0 };
+    return { pWin: 0.5, meetsThreshold: true, modelAvailable: false, sampleCount: model?.sampleCount ?? 0,
+      holdoutAccuracy: null, holdoutAuc: null };
   }
 
   const features = extractFeatures({
@@ -257,5 +357,7 @@ export async function getWinProbability(ctx: {
     meetsThreshold: pWin >= WIN_PROB_THRESHOLD,
     modelAvailable: true,
     sampleCount: model.sampleCount,
+    holdoutAccuracy: model.holdoutAccuracy,
+    holdoutAuc: model.holdoutAuc,
   };
 }

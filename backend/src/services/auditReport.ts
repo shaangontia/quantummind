@@ -9,6 +9,7 @@
  */
 
 import { query, queryOne } from '../db/turso.js';
+import { roundTripCostPct, TYPICAL_POSITION_VALUE_INR } from './tradingCosts.js';
 
 // ─── Daily audit report ───────────────────────────────────────────────────────
 
@@ -188,22 +189,36 @@ export async function getDriftReport(portfolioId: number): Promise<DriftReport> 
   const periodEnd   = new Date().toISOString();
 
   // ── Live resolved trades (signal_patterns with outcome) ──────────────────
+  // Bug fix (2026-07-22): this query previously selected `pnl_pct` and
+  // filtered on `resolved=1` — neither column exists on signal_patterns
+  // (a STRICT table whose actual columns are `realized_pnl_pct` and
+  // `resolved_at`; see patternEngine.ts ensurePatternTables()). The query
+  // therefore threw on every call and was silently swallowed by
+  // `.catch(() => [])`, so live drift metrics were always null/empty.
+  // Corrected to the real column names.
   const liveResolved = await query(
-    `SELECT outcome, pnl_pct FROM signal_patterns
-     WHERE portfolio_id=? AND resolved=1 AND resolved_at >= ?`,
+    `SELECT outcome, realized_pnl_pct FROM signal_patterns
+     WHERE portfolio_id=? AND resolved_at IS NOT NULL AND resolved_at >= ?`,
     [portfolioId, periodStart],
   ).catch(() => []);
 
   const wins  = liveResolved.filter(r => r.outcome === 'WIN');
   const losses = liveResolved.filter(r => r.outcome === 'LOSS');
   const liveWinRate = liveResolved.length > 0 ? wins.length / liveResolved.length : null;
-  const avgWin  = wins.length  > 0 ? wins.reduce((s, r) => s + Number(r.pnl_pct ?? 0), 0) / wins.length : 0;
-  const avgLoss = losses.length > 0 ? losses.reduce((s, r) => s + Math.abs(Number(r.pnl_pct ?? 0)), 0) / losses.length : 0;
+  const avgWin  = wins.length  > 0 ? wins.reduce((s, r) => s + Number(r.realized_pnl_pct ?? 0), 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s, r) => s + Math.abs(Number(r.realized_pnl_pct ?? 0)), 0) / losses.length : 0;
+  // Single-source-of-truth cost fix (2026-07-22): realized_pnl_pct here is
+  // computed in marketMonitor.ts as a raw (price - avgBuyPrice) delta with
+  // no sell-side charges subtracted (unlike cost_adjusted_return_pct in
+  // trade_candidates) — so this IS a genuine gross→net conversion point,
+  // not a double-count. Replaced the hardcoded "0.4% cost" guess with the
+  // real itemized round-trip cost from tradingCosts.ts, matching
+  // labelGenerator.ts's fix. See QuantumMind_Algorithm_Analysis.md §2.4.
   const liveExpectancy = liveWinRate !== null && liveResolved.length >= 5
-    ? (liveWinRate * avgWin) - ((1 - liveWinRate) * avgLoss) - 0.4  // 0.4% cost
+    ? (liveWinRate * avgWin) - ((1 - liveWinRate) * avgLoss) - roundTripCostPct(TYPICAL_POSITION_VALUE_INR)
     : null;
-  const grossWin  = wins.reduce((s, r) => s + Number(r.pnl_pct ?? 0), 0);
-  const grossLoss = losses.reduce((s, r) => s + Math.abs(Number(r.pnl_pct ?? 0)), 0);
+  const grossWin  = wins.reduce((s, r) => s + Number(r.realized_pnl_pct ?? 0), 0);
+  const grossLoss = losses.reduce((s, r) => s + Math.abs(Number(r.realized_pnl_pct ?? 0)), 0);
   const livePF = grossLoss > 0 ? grossWin / grossLoss : null;
 
   // ── Most recent WF window ─────────────────────────────────────────────────

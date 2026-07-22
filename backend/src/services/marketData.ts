@@ -568,12 +568,34 @@ export async function getMultipleQuotes(symbols: string[]): Promise<StockQuote[]
 }
 
 // ── Historical data (Yahoo only — Groww unofficial has no history endpoint) ──
-async function getHistoricalCloses(symbol: string, days = 40): Promise<number[]> {
+/**
+ * P2.14 fix (2026-07-22): exported (was module-private) so mlEngine.ts's ML
+ * feature functions (momentum, MACD/EMA, Kelly, correlation) route their
+ * Yahoo history fetches through this shared function instead of maintaining
+ * a second, parallel `https.get()` implementation. That duplicate path bypassed
+ * killSwitch.recordApiFailure() entirely, so Yahoo outages affecting only the
+ * ML layer never tripped the circuit breaker / kill switch. Now every caller
+ * — RSI (getRsi) and the ML layer alike — shares one fetch path whose
+ * failures are recorded consistently. See QuantumMind_Algorithm_Analysis.md §4.
+ */
+export async function getHistoricalCloses(
+  symbol: string,
+  days = 40,
+  range: '1mo' | '3mo' | '6mo' | '1y' = '3mo',
+): Promise<number[]> {
   const nseSymbol = toNseSymbol(symbol);
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(nseSymbol)}?interval=1d&range=3mo`;
-  const { data: json } = await httpsGet(url);
-  const closes: number[] = json.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
-  return closes.filter((c: any) => c !== null && c > 0).slice(-days);
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(nseSymbol)}?interval=1d&range=${range}`;
+  try {
+    const { data: json } = await httpsGet(url);
+    const closes: number[] = json.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
+    const filtered = closes.filter((c: any) => c !== null && c > 0).slice(-days);
+    if (filtered.length > 0) void recordApiSuccess();
+    else void recordApiFailure();
+    return filtered;
+  } catch (err) {
+    void recordApiFailure();
+    throw err;
+  }
 }
 
 export async function getRsi(symbol: string, period = 14): Promise<number | null> {
@@ -604,7 +626,10 @@ export async function getRsi(symbol: string, period = 14): Promise<number | null
  * NSE Open Universe — ~150 liquid NSE-listed stocks across all market cap segments.
  * No tier restrictions. The Risk Engine enforces only per-symbol position caps (10% NAV).
  * The market cycle evaluates a rotating sample each run to stay within API rate limits.
- * Min price filter: ₹50 (applied in signal engine). No sector or cap-size restrictions.
+ * Min price filter: ₹30 (MIN_TRADE_PRICE, applied in signal engine — see
+ * tradingEngine.ts MIN_STOCK_PRICE). No sector or cap-size restrictions.
+ * (P2.12 fix 2026-07-22: this comment previously said ₹50, disagreeing with
+ * the actual ₹30 enforced everywhere in code — corrected to match reality.)
  *
  * Expansion: Add any NSE-listed symbol ending in .NS. The system will automatically
  * include it in rotation on the next deploy.

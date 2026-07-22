@@ -1,4 +1,10 @@
 /**
+ * ⚠️ DEPRECATED / UNUSED — DO NOT IMPORT.
+ * Belongs to the dead ./signal.ts fork. The live thresholds live inline in
+ * ../tradingEngine.ts (getThresholds / applyAdvancedRiskProfile / SECTOR_PE_NORMS).
+ * See ./signal.ts for the full explanation. Left in place per explicit request.
+ *
+ * ── Original header ──
  * thresholds.ts — Risk-tier thresholds and advanced risk profile overrides.
  * Sector-relative P/E norms live here to keep generateSignal() readable.
  */

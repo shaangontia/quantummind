@@ -12,8 +12,8 @@
 |---|---|---|
 | 1 | **Simulation only** — no real broker integration | System records trades in DB, updates cash/holdings virtually. No real orders are placed. |
 | 2 | **NSE equities only** — `.NS` suffix (Yahoo Finance convention) | Focused scope; NSE is India's primary exchange. No BSE, no F&O, no indices, no foreign tickers. |
-| 3 | **No penny stocks** — `price < ₹50` filtered out | Reduce manipulation risk and data noise. |
-| 4 | **Brokerage = 0.2% of trade amount** | Approximate flat fee; no STT, exchange charges, GST modelling. |
+| 3 | **No penny stocks** — `price < ₹30` filtered out | Reduce manipulation risk and data noise. (Corrected 2026-07-22: this doc previously said ₹50, disagreeing with the ₹30 enforced by `MIN_STOCK_PRICE`/`MIN_TRADE_PRICE` everywhere in code — code is unchanged, doc updated to match.) |
+| 4 | **Brokerage = flat ₹5/trade + itemized STT (0.1%/0.1%), exchange charges, SEBI fee, GST, stamp duty** | Single source of truth in `virtualFillSimulator.calculateVirtualCharges()`, re-exported via `tradingCosts.ts` and applied directly to the ledger in `executeTrade()`. (Corrected 2026-07-22: this doc previously said a flat 0.2% approximation with "no STT/exchange/GST modelling" — that was already inaccurate; the itemized model existed but was disconnected from the ledger. It is now the actual, authoritative cost applied everywhere.) |
 | 5 | **Yahoo Finance price data is the authoritative source** | Free, covers `.NS` symbols, historical OHLCV available. |
 | 6 | **Groq LLM (`llama-3.1-8b-instant`) replaces OpenAI** | Free tier, no credit card, sufficient instruction-following for structured JSON output. |
 | 7 | **Turso (LibSQL/SQLite)** replaces traditional RDBMS | Serverless-compatible, Mumbai region, SQL-compatible, zero-config. |
@@ -83,7 +83,7 @@ NSE Market Data (Yahoo / Groww)
 │  generateSignal(symbol, riskTolerance)                          │
 │                                                                 │
 │  Guard: if !isFresh → HOLD (fail-closed)                        │
-│  Guard: price < ₹50 → HOLD (penny stock)                        │
+│  Guard: price < ₹30 → HOLD (penny stock)                        │
 │                                                                 │
 │  5 parallel data fetches:                                       │
 │  ┌─────────────────────────────────────────────┐               │

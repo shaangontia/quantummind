@@ -81,6 +81,39 @@ CREATE TABLE IF NOT EXISTS market_signals (
     trade_id INTEGER REFERENCES trades(id)
 );
 
+-- Adaptive signal weights (P0.1/P0.2 fix — 2026-07-22).
+-- This table previously existed only via an untracked migration; the CREATE
+-- statement below documents the real schema so it's reproducible from source.
+-- `source` is the single canonical, case-sensitive key shared by:
+--   - tradingEngine.ts generateSignal()   (reads weight via w(source))
+--   - adaptiveEngine.ts recalibrateWeights() (writes weight from win/loss outcomes)
+--   - backtestWeights.ts bootstrapSignalWeights() (seeds initial weight from 2yr backtest)
+-- Canonical live sources (lowercase snake_case — do not use 'RSI'/'rsi' mixed
+-- casing, SQLite string comparison is case-sensitive and this was the root
+-- cause of the weight-wiring bug described in QuantumMind_Algorithm_Analysis.md):
+--   trend_composite  — blended RSI + MACD + EMA-crossover + ML-momentum trend vote
+--   price_action     — 52-week range position + day change % + volume confirmation
+--   valuation        — sector-relative P/E signal
+--   news_sentiment   — rule-based NSE corporate-announcement keyword scoring
+--   news_llm         — Groq/Gemini LLM sentiment analysis
+-- Additional non-scoring rows also live in this table (sector_<name>_weight,
+-- gemini_<decision_type>_weight) — see adaptiveEngine.ts.
+CREATE TABLE IF NOT EXISTS signal_weights (
+    source TEXT PRIMARY KEY,
+    weight REAL NOT NULL DEFAULT 1.0 CHECK(weight >= 0.3 AND weight <= 2.0),
+    win_rate REAL NOT NULL DEFAULT 0.5,
+    total_signals INTEGER NOT NULL DEFAULT 0,
+    winning_signals INTEGER NOT NULL DEFAULT 0,
+    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT OR IGNORE INTO signal_weights (source, weight, win_rate, total_signals, winning_signals) VALUES
+    ('trend_composite', 1.0, 0.5, 0, 0),
+    ('price_action',    1.0, 0.5, 0, 0),
+    ('valuation',       1.0, 0.5, 0, 0),
+    ('news_sentiment',  1.0, 0.5, 0, 0),
+    ('news_llm',        1.0, 0.5, 0, 0);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_holdings_portfolio ON holdings(portfolio_id);
 CREATE INDEX IF NOT EXISTS idx_trades_portfolio ON trades(portfolio_id);
