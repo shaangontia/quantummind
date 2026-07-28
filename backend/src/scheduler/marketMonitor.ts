@@ -512,7 +512,14 @@ async function runPortfolioTradingCycle(
     cycleUniverse = [...focusStocks, ...otherStocks];
   }
 
-  const candidates = cycleUniverse.filter(s => !held.has(s)).slice(0, 8); // up to 8 new position candidates
+  // UCB1 bandit reorders the non-held pool toward under-explored symbols/
+  // sectors before picking the top 8 — see watchlistBandit.ts for why this
+  // matters more than it looks: when the cold-start daily trade cap binds,
+  // candidate ORDER determines which symbols actually execute today, and
+  // modelLifecycle.ts's promotion gates need diversity, not just volume.
+  const { getBanditPrioritizedCandidates } = await import('../services/watchlistBandit.js');
+  const nonHeldPool = cycleUniverse.filter(s => !held.has(s));
+  const candidates = await getBanditPrioritizedCandidates(nonHeldPool, portfolioId, 8); // up to 8 new position candidates
 
   const volatilityPref = portfolio?.volatility_preference as string | null ?? null;
   const investmentGoal = portfolio?.investment_goal as string | null ?? null;
