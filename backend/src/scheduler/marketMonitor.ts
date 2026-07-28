@@ -5,7 +5,7 @@ import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, i
 import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
-import { resolveSignalOutcomes, computeSectorAccuracy } from '../services/adaptiveEngine.js';
+import { resolveSignalOutcomes, resolveSignalVoteOutcomes, computeSectorAccuracy } from '../services/adaptiveEngine.js';
 import { geminiCycleFocus, geminiPortfolioInsight, geminiSellReview } from '../services/geminiService.js';
 import { recordSignalPattern, resolvePatternOutcome } from '../services/patternEngine.js';
 import { fetchAnnouncements } from '../services/newsService.js';
@@ -258,7 +258,9 @@ async function runPortfolioTradingCycle(
         logger.info({ job: 'market-cycle', portfolioId, symbol: h.symbol, phase: 'execution', action: 'SKIP', reason: 'Market closed' });
         continue;
       }
-      const sellTradeId = await executeTrade(portfolioId, h.symbol, h.companyName, 'SELL', h.quantity, signal.price, reason);
+      const sellTradeId = await executeTrade(portfolioId, h.symbol, h.companyName, 'SELL', h.quantity, signal.price, reason,
+        undefined,
+        { dominantSource: signal.dominantSource, consensusVotes: signal.consensusVotes });
       // Phase 18 [MAJOR fix]: stamp exit_type on the trade row for reliable audit queries
       if (sellTradeId && exitTypeForTrade) {
         void run('UPDATE trades SET exit_type=? WHERE id=?', [exitTypeForTrade, sellTradeId]).catch(() => null);
@@ -914,7 +916,7 @@ async function runPortfolioTradingCycle(
       undefined,
       { groqSentiment: signal.groqSentiment, momentumScore: signal.mlBoost, regime: refreshed.riskTolerance,
         fundamentalScore: signal.fundamentalScore, fundamentalReasoning: signal.fundamentalReasoning,
-        dominantSource: signal.dominantSource }
+        dominantSource: signal.dominantSource, consensusVotes: signal.consensusVotes }
     );
     if (tradeId && sigRes.lastInsertRowid) {
       await run('UPDATE market_signals SET acted_upon=1, trade_id=? WHERE id=?', [tradeId, sigRes.lastInsertRowid]);
@@ -1187,6 +1189,9 @@ export async function runMarketCycle(): Promise<void> {
  */
 export async function runNightlyLearningJob(): Promise<void> {
     await resolveSignalOutcomes().catch(console.error);
+    // Resolve per-source vote-log rows — data collection for a future joint
+    // cross-source regression (see adaptiveEngine.ts recordSignalVotes).
+    await resolveSignalVoteOutcomes().catch(console.error);
     // Update sector-level accuracy weights from resolved trade outcomes
     await computeSectorAccuracy().catch(console.error);
     // Phase 15: Generate target-before-stop labels for closed candidates

@@ -1,0 +1,49 @@
+# QuantumMind Roadmap & TODOs
+
+Living document — update this whenever a task is started, finished, or
+re-prioritized. Check items off in place rather than deleting them, so we
+keep a record of what was actually decided and when.
+
+Last updated: 2026-07-28
+
+---
+
+## Track 1 — ML self-learning
+
+- [x] **Chronological holdout + AUC/Brier metrics** for the win-probability model (`mlProbabilityModel.ts`) — done 2026-07-22 (a3744fa)
+- [x] **Interaction features** in `mlProbabilityModel.ts` (RSI×regime, volume×strategy, fundamentals×regime) — done 2026-07-28 (d307d18). Model bumped to `buy_win_probability_v2`.
+- [x] **Bayesian shrinkage for signal weights** in `adaptiveEngine.ts` (replaced the two-stage hand-tuned clamp+confidence-cutoff formula) — done 2026-07-28 (d307d18)
+- [x] **Per-source vote logging** (`signal_vote_log` table + `recordSignalVotes`/`resolveSignalVoteOutcomes` in `adaptiveEngine.ts`, wired into `tradingEngine.ts` generateSignal()/executeTrade() and the nightly job) — done 2026-07-28. **Data collection only — not usable yet.**
+- [ ] **Joint cross-source regression** — once `signal_vote_log` has enough *resolved* rows (rule of thumb: wait for ≥200-300 resolved rows before fitting anything, same order of magnitude as `mlProbabilityModel.ts`'s `MIN_TRAIN_SAMPLES`), replace the univariate Bayesian-shrinkage weight-per-source with a small logistic regression over all 5 votes jointly (mirror `mlProbabilityModel.ts`'s training loop — same shape, new table). Check row count with:
+  `SELECT COUNT(*) FROM signal_vote_log WHERE resolved = 1`
+- [ ] **Expected-value regression** (predict return *magnitude*, not just win/loss) — `computeExpectedValue()` in `patternEngine.ts` is still an empirical historical average, not a learned regression. Would let `kellyPositionSize()` size off a real predicted EV instead of a trailing average.
+- [ ] **Embedding-based news similarity** — `newsService.ts` is still keyword-scored; `ragService.ts` already has Gemini embeddings + ANN search wired up for memory retrieval, just not applied to news sentiment. Nearest-neighbor lookup against historically-resolved announcements ("12 similar announcements before, 9 led to a win") would replace/augment the keyword rules.
+- [ ] **Thompson sampling / UCB bandit** over the watchlist rotation — would get portfolios through `modelLifecycle.ts` promotion-gate label thresholds faster than round-robin, without touching the risk gates themselves.
+
+## Track 2 — Infra / reliability
+
+- [x] **Parallelize market-cycle** (portfolios loop + per-symbol signal generation) — fixed the cron timing out at cron-job.org's 30s budget — done 2026-07-28 (75bd161)
+- [ ] **Verify market-cycle no longer times out** — check cron-job.org execution history over the next several trading days; if still timing out, next lever is capping per-batch concurrency (semaphore of 5-10) rather than firing all symbols at once, to avoid tripping Twelve Data/Gemini rate limits
+- [ ] **Paid, SLA-backed market data feed** — Twelve Data free tier + NSE scraping is fine for paper trading, not for real capital
+- [ ] **DR / backup story** — single Turso DB, no documented backup/restore runbook
+- [ ] **Multi-tenancy scaling** — current cron/schema design assumes a handful of portfolios; onboarding many users needs per-user broker credentials (encrypted), per-user risk limits, horizontal scaling validation beyond the concurrency fix above
+
+## Track 3 — Path to a real money-earning business
+
+See full discussion in chat (2026-07-28) for the complete reasoning; summary below.
+
+- [ ] **Performance/audit dashboard** — surface `decision_replay` + model-governance table data (calibration, holdout AUC/Brier, stage history) as a real, honest, chronological track record. This is the prerequisite for every path below — nobody connects real money or a broker account to an unproven model. Cheapest to build (data already exists), highest leverage.
+- [ ] **Legal groundwork** — ToS, SEBI-mandated risk disclosure language, privacy policy (DPDP Act applies once any other user's data is stored), liability limitation. None of this exists in the repo yet.
+- [ ] **Signal-only product** (lowest regulatory bar: SEBI Research Analyst registration) — sell BUY/SELL calls + model confidence as a subscription/API, no execution, no custody. Monetizable with zero broker-integration work once the audit dashboard exists.
+- [ ] **Broker API integration** — needs an adapter layer; `executeTrade()` currently writes only to the internal virtual ledger. Real integration = Kite Connect / Upstox API / Angel SmartAPI, real order placement + fill polling + reconciliation against broker statements. **Do this only after the signal product and track record are live** — building it first without a track record won't convert users.
+- [ ] **SEBI algo-empanelment path** ("bring your own broker" execution) — user connects their own broker account, engine executes under SEBI's 2025 algo-trading framework (unique Algo ID, static IP, order-level tagging, broker-side kill-switch/audit requirements). Existing kill-switches/risk-gates map closely to what empanelment expects — a real head start.
+- [ ] **White-label B2B** — license the engine (governance/risk-gate layer, not the alpha) to smaller brokers/wealth-tech startups.
+- [ ] Full discretionary PMS (₹5cr net worth + SEBI PMS registration) — multi-year ceiling, not a near-term target. Don't build toward this until the above is proven out.
+
+---
+
+## How to use this file
+
+- Add new items under the relevant track as they come up in conversation — don't let a good idea evaporate at the end of a chat.
+- Check `[x]` and add the commit hash + date when something ships.
+- If a planned item turns out to be wrong/superseded, don't delete it — mark it `~~struck through~~` with a one-line note on why, so we don't re-propose it later without remembering we already ruled it out.

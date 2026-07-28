@@ -12,7 +12,7 @@ import { logger } from '../lib/logger.js';
 import { getStockSentiment } from './newsService.js';
 import { getMLBoost, computeTrendIndicators, kellyPositionSize } from './mlEngine.js';
 import { getGroqStockSentiment } from './groqService.js';
-import { getSignalWeights, getCurrentRegime, recordSignalForTracking, resolveGeminiSellDecisions, getSectorWeight, computeConsensusMultiplier, SIGNAL_SOURCES } from './adaptiveEngine.js';
+import { getSignalWeights, getCurrentRegime, recordSignalForTracking, resolveGeminiSellDecisions, getSectorWeight, computeConsensusMultiplier, recordSignalVotes, SIGNAL_SOURCES, type ConsensusInput } from './adaptiveEngine.js';
 import { geminiTradeVeto, geminiFundamentalAnalysis } from './geminiService.js';
 import { getFundamentalSnapshot, computeFundamentalVerdict } from './fundamentalService.js';
 import { getAdaptiveRSIBuy, getPatternConfidence, computeExpectedValue } from './patternEngine.js';
@@ -56,6 +56,14 @@ export interface TradeSignal {
    * fall back to their existing sizing rules in that case, not treat null as
    * "size zero". */
   kellyFraction?: number | null;
+  /** Full per-source vote breakdown computed for the consensus multiplier —
+   * persisted per trade (see adaptiveEngine.recordSignalVotes) so a future
+   * joint regression across signal sources has real training data, instead
+   * of only ever knowing the single "dominant" source (see dominantSource
+   * above). Undefined when the fundamentals/EV/ML gates returned early
+   * before consensus votes were computed (no trade executes in that case
+   * anyway). */
+  consensusVotes?: ConsensusInput;
 }
 
 export interface HoldingSummary {
@@ -632,14 +640,15 @@ export async function generateSignal(
 
     // Phase 12+: Consensus multiplier — real-time independent signal agreement (runs post-fundamentals)
     const groqDir = groqSentiment?.startsWith('BULLISH') ? 'bullish' : groqSentiment?.startsWith('BEARISH') ? 'bearish' : 'neutral';
-    const consensusMult = computeConsensusMultiplier({
+    const consensusVotes: ConsensusInput = {
       rsiSignal:        rsiVal !== null && rsiVal < (t.rsiBuy ?? 35) ? 'bullish' : rsiVal !== null && rsiVal > 70 ? 'bearish' : 'neutral',
       macdSignal:       (trend?.macd?.bullishCrossover ?? false) ? 'bullish' : (trend?.macd?.bearishCrossover ?? false) ? 'bearish' : 'neutral',
       momentumSignal:   momentumForPattern,
       newsSignal:       groqDir,
       volumeSignal:     (q.volumeRatio ?? 1) > 1.5 ? 'bullish' : (q.volumeRatio ?? 1) < 0.5 ? 'bearish' : 'neutral',
       fundamentalScore: fundamentalScore ?? 50,
-    });
+    };
+    const consensusMult = computeConsensusMultiplier(consensusVotes);
     if (consensusMult !== 1.0) {
       buy = buy * consensusMult;
       if (consensusMult > 1.05) notes.push(`Consensus boost: ${consensusMult.toFixed(2)}×`);
@@ -687,13 +696,13 @@ export async function generateSignal(
         fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined,
         strategyType: strategyResult.strategyType, strategyConfidence: strategyResult.confidence,
         strategyReasonCodes: strategyResult.reasonCodes, strategyClassifierVersion: strategyResult.classifierVersion,
-        marketRegimeLabel: marketRegime?.label, mlWinProbability, dominantSource, kellyFraction };
+        marketRegimeLabel: marketRegime?.label, mlWinProbability, dominantSource, kellyFraction, consensusVotes };
     }
 
     if (topAction) {
       return { symbol, action: topAction, strength: topScore >= 5.5 ? 'STRONG' : 'MODERATE', reason, price: q.price, mlBoost: ml?.momentumBoost, groqSentiment,
         fundamentalScore: fundamentalScore ?? undefined, fundamentalReasoning: fundamentalReasoning || undefined,
-        mlWinProbability, dominantSource, kellyFraction,
+        mlWinProbability, dominantSource, kellyFraction, consensusVotes,
         strategyType: strategyResult.strategyType, strategyConfidence: strategyResult.confidence,
         strategyReasonCodes: strategyResult.reasonCodes, strategyClassifierVersion: strategyResult.classifierVersion,
         marketRegimeLabel: marketRegime?.label };
@@ -726,6 +735,9 @@ export interface TradeContext {
    * TradeSignal.dominantSource, used to attribute this trade's eventual
    * outcome to the correct signal_weights row. */
   dominantSource?: string;
+  /** Full per-source vote breakdown from generateSignal()'s TradeSignal.consensusVotes,
+   * persisted via adaptiveEngine.recordSignalVotes for future joint-regression training. */
+  consensusVotes?: ConsensusInput;
 }
 
 export async function executeTrade(
@@ -977,6 +989,11 @@ export async function executeTrade(
     recordSignalForTracking(portfolioId, symbol, 'SELL', signalSourceSell, execPrice, new Date().toISOString()).catch(
       e => console.warn('[Adaptive] recordSignalForTracking failed:', e)
     );
+    if (ctx?.consensusVotes) {
+      recordSignalVotes(portfolioId, symbol, 'SELL', Number(tradeId), execPrice, ctx.consensusVotes).catch(
+        e => console.warn('[Adaptive] recordSignalVotes failed:', e)
+      );
+    }
     // Resolve Gemini sell decisions for this symbol — mark win/loss for learning (fire-and-forget)
     if (realizedPnlOnTrade !== null) {
       const avgBuyPrice = holdingsForNAV.find((h: any) => h.symbol === symbol)?.avg_buy_price;
@@ -999,6 +1016,11 @@ export async function executeTrade(
   recordSignalForTracking(portfolioId, symbol, 'BUY', signalSourceBuy, execPrice, new Date().toISOString()).catch(
     e => console.warn('[Adaptive] recordSignalForTracking failed:', e)
   );
+  if (ctx?.consensusVotes) {
+    recordSignalVotes(portfolioId, symbol, 'BUY', Number(tradeId), execPrice, ctx.consensusVotes).catch(
+      e => console.warn('[Adaptive] recordSignalVotes failed:', e)
+    );
+  }
   return tradeId;
 }
 

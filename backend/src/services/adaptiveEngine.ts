@@ -111,6 +111,93 @@ export function invalidateSignalWeightsCache(): void {
   _weightsCache = null;
 }
 
+// ─── Per-Source Vote Logging (joint cross-source learning) ───────────────────
+//
+// recordSignalForTracking() above only ever persists ONE "dominant" source
+// per trade, so recalibrateWeights() can only ever learn each source's own
+// univariate win rate — it has no way to learn that e.g. news_llm matters
+// less when trend_composite already agrees, because that joint information
+// is never captured. computeConsensusMultiplier() already computes all 5
+// individual votes at signal time (tradingEngine.ts generateSignal()) — this
+// table persists that full vote breakdown per trade instead of collapsing it
+// to one source, so a future joint regression (win/loss ~ vote_1 + ... +
+// vote_5) has real per-trade training data to fit on. Until enough resolved
+// rows accumulate here, recalibrateWeights() keeps using the univariate
+// estimate above — this only starts the data collection clock.
+
+export async function ensureSignalVoteLogTable(): Promise<void> {
+  try {
+    await run(`CREATE TABLE IF NOT EXISTS signal_vote_log (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      portfolio_id      INTEGER NOT NULL,
+      symbol            TEXT NOT NULL,
+      trade_id          INTEGER,
+      signal_type       TEXT NOT NULL,
+      signal_time       DATETIME DEFAULT CURRENT_TIMESTAMP,
+      price_at_signal   REAL NOT NULL,
+      rsi_vote          TEXT NOT NULL,
+      macd_vote         TEXT NOT NULL,
+      momentum_vote     TEXT NOT NULL,
+      news_vote         TEXT NOT NULL,
+      volume_vote       TEXT NOT NULL,
+      fundamental_score REAL,
+      resolved          INTEGER NOT NULL DEFAULT 0,
+      exit_price        REAL,
+      exit_time         DATETIME,
+      pnl_pct           REAL,
+      outcome           TEXT
+    )`, []);
+  } catch (_) { /* already exists */ }
+}
+
+/** Persist the full per-source vote breakdown for a trade (see rationale above). */
+export async function recordSignalVotes(
+  portfolioId: number,
+  symbol: string,
+  signalType: 'BUY' | 'SELL',
+  tradeId: number | null,
+  priceAtSignal: number,
+  votes: ConsensusInput,
+): Promise<void> {
+  await run(
+    `INSERT INTO signal_vote_log
+       (portfolio_id, symbol, trade_id, signal_type, price_at_signal,
+        rsi_vote, macd_vote, momentum_vote, news_vote, volume_vote, fundamental_score)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    [portfolioId, symbol, tradeId, signalType, priceAtSignal,
+     votes.rsiSignal, votes.macdSignal, votes.momentumSignal, votes.newsSignal, votes.volumeSignal,
+     votes.fundamentalScore],
+  ).catch(() => null);
+}
+
+/**
+ * Resolve vote-log rows 5+ days old using the same win/loss rule as
+ * resolveSignalOutcomes() (>1%/<-1% move in the signal's direction), so the
+ * two tables stay directly comparable. Called from the same nightly job.
+ */
+export async function resolveSignalVoteOutcomes(): Promise<void> {
+  const unresolved = await query(
+    `SELECT * FROM signal_vote_log WHERE resolved = 0 AND signal_time <= datetime('now', '-5 days')`,
+  ).catch(() => []);
+
+  for (const s of unresolved) {
+    const currentQuote = await getQuote(s.symbol as string).catch(() => null);
+    if (!currentQuote) continue;
+
+    const priceAt = Number(s.price_at_signal);
+    const pnlPct = ((currentQuote.price - priceAt) / priceAt) * 100;
+    const signalType = s.signal_type as string;
+    const isWin = signalType === 'BUY' ? pnlPct > 1 : pnlPct < -1;
+    const outcome = isWin ? 'WIN' : Math.abs(pnlPct) < 1 ? 'NEUTRAL' : 'LOSS';
+
+    await run(
+      'UPDATE signal_vote_log SET exit_price=?, exit_time=CURRENT_TIMESTAMP, pnl_pct=?, outcome=?, resolved=1 WHERE id=?',
+      [currentQuote.price, pnlPct, outcome, s.id],
+    ).catch(() => null);
+  }
+  console.log(`[Adaptive] Resolved ${unresolved.length} signal-vote outcomes`);
+}
+
 // Record a new signal for outcome tracking
 export async function recordSignalForTracking(
   portfolioId: number,

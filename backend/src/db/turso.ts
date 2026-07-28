@@ -223,9 +223,14 @@ export async function runMigrations(): Promise<void> {
   // untracked/manual migration with no CREATE TABLE anywhere in source —
   // see QuantumMind_Algorithm_Analysis.md §2.2. Making it explicit here so
   // the schema is reproducible and the canonical source names are seeded.
-  const { ensureSignalWeightsTable } = await import('../services/adaptiveEngine.js');
+  const { ensureSignalWeightsTable, ensureSignalVoteLogTable } = await import('../services/adaptiveEngine.js');
   await ensureSignalWeightsTable();
   console.log('[DB] Migration: signal_weights table ensured');
+
+  // Per-source vote logging (joint cross-source learning data collection) —
+  // see rationale comment above ensureSignalVoteLogTable() in adaptiveEngine.ts.
+  await ensureSignalVoteLogTable();
+  console.log('[DB] Migration: signal_vote_log table ensured');
 
   // Phase 13: Exit engine + strategy classification columns on holdings
   const holdingsCols = [
