@@ -94,7 +94,7 @@ export async function fetchAnnouncements(): Promise<CorporateAnnouncement[]> {
   const raw = await nseGet('/api/corporate-announcements?index=equities');
   if (!Array.isArray(raw)) return [];
 
-  return raw.map((item: any) => {
+  const announcements = raw.map((item: any) => {
     const text = `${item.desc || ''} ${item.attchmntText || ''}`;
     const { score, label } = scoreAnnouncement(text);
     return {
@@ -107,6 +107,18 @@ export async function fetchAnnouncements(): Promise<CorporateAnnouncement[]> {
       sentimentLabel: label,
     };
   });
+
+  // Fire-and-forget: record each announcement's embedding for future
+  // nearest-neighbor sentiment lookups (see newsEmbeddingModel.ts). Cheap on
+  // repeat fetches — dedup check happens before any embed/quote work.
+  void (async () => {
+    const { recordAnnouncementEmbedding } = await import('./newsEmbeddingModel.js');
+    for (const a of announcements) {
+      recordAnnouncementEmbedding(a, a.sentimentScore).catch(() => null);
+    }
+  })().catch(() => null);
+
+  return announcements;
 }
 
 // Get sentiment for a specific stock from recent announcements
@@ -118,7 +130,24 @@ export async function getStockSentiment(symbol: string): Promise<{ score: number
 
     if (stockAnnouncements.length === 0) return null;
 
-    const avgScore = stockAnnouncements.reduce((sum, a) => sum + a.sentimentScore, 0) / stockAnnouncements.length;
+    const keywordScore = stockAnnouncements.reduce((sum, a) => sum + a.sentimentScore, 0) / stockAnnouncements.length;
+
+    // Blend in the embedding-based nearest-neighbor score when enough
+    // resolved historical announcements exist to make it meaningful —
+    // "12 similar announcements before, 9 led to a bullish move" — instead
+    // of relying purely on keyword direction, which says nothing about
+    // whether announcements like this one actually moved the price before.
+    // Falls back to pure keyword scoring whenever this isn't available yet
+    // (expected for a long time after first deployment — see
+    // newsEmbeddingModel.ts).
+    let avgScore = keywordScore;
+    const mostRecent = stockAnnouncements[0];
+    const { getEmbeddingSimilarSentiment } = await import('./newsEmbeddingModel.js');
+    const embeddingResult = await getEmbeddingSimilarSentiment(`${mostRecent.category}: ${mostRecent.headline}`).catch(() => null);
+    if (embeddingResult) {
+      avgScore = keywordScore * 0.5 + embeddingResult.score * 0.5;
+    }
+
     const label =
       avgScore >= 1.5  ? 'VERY_BULLISH' :
       avgScore >= 0.5  ? 'BULLISH' :

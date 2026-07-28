@@ -232,6 +232,11 @@ export async function runMigrations(): Promise<void> {
   await ensureSignalVoteLogTable();
   console.log('[DB] Migration: signal_vote_log table ensured');
 
+  // Embedding-based news-similarity data collection — see newsEmbeddingModel.ts.
+  const { ensureAnnouncementEmbeddingsTable } = await import('../services/newsEmbeddingModel.js');
+  await ensureAnnouncementEmbeddingsTable();
+  console.log('[DB] Migration: announcement_embeddings table ensured');
+
   // Phase 13: Exit engine + strategy classification columns on holdings
   const holdingsCols = [
     "ALTER TABLE holdings ADD COLUMN strategy_type TEXT",

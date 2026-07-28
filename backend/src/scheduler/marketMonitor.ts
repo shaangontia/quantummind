@@ -1220,6 +1220,10 @@ export async function runNightlyLearningJob(): Promise<void> {
     // threshold — see evMagnitudeModel.ts.
     const { trainMagnitudeModels } = await import('../services/evMagnitudeModel.js');
     await trainMagnitudeModels().catch(console.error);
+    // Resolve embedding-based announcement outcomes (5+ days old) — see
+    // newsEmbeddingModel.ts. Independent of the above; order doesn't matter.
+    const { resolveAnnouncementOutcomes } = await import('../services/newsEmbeddingModel.js');
+    await resolveAnnouncementOutcomes().catch(console.error);
     await resolveSignalOutcomes().catch(console.error);
     // Update sector-level accuracy weights from resolved trade outcomes
     await computeSectorAccuracy().catch(console.error);
