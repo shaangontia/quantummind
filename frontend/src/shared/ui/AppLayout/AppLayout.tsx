@@ -74,6 +74,7 @@ export const AppLayout = () => {
                 <Box component={NavLink} to="/admin/replay-simulator" sx={NAV_LINK_SX}>Simulator</Box>
                 <Box component={NavLink} to="/admin/virtual-reconciliation" sx={NAV_LINK_SX}>Ledger</Box>
                 <Box component={NavLink} to="/admin/virtual-execution-quality" sx={NAV_LINK_SX}>Exec Quality</Box>
+                <Box component={NavLink} to="/admin/audit-dashboard" sx={NAV_LINK_SX}>Audit</Box>
               </>
             )}
           </Box>

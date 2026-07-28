@@ -250,6 +250,85 @@ export interface AdminVirtualExecutionQuality {
   worstSymbolsBySlippage: WorstSymbolSlippage[];
 }
 
+// ─── Audit / Performance Dashboard ─────────────────────────────────────────────
+// A read-only surface over data the trading engine already computes and
+// persists elsewhere (model_calibration_buckets, ml_model_weights,
+// cold_start_state, decision_replay_events, trades) — the whole point is
+// that nothing here is a new metric invented for the dashboard, so it can't
+// be more flattering than what was actually logged at decision time.
+
+export type ModelStage = 'CANDIDATE' | 'SHADOW' | 'ADVISORY' | 'PRODUCTION' | 'RETIRED';
+
+export interface AuditPromotionGaps {
+  labelsNeeded: number;
+  wfWindowsNeeded: number;
+  nextStage: ModelStage;
+  weakSignalsBlocked: boolean;
+}
+
+export interface AuditCalibration {
+  available: boolean;
+  maxErrorPct: number | null;
+  activeBuckets: number;
+}
+
+export interface AuditPortfolioGovernance {
+  portfolioId: number;
+  name: string;
+  riskTolerance: string;
+  createdAt: string;
+  stage: ModelStage;
+  trueLabelCount: number;
+  positiveWFWindows: number;
+  isColdStart: boolean;
+  promotionGaps: AuditPromotionGaps | null;
+  calibration: AuditCalibration | null;
+}
+
+export interface ModelTrainingRun {
+  trainedAt: string;
+  sampleCount: number;
+  holdoutAccuracy: number | null;
+  holdoutAuc: number | null;
+  holdoutBrier: number | null;
+  holdoutCount: number;
+}
+
+export interface CalibrationBucketPoint {
+  bucketLow: number;
+  bucketHigh: number;
+  sampleCount: number;
+  predictedAvg: number;
+  actualWinRate: number;
+  calibrationError: number;
+  expectancyPct: number;
+  profitFactor: number | null;
+  evaluatedAt: string;
+}
+
+export interface PerformanceTimelinePoint {
+  date: string;
+  tradesCount: number;
+  winCount: number;
+  lossCount: number;
+  realizedPnl: number;
+  cumulativeRealizedPnl: number;
+}
+
+export interface DecisionTypeCount {
+  decisionType: string;
+  count: number;
+}
+
+export interface AuditDashboardData {
+  generatedAt: string;
+  portfolios: AuditPortfolioGovernance[];
+  modelTrainingHistory: ModelTrainingRun[];
+  calibrationBuckets: CalibrationBucketPoint[];
+  performanceTimeline: PerformanceTimelinePoint[];
+  decisionSummary: DecisionTypeCount[];
+}
+
 // ─── RTK Query Endpoints ──────────────────────────────────────────────────────
 
 export const adminApi = baseApi.injectEndpoints({
@@ -369,6 +448,11 @@ export const adminApi = baseApi.injectEndpoints({
       }),
     }),
 
+    getAuditDashboard: builder.query<AuditDashboardData, { portfolioId?: number } | void>({
+      query: (params) => ({ url: '/admin/audit-dashboard', params: params ?? undefined, method: 'GET' }),
+      keepUnusedDataFor: 60,
+    }),
+
   }),
   overrideExisting: false,
 });
@@ -390,4 +474,5 @@ export const {
   useResolveVirtualMismatchMutation,
   useRetryVirtualReconciliationMutation,
   useGetAdminVirtualExecutionQualityQuery,
+  useGetAuditDashboardQuery,
 } = adminApi;

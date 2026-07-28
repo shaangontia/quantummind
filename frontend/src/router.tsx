@@ -22,6 +22,7 @@ import {
   AdminVirtualMismatchesPage,
   AdminVirtualExecutionQualityPage,
 } from './features/portfolios/ui/AdminVirtualReconciliationPage/index.ts';
+import { AuditDashboardPage } from './features/portfolios/ui/AuditDashboardPage/index.ts';
 
 export const router = createBrowserRouter([
   // ─── Public auth routes ───────────────────────────────────────────────────
@@ -87,6 +88,10 @@ export const router = createBrowserRouter([
       {
         path: 'admin/virtual-execution-quality',
         element: (<RequireAdmin><AdminVirtualExecutionQualityPage /></RequireAdmin>),
+      },
+      {
+        path: 'admin/audit-dashboard',
+        element: (<RequireAdmin><AuditDashboardPage /></RequireAdmin>),
       },
     ],
   },

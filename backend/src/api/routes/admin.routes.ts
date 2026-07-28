@@ -429,6 +429,117 @@ router.get('/admin/candidates/:portfolioId/trace', verifyAuth, requireUserAdminA
 });
 
 /**
+ * GET /api/admin/audit-dashboard
+ *
+ * The performance/audit track-record dashboard: surfaces model governance
+ * stage + promotion gaps per portfolio, the win-probability model's full
+ * training history (holdout AUC/Brier/accuracy over time — never in-sample
+ * numbers), calibration-bucket history, a chronological realized-P&L
+ * timeline, and a decision-type breakdown (BUY/SELL/VETO/SKIP counts) from
+ * decision_replay_events. This is deliberately just a read-only surface over
+ * data the system already computes and persists elsewhere — no new metrics
+ * invented for the dashboard, so nothing here can be more flattering than
+ * what the trading engine itself already logged.
+ */
+router.get('/admin/audit-dashboard', verifyAuth, requireUserAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const portfolioRows = await query(
+      `SELECT id, name, risk_tolerance, created_at FROM portfolios WHERE is_active = 1 ORDER BY id`,
+    );
+    const { getModelGovernanceState } = await import('../../services/modelLifecycle.js');
+    const portfolios = await Promise.all(portfolioRows.map(async (p: any) => {
+      const gov = await getModelGovernanceState(Number(p.id)).catch(() => null);
+      return {
+        portfolioId: Number(p.id),
+        name: p.name,
+        riskTolerance: p.risk_tolerance,
+        createdAt: p.created_at,
+        stage: gov?.stage ?? 'CANDIDATE',
+        trueLabelCount: gov?.trueLabelCount ?? 0,
+        positiveWFWindows: gov?.positiveWFWindows ?? 0,
+        isColdStart: gov?.isColdStart ?? true,
+        promotionGaps: gov?.promotionGaps ?? null,
+        calibration: gov?.calibration ?? null,
+      };
+    }));
+
+    // Chronological model training history — holdout metrics only, never
+    // in-sample accuracy, so this can't overstate real predictive power.
+    const modelTrainingHistory = await query(
+      `SELECT trained_at AS trainedAt, sample_count AS sampleCount,
+              holdout_accuracy AS holdoutAccuracy, holdout_auc AS holdoutAuc,
+              holdout_brier AS holdoutBrier, holdout_count AS holdoutCount
+       FROM ml_model_weights
+       WHERE model_name = 'buy_win_probability_v2'
+       ORDER BY id ASC`,
+    ).catch(() => []);
+
+    // Full calibration-bucket history (not just latest) so a chart can show
+    // whether calibration error is improving or drifting over time per band.
+    const calibrationBuckets = await query(
+      `SELECT bucket_low AS bucketLow, bucket_high AS bucketHigh, sample_count AS sampleCount,
+              predicted_avg AS predictedAvg, actual_win_rate AS actualWinRate,
+              calibration_error AS calibrationError, expectancy_pct AS expectancyPct,
+              profit_factor AS profitFactor, evaluated_at AS evaluatedAt
+       FROM model_calibration_buckets
+       WHERE model_name = 'buy_win_probability_v2'
+       ORDER BY evaluated_at ASC
+       LIMIT 500`,
+    ).catch(() => []);
+
+    // Realized-P&L timeline from actual executed SELL trades — the honest
+    // "did this make money" record, not a backtest or a projection.
+    const portfolioFilter = req.query.portfolioId ? 'AND portfolio_id = ?' : '';
+    const timelineArgs = req.query.portfolioId ? [Number(req.query.portfolioId)] : [];
+    const dailyRows = await query(
+      `SELECT date(trade_time) AS date,
+              COUNT(*) AS tradesCount,
+              SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS winCount,
+              SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) AS lossCount,
+              SUM(COALESCE(realized_pnl, 0)) AS realizedPnl
+       FROM trades
+       WHERE action = 'SELL' AND realized_pnl IS NOT NULL ${portfolioFilter}
+       GROUP BY date(trade_time)
+       ORDER BY date ASC`,
+      timelineArgs,
+    ).catch(() => []);
+    let cumulative = 0;
+    const performanceTimeline = dailyRows.map((r: any) => {
+      cumulative += Number(r.realizedPnl ?? 0);
+      return {
+        date: r.date,
+        tradesCount: Number(r.tradesCount ?? 0),
+        winCount: Number(r.winCount ?? 0),
+        lossCount: Number(r.lossCount ?? 0),
+        realizedPnl: Number(r.realizedPnl ?? 0),
+        cumulativeRealizedPnl: cumulative,
+      };
+    });
+
+    // Decision-type breakdown — how many BUY/SELL/VETO/SKIP/REDUCE decisions
+    // the system actually made, for audit-trail transparency.
+    const decisionSummary = await query(
+      `SELECT decision_type AS decisionType, COUNT(*) AS count
+       FROM decision_replay_events
+       GROUP BY decision_type
+       ORDER BY count DESC`,
+    ).catch(() => []);
+
+    return res.json({
+      success: true,
+      data: {
+        generatedAt: new Date().toISOString(),
+        portfolios,
+        modelTrainingHistory,
+        calibrationBuckets,
+        performanceTimeline,
+        decisionSummary,
+      },
+    });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
+/**
  * POST /api/admin/decisions/:decisionId/replay/simulate
  * Dry-run: re-evaluates the original candidate feature snapshot under a
  * different policy/model version. NEVER executes actual trades.

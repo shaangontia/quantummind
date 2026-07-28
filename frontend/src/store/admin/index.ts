@@ -16,6 +16,7 @@ export {
   useResolveVirtualMismatchMutation,
   useRetryVirtualReconciliationMutation,
   useGetAdminVirtualExecutionQualityQuery,
+  useGetAuditDashboardQuery,
 } from './admin.api.ts';
 
 export type {
@@ -39,4 +40,13 @@ export type {
   ResolveMismatchPayload,
   AdminVirtualExecutionQuality,
   WorstSymbolSlippage,
+  ModelStage,
+  AuditPromotionGaps,
+  AuditCalibration,
+  AuditPortfolioGovernance,
+  ModelTrainingRun,
+  CalibrationBucketPoint,
+  PerformanceTimelinePoint,
+  DecisionTypeCount,
+  AuditDashboardData,
 } from './admin.api.ts';
