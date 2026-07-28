@@ -112,8 +112,14 @@ async function runPortfolioTradingCycle(
 
   let sellSignalCount = 0;
   // Sell scan
-  for (const h of summary.holdings) {
-    const { getSymbolSector } = await import('../services/marketData.js');
+  // Batch-generate signals for all holdings concurrently first (the network/LLM-bound
+  // part — this used to run one holding at a time, which was the main contributor to
+  // the market-cycle cron blowing its 30s external timeout), then run the stateful
+  // decision/execution logic sequentially per holding to keep the exact same ordering
+  // and DB-write semantics as before.
+  const { getSymbolSector } = await import('../services/marketData.js');
+  const marketRegimeForExit = await classifyMarketRegime().catch(() => null);
+  const holdingSignals = await Promise.all(summary.holdings.map(async h => {
     const sector = getSymbolSector(h.symbol);
     const sectorNAV = summary.holdings
       .filter(x => getSymbolSector(x.symbol) === sector)
@@ -121,6 +127,9 @@ async function runPortfolioTradingCycle(
     const sectorExposurePct = summary.totalValue > 0 ? (sectorNAV / summary.totalValue) * 100 : 0;
     const signal = await generateSignal(h.symbol, riskTolerance, _volPref, _invGoal,
       { ...portfolioCtxBase, sectorExposurePct });
+    return { h, signal };
+  }));
+  for (const { h, signal } of holdingSignals) {
     // Guard: null signal = no valid price data. Zero/invalid price must never reach stop-loss math.
     if (!signal || signal.price <= 0) continue;
     const lossRatio = (signal.price - h.avgBuyPrice) / h.avgBuyPrice;
@@ -129,7 +138,6 @@ async function runPortfolioTradingCycle(
     let exitTypeForTrade: string | null = null;  // Phase 18: stamped on trades.exit_type
 
     // Phase 13: Update trailing stop as price rises (before exit evaluation)
-    const marketRegimeForExit = await classifyMarketRegime().catch(() => null);
     await updateTrailingStop(portfolioId, h.symbol, signal.price).catch(() => null);
 
     // Phase 13: Exit engine — check all 6 exit types
@@ -541,23 +549,32 @@ async function runPortfolioTradingCycle(
     return 'NORMAL';
   }
 
-  for (const symbol of candidates) {
-    // Phase 16: Cold-start daily trade cap
-    if (tradeCount >= coldStartDailyMax) {
-      logger.info({ job: 'market-cycle', portfolioId, phase: 'execution', action: 'SKIP',
-        reason: `Cold-start: daily trade cap ${coldStartDailyMax} reached (stage: ${govState?.stage})` });
-      break;
-    }
-    const { getSymbolSector } = await import('../services/marketData.js');
-    const buySector = getSymbolSector(symbol);
+  // Batch-generate signals for all candidates concurrently (same rationale as the sell
+  // scan above: candidates are scored off the single `refreshed` snapshot taken before
+  // this loop, so — same as before this change — sizing doesn't depend on iteration
+  // order, meaning it's safe to compute every candidate's signal up front instead of
+  // one network/LLM round-trip at a time).
+  const { getSymbolSector: getSymbolSectorBuy } = await import('../services/marketData.js');
+  const candidateSignals = await Promise.all(candidates.map(async symbol => {
+    const buySector = getSymbolSectorBuy(symbol);
     const buySectorNAV = refreshed.holdings
-      .filter(x => getSymbolSector(x.symbol) === buySector)
+      .filter(x => getSymbolSectorBuy(x.symbol) === buySector)
       .reduce((sum, x) => sum + x.quantity * x.currentPrice, 0);
     const buySectorPct = refreshed.totalValue > 0 ? (buySectorNAV / refreshed.totalValue) * 100 : 0;
     const proposedPositionPct = maxPosPct * 100;
     const signal = await generateSignal(symbol, riskTolerance, volatilityPref, investmentGoal,
       { totalNAV: refreshed.totalValue, cashBalance: refreshed.cashBalance,
         holdings: refreshed.holdings.length, sectorExposurePct: buySectorPct, proposedPositionPct });
+    return { symbol, signal };
+  }));
+
+  for (const { symbol, signal } of candidateSignals) {
+    // Phase 16: Cold-start daily trade cap
+    if (tradeCount >= coldStartDailyMax) {
+      logger.info({ job: 'market-cycle', portfolioId, phase: 'execution', action: 'SKIP',
+        reason: `Cold-start: daily trade cap ${coldStartDailyMax} reached (stage: ${govState?.stage})` });
+      break;
+    }
     // Phase 15: Record WEAK / HOLD signals as candidates for ML training
     if (!signal || signal.action !== 'BUY') {
       if (signal) {
@@ -1118,8 +1135,14 @@ export async function runMarketCycle(): Promise<void> {
       }
     } catch { /* non-critical */ }
 
-    for (const p of portfolios) {
-      const { trades, signals } = await runPortfolioTradingCycle(Number(p.id), p.risk_tolerance as string, geminiSectorFocus);
+    // Portfolios are independent (separate cash/holdings) — run their cycles concurrently
+    // instead of one at a time. This was the dominant cause of the market-cycle cron
+    // blowing its external timeout budget: N portfolios × per-symbol network/LLM calls,
+    // fully serialized, easily exceeded 30s once there was more than a handful of symbols.
+    const cycleResults = await Promise.all(
+      portfolios.map(p => runPortfolioTradingCycle(Number(p.id), p.risk_tolerance as string, geminiSectorFocus)),
+    );
+    for (const { trades, signals } of cycleResults) {
       tradesExecuted += trades;
       signalsGenerated += signals;
     }
