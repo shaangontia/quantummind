@@ -1,4 +1,5 @@
 import cron from 'node-cron';
+import { mapWithConcurrency } from '../lib/concurrency.js';
 import { query, queryOne, run } from '../db/turso.js';
 import { generateSignal, executeTrade, getPortfolioSummary } from '../services/tradingEngine.js';
 import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen, warmTwelveDataCache, fetchEarningsCalendar, getAvgDailyTradedValue } from '../services/marketData.js';
@@ -119,7 +120,12 @@ async function runPortfolioTradingCycle(
   // and DB-write semantics as before.
   const { getSymbolSector } = await import('../services/marketData.js');
   const marketRegimeForExit = await classifyMarketRegime().catch(() => null);
-  const holdingSignals = await Promise.all(summary.holdings.map(async h => {
+  // Bounded concurrency, not unbounded Promise.all — full concurrency here
+  // tripped Twelve Data/Gemini rate limits under real symbol counts, which
+  // meant retries/backoff pushed the cycle over the 30s budget just as
+  // badly as the original fully-sequential version did.
+  const SYMBOL_CONCURRENCY = 5;
+  const holdingSignals = await mapWithConcurrency(summary.holdings, SYMBOL_CONCURRENCY, async h => {
     const sector = getSymbolSector(h.symbol);
     const sectorNAV = summary.holdings
       .filter(x => getSymbolSector(x.symbol) === sector)
@@ -128,7 +134,7 @@ async function runPortfolioTradingCycle(
     const signal = await generateSignal(h.symbol, riskTolerance, _volPref, _invGoal,
       { ...portfolioCtxBase, sectorExposurePct });
     return { h, signal };
-  }));
+  });
   for (const { h, signal } of holdingSignals) {
     // Guard: null signal = no valid price data. Zero/invalid price must never reach stop-loss math.
     if (!signal || signal.price <= 0) continue;
@@ -557,7 +563,8 @@ async function runPortfolioTradingCycle(
   // order, meaning it's safe to compute every candidate's signal up front instead of
   // one network/LLM round-trip at a time).
   const { getSymbolSector: getSymbolSectorBuy } = await import('../services/marketData.js');
-  const candidateSignals = await Promise.all(candidates.map(async symbol => {
+  // Bounded concurrency — see SYMBOL_CONCURRENCY comment in the sell scan above.
+  const candidateSignals = await mapWithConcurrency(candidates, SYMBOL_CONCURRENCY, async symbol => {
     const buySector = getSymbolSectorBuy(symbol);
     const buySectorNAV = refreshed.holdings
       .filter(x => getSymbolSectorBuy(x.symbol) === buySector)
@@ -568,7 +575,7 @@ async function runPortfolioTradingCycle(
       { totalNAV: refreshed.totalValue, cashBalance: refreshed.cashBalance,
         holdings: refreshed.holdings.length, sectorExposurePct: buySectorPct, proposedPositionPct });
     return { symbol, signal };
-  }));
+  });
 
   for (const { symbol, signal } of candidateSignals) {
     // Phase 16: Cold-start daily trade cap
@@ -1141,8 +1148,16 @@ export async function runMarketCycle(): Promise<void> {
     // instead of one at a time. This was the dominant cause of the market-cycle cron
     // blowing its external timeout budget: N portfolios × per-symbol network/LLM calls,
     // fully serialized, easily exceeded 30s once there was more than a handful of symbols.
-    const cycleResults = await Promise.all(
-      portfolios.map(p => runPortfolioTradingCycle(Number(p.id), p.risk_tolerance as string, geminiSectorFocus)),
+    // P0.6 fix (2026-07-28): the first version of this fix used unbounded Promise.all,
+    // which traded "slow but sequential" for "fast but now hammering Twelve Data/Gemini
+    // with full concurrency across every portfolio x symbol" — confirmed via cron-job.org
+    // history that all runs still timed out afterward (provider rate-limit throttling/
+    // retries can be just as slow as sequential calls). Bounded to PORTFOLIO_CONCURRENCY
+    // concurrent portfolios; each portfolio's own symbol scans are separately bounded by
+    // SYMBOL_CONCURRENCY inside runPortfolioTradingCycle.
+    const PORTFOLIO_CONCURRENCY = 5;
+    const cycleResults = await mapWithConcurrency(portfolios, PORTFOLIO_CONCURRENCY,
+      p => runPortfolioTradingCycle(Number(p.id), p.risk_tolerance as string, geminiSectorFocus),
     );
     for (const { trades, signals } of cycleResults) {
       tradesExecuted += trades;
