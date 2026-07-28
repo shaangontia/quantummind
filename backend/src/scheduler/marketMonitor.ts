@@ -1213,6 +1213,13 @@ export async function runNightlyLearningJob(): Promise<void> {
     await resolveSignalVoteOutcomes().catch(console.error);
     const { trainJointVoteModel } = await import('../services/jointVoteModel.js');
     await trainJointVoteModel().catch(console.error);
+    // Expected-value MAGNITUDE regression (win/loss return size, not
+    // win/loss itself) — trains off signal_patterns' own outcome resolution
+    // (resolvePatternOutcome, called at trade close time), independent of
+    // the vote-log path above. No-ops per class below its own sample
+    // threshold — see evMagnitudeModel.ts.
+    const { trainMagnitudeModels } = await import('../services/evMagnitudeModel.js');
+    await trainMagnitudeModels().catch(console.error);
     await resolveSignalOutcomes().catch(console.error);
     // Update sector-level accuracy weights from resolved trade outcomes
     await computeSectorAccuracy().catch(console.error);

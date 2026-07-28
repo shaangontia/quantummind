@@ -320,10 +320,21 @@ export interface EVResult {
  * Compute expected value for a BUY in a given strategy type.
  * Uses resolved signal_patterns (outcome='WIN'/'LOSS') filtered by strategy.
  * Falls back to 'sufficient=false' when not enough data — caller should proceed without EV gate.
+ *
+ * `magnitudeContext` (optional): when provided AND evMagnitudeModel.ts has
+ * enough cross-symbol training data, avgWinPct/avgLossPct are a REGRESSION
+ * prediction from context (RSI/regime/fundamentals/momentum) instead of this
+ * symbol's own trailing 100-trade average — this generalizes across symbols
+ * with limited individual history instead of requiring 15+ resolved trades
+ * for THIS symbol specifically. pWin still comes from this symbol's own
+ * win/loss frequency either way — this only replaces the magnitude side.
+ * Falls back to the existing per-symbol average whenever the regression
+ * isn't available (untrained, or caller didn't pass context).
  */
 export async function computeExpectedValue(
   symbol: string,
   strategyType: string,
+  magnitudeContext?: { rsiValue: number | null; marketRegime: string | null; fundamentalScore: number | null; momentumTrend: string | null },
 ): Promise<EVResult> {
   const { query } = await import('../db/turso.js');
 
@@ -345,8 +356,17 @@ export async function computeExpectedValue(
   const wins  = rows.filter(r => r.outcome === 'WIN');
   const losses = rows.filter(r => r.outcome === 'LOSS');
   const pWin = wins.length / rows.length;
-  const avgWinPct  = wins.length  > 0 ? wins.reduce((s, r)  => s + Number(r.realized_pnl_pct), 0)  / wins.length  : 0;
-  const avgLossPct = losses.length > 0 ? Math.abs(losses.reduce((s, r) => s + Number(r.realized_pnl_pct), 0) / losses.length) : 0;
+  let avgWinPct  = wins.length  > 0 ? wins.reduce((s, r)  => s + Number(r.realized_pnl_pct), 0)  / wins.length  : 0;
+  let avgLossPct = losses.length > 0 ? Math.abs(losses.reduce((s, r) => s + Number(r.realized_pnl_pct), 0) / losses.length) : 0;
+
+  if (magnitudeContext) {
+    const { getPredictedMagnitudes } = await import('./evMagnitudeModel.js');
+    const predicted = await getPredictedMagnitudes(magnitudeContext).catch(() => null);
+    if (predicted) {
+      avgWinPct = predicted.predictedWinPct;
+      avgLossPct = predicted.predictedLossPct;
+    }
+  }
 
   // Single-source-of-truth cost fix (2026-07-22): avgWinPct/avgLossPct come
   // from realized_pnl_pct, which is already net of the actual itemized

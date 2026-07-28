@@ -582,7 +582,10 @@ export async function generateSignal(
     let kellyFraction: number | null = null;
     if (topAction === 'BUY') {
       const [evResult, winProb, govState] = await Promise.all([
-        computeExpectedValue(symbol, strategyResult.strategyType).catch(() => null),
+        computeExpectedValue(symbol, strategyResult.strategyType, {
+          rsiValue: rsiVal, marketRegime: marketRegime?.label ?? null,
+          fundamentalScore, momentumTrend: momentumForPattern,
+        }).catch(() => null),
         getWinProbability({
           rsiValue: rsiVal,
           volumeRatio: q.volumeRatio,
