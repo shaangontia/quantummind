@@ -1203,10 +1203,17 @@ export async function runMarketCycle(): Promise<void> {
  * before this fix; only market-cycle had one.
  */
 export async function runNightlyLearningJob(): Promise<void> {
-    await resolveSignalOutcomes().catch(console.error);
-    // Resolve per-source vote-log rows — data collection for a future joint
-    // cross-source regression (see adaptiveEngine.ts recordSignalVotes).
+    // Resolve per-source vote-log rows FIRST, then train the joint
+    // cross-source model on them — both must happen before
+    // resolveSignalOutcomes() below, since that function calls
+    // recalibrateWeights() at its end, which prefers the joint model's
+    // output over the univariate estimate whenever it's available. No-ops
+    // (logs "insufficient data") until enough resolved rows exist — see
+    // jointVoteModel.ts.
     await resolveSignalVoteOutcomes().catch(console.error);
+    const { trainJointVoteModel } = await import('../services/jointVoteModel.js');
+    await trainJointVoteModel().catch(console.error);
+    await resolveSignalOutcomes().catch(console.error);
     // Update sector-level accuracy weights from resolved trade outcomes
     await computeSectorAccuracy().catch(console.error);
     // Phase 15: Generate target-before-stop labels for closed candidates

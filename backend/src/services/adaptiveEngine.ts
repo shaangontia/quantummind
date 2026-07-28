@@ -277,7 +277,24 @@ const PRIOR_STRENGTH = 20; // equivalent to 20 pseudo-observations of a 50/50 co
 async function recalibrateWeights(): Promise<void> {
   const rows = await query('SELECT * FROM signal_weights WHERE total_signals >= 5');
 
+  // Prefer the joint cross-source regression when it has enough resolved
+  // signal_vote_log data to be meaningful (see jointVoteModel.ts) — it can
+  // learn that a source matters less when others already agree, which the
+  // univariate estimate below structurally cannot. Returns null (falls back
+  // to univariate) until that table has accumulated enough resolved rows —
+  // expected to be null for a long time after first deployment.
+  const { getJointSourceWeights } = await import('./jointVoteModel.js');
+  const jointWeights = await getJointSourceWeights().catch(() => null);
+
   for (const r of rows) {
+    const source = String(r.source);
+    const jointWeight = jointWeights?.get(source as SignalSource);
+    if (jointWeight !== undefined) {
+      console.log(`[Adaptive] ${source}: joint cross-source model → weight=${jointWeight.toFixed(3)}`);
+      await run('UPDATE signal_weights SET weight = ? WHERE source = ?', [jointWeight, source]);
+      continue;
+    }
+
     const totalSignals = Number(r.total_signals);
     const winningSignals = Number(r.winning_signals);
 
@@ -285,8 +302,8 @@ async function recalibrateWeights(): Promise<void> {
     const posteriorWinRate = (winningSignals + PRIOR_STRENGTH / 2) / (totalSignals + PRIOR_STRENGTH);
     const newWeight = Math.max(0.3, Math.min(2.0, (posteriorWinRate - 0.5) * 4 + 1.0));
 
-    console.log(`[Adaptive] ${r.source}: rawWinRate=${(Number(r.win_rate)*100).toFixed(1)}% n=${totalSignals} posteriorWinRate=${(posteriorWinRate*100).toFixed(1)}% → weight=${newWeight.toFixed(3)}`);
-    await run('UPDATE signal_weights SET weight = ? WHERE source = ?', [newWeight, r.source]);
+    console.log(`[Adaptive] ${source}: rawWinRate=${(Number(r.win_rate)*100).toFixed(1)}% n=${totalSignals} posteriorWinRate=${(posteriorWinRate*100).toFixed(1)}% → weight=${newWeight.toFixed(3)}`);
+    await run('UPDATE signal_weights SET weight = ? WHERE source = ?', [newWeight, source]);
   }
   invalidateSignalWeightsCache();
 }
