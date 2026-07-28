@@ -4,7 +4,7 @@
  * A lightweight logistic regression trained on resolved signal_patterns.
  * Each resolved BUY trade (outcome='WIN' or 'LOSS') provides a training sample.
  *
- * Feature vector (7 features):
+ * Feature vector (13 features — 7 base + 6 interaction terms):
  *   0. rsi_norm        — RSI normalised to [0,1] (rsiValue / 100)
  *   1. volume_ratio    — volume / 20-day avg, capped at 3.0, normalised by /3
  *   2. regime_bull     — 1 if marketRegime='BULL' else 0
@@ -12,6 +12,20 @@
  *   4. strategy_mr     — 1 if MEAN_REVERSION else 0
  *   5. strategy_mo     — 1 if MOMENTUM else 0
  *   6. fundamental_norm — fundamentalScore / 100
+ *   7. rsi_x_bull      — rsi_norm × regime_bull   (RSI reads differently in a bull regime)
+ *   8. rsi_x_bear      — rsi_norm × regime_bear   (RSI reads differently in a bear regime)
+ *   9. volume_x_mo     — volume_ratio_norm × strategy_mo (volume surge matters more for momentum entries)
+ *  10. volume_x_mr     — volume_ratio_norm × strategy_mr (volume surge matters differently for mean-reversion entries)
+ *  11. fund_x_bull     — fundamental_norm × regime_bull (fundamentals weigh differently in a bull regime)
+ *  12. fund_x_bear     — fundamental_norm × regime_bear (fundamentals weigh differently in a bear regime)
+ *
+ * A plain additive logistic regression can't see these interactions on its
+ * own — regime/strategy/RSI/volume behave differently depending on each
+ * other, and without explicit cross terms the model can only learn one
+ * global coefficient per feature regardless of context. These 6 terms are
+ * hand-engineered rather than switching model class (e.g. to a tree
+ * ensemble) so the change stays a same-shape drop-in: same training loop,
+ * same persistence format, same serverless-friendly zero-dependency profile.
  *
  * Training uses mini-batch gradient descent with L2 regularisation.
  * Retrained nightly (called from adaptiveEngine.ts evening batch) when ≥30 new samples.
@@ -21,8 +35,16 @@
 import { query, run } from '../db/turso.js';
 import { logger } from '../lib/logger.js';
 
-const MODEL_NAME = 'buy_win_probability_v1';
-const FEATURE_NAMES = ['rsi_norm', 'volume_ratio_norm', 'regime_bull', 'regime_bear', 'strategy_mr', 'strategy_mo', 'fundamental_norm'];
+// v2: feature vector grew from 7 to 13 (added interaction terms below) — the
+// model name is versioned so a stale 13-vs-7-length mismatch can never be
+// silently dot-producted against the wrong shape; v1 rows stay in the table
+// for history, and predictions safely report `modelAvailable: false` until
+// the nightly job trains and persists the first v2 row.
+const MODEL_NAME = 'buy_win_probability_v2';
+const FEATURE_NAMES = [
+  'rsi_norm', 'volume_ratio_norm', 'regime_bull', 'regime_bear', 'strategy_mr', 'strategy_mo', 'fundamental_norm',
+  'rsi_x_bull', 'rsi_x_bear', 'volume_x_mo', 'volume_x_mr', 'fund_x_bull', 'fund_x_bear',
+];
 const N_FEATURES = FEATURE_NAMES.length;
 const MIN_TRAIN_SAMPLES = 30;
 const MIN_PREDICT_SAMPLES = 50;
@@ -114,7 +136,12 @@ function extractFeatures(row: {
   const strategyMO     = strategy === 'MOMENTUM'       ? 1 : 0;
   const fundNorm       = Math.max(0, Math.min(1, (row.fundamental_score ?? 50) / 100));
 
-  return [rsiNorm, volNorm, regimeBull, regimeBear, strategyMR, strategyMO, fundNorm];
+  return [
+    rsiNorm, volNorm, regimeBull, regimeBear, strategyMR, strategyMO, fundNorm,
+    rsiNorm * regimeBull, rsiNorm * regimeBear,
+    volNorm * strategyMO, volNorm * strategyMR,
+    fundNorm * regimeBull, fundNorm * regimeBear,
+  ];
 }
 
 // ─── Training ─────────────────────────────────────────────────────────────────

@@ -1198,7 +1198,7 @@ export async function runNightlyLearningJob(): Promise<void> {
     for (const p of govPortfolios) {
       await evaluateModelGovernance(Number(p.id)).catch(console.error);
     }
-    await computeCalibration('buy_win_probability_v1').catch(console.error);
+    await computeCalibration('buy_win_probability_v2').catch(console.error);
     // Phase 18: Exit-plan reconciliation — find + restore holdings missing a stop-loss
     const { reconcileAllExitPlans } = await import('../services/exitPlanReconciler.js');
     await reconcileAllExitPlans().catch(console.error);

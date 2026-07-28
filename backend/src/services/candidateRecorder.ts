@@ -92,7 +92,7 @@ export async function recordCandidate(c: CandidateRecord): Promise<number> {
       c.stopPrice ?? null,
       c.targetPrice ?? null,
       c.predictionPwin ?? null,
-      c.modelVersion ?? 'buy_win_probability_v1',
+      c.modelVersion ?? 'buy_win_probability_v2',
       c.strategyConfidence ?? null,
       c.strategyReasonCodes ? JSON.stringify(c.strategyReasonCodes) : null,
       c.strategyClassifierVersion ?? null,

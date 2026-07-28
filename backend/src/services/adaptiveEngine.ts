@@ -169,31 +169,36 @@ export async function resolveSignalOutcomes(): Promise<void> {
   console.log(`[Adaptive] Resolved ${unresolved.length} signal outcomes`);
 }
 
-// Recalibrate signal weights based on win rates with confidence dampening.
-// Formula: effective_weight = base_weight × confidence_factor
-//   base_weight      = max(0.3, min(2.0, (win_rate - 0.5) × 4 + 1.0))
-//   confidence_factor = min(1.0, resolved_count / FULL_CONFIDENCE_THRESHOLD)
+// Recalibrate signal weights from win/loss counts via Beta-Binomial Bayesian
+// shrinkage, replacing the old two-stage heuristic (a hand-picked linear
+// clamp on raw win_rate, then a separate ad hoc "confidence_factor" hack to
+// keep low-sample sources near 1.0 until an arbitrary FULL_CONFIDENCE_THRESHOLD
+// of 50 outcomes). That old formula treated win_rate as certain even at n=5
+// and only used sample size as a bolted-on afterthought.
 //
-// Effect: after only 5 outcomes the model barely moves from 1.0.
-// After 50+ outcomes it adapts at full speed. Prevents overfitting on small samples.
-const FULL_CONFIDENCE_THRESHOLD = 50; // outcomes needed for full weight adjustment
+// A source's true win rate is genuinely uncertain with few observations —
+// the correct way to express that is a posterior distribution, not two
+// independently-tuned magic constants. Beta(PRIOR_STRENGTH/2, PRIOR_STRENGTH/2)
+// centered at 0.5 acts as PRIOR_STRENGTH "pseudo-observations" of a neutral
+// coin flip; the posterior mean below is the standard closed-form Bayesian
+// update (winning_signals + prior_wins) / (total_signals + prior_strength).
+// At n=0 it returns exactly the prior (0.5, neutral). As n grows, the
+// empirical win rate dominates automatically — no separate dampening step
+// needed, and no arbitrary "full confidence at n=50" cliff.
+const PRIOR_STRENGTH = 20; // equivalent to 20 pseudo-observations of a 50/50 coin
 
 async function recalibrateWeights(): Promise<void> {
   const rows = await query('SELECT * FROM signal_weights WHERE total_signals >= 5');
 
   for (const r of rows) {
-    const winRate = Number(r.win_rate);
     const totalSignals = Number(r.total_signals);
+    const winningSignals = Number(r.winning_signals);
 
-    const baseWeight = Math.max(0.3, Math.min(2.0, (winRate - 0.5) * 4 + 1.0));
+    // Beta-Binomial posterior mean win rate (shrinks toward 0.5 when n is small).
+    const posteriorWinRate = (winningSignals + PRIOR_STRENGTH / 2) / (totalSignals + PRIOR_STRENGTH);
+    const newWeight = Math.max(0.3, Math.min(2.0, (posteriorWinRate - 0.5) * 4 + 1.0));
 
-    // Confidence dampening: new sources stay near 1.0 until enough data accumulates
-    const confidenceFactor = Math.min(1.0, totalSignals / FULL_CONFIDENCE_THRESHOLD);
-    // Damped weight = 1.0 (neutral) + confidenceFactor × (baseWeight - 1.0)
-    const dampedWeight = 1.0 + confidenceFactor * (baseWeight - 1.0);
-    const newWeight = Math.max(0.3, Math.min(2.0, dampedWeight));
-
-    console.log(`[Adaptive] ${r.source}: winRate=${(winRate*100).toFixed(1)}% n=${totalSignals} base=${baseWeight.toFixed(2)} confidence=${(confidenceFactor*100).toFixed(0)}% → weight=${newWeight.toFixed(3)}`);
+    console.log(`[Adaptive] ${r.source}: rawWinRate=${(Number(r.win_rate)*100).toFixed(1)}% n=${totalSignals} posteriorWinRate=${(posteriorWinRate*100).toFixed(1)}% → weight=${newWeight.toFixed(3)}`);
     await run('UPDATE signal_weights SET weight = ? WHERE source = ?', [newWeight, r.source]);
   }
   invalidateSignalWeightsCache();

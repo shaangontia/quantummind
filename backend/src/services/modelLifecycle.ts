@@ -196,7 +196,7 @@ export async function evaluateModelGovernance(portfolioId: number): Promise<Mode
   const labelsNeeded = Math.max(0, nextThresh.labels - labelCount);
   const wfWindowsNeeded = Math.max(0, nextThresh.wfWindows - posWFWindows);
 
-  const calibrationSummary = await getCalibrationSummary('buy_win_probability_v1').catch(() => ({
+  const calibrationSummary = await getCalibrationSummary('buy_win_probability_v2').catch(() => ({
     available: false, maxErrorPct: null, activeBuckets: 0,
   }));
 
@@ -276,7 +276,7 @@ export async function getModelGovernanceState(portfolioId: number): Promise<Mode
     : loadedStage === 'SHADOW' ? 'ADVISORY'
     : loadedStage === 'ADVISORY' ? 'PRODUCTION' : 'RETIRED';
   const loadedNextThresh = THRESHOLDS[loadedNextStage as keyof typeof THRESHOLDS] ?? THRESHOLDS.PRODUCTION;
-  const loadedCalib = await getCalibrationSummary('buy_win_probability_v1').catch(() => ({ available: false, maxErrorPct: null, activeBuckets: 0 }));
+  const loadedCalib = await getCalibrationSummary('buy_win_probability_v2').catch(() => ({ available: false, maxErrorPct: null, activeBuckets: 0 }));
 
   const loadedTradeLimit = STAGE_TRADE_LIMITS[loadedStage] ?? null;
 
