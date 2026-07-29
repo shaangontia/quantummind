@@ -112,8 +112,9 @@ interface ModelState {
   holdoutAuc: number | null;
   holdoutBrier: number | null;
   holdoutCount: number;
-  /** Class distribution of the training set. Used to detect imbalance. */
-  classDist: { wins: number; losses: number; total: number };
+  /** Class distribution of the training set. Used to detect imbalance.
+   * wins/losses are null for models loaded from DB before wins_count/losses_count columns existed. */
+  classDist: { wins: number | null; losses: number | null; total: number };
 }
 
 let _model: ModelState | null = null;
@@ -374,8 +375,8 @@ async function loadModelFromDB(): Promise<ModelState | null> {
       holdoutBrier: row.holdout_brier != null ? Number(row.holdout_brier) : null,
       holdoutCount: Number(row.holdout_count ?? 0),
       classDist: {
-        wins:   row.wins_count   != null ? Number(row.wins_count)   : -1,
-        losses: row.losses_count != null ? Number(row.losses_count) : -1,
+        wins:   row.wins_count   != null ? Number(row.wins_count)   : null,
+        losses: row.losses_count != null ? Number(row.losses_count) : null,
         total:  Number(row.sample_count),
       },
     };
