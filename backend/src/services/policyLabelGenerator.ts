@@ -20,7 +20,10 @@ import { loadSymbolHistory, type OHLCVRow } from './backtestData.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const TARGET_R_MULTIPLE = 2.0;  // target = entry + 2 × ATR
+// Reduced from 2.0 → 1.0 to match buildCandidateLabelPlan.ts (Phase 23.2).
+// POLICY_SIMULATION labels are excluded from production ML training but kept
+// consistent so research labels don't mislead manual analysis.
+const TARGET_R_MULTIPLE = 1.0;  // target = entry + 1 × ATR
 const STOP_R_MULTIPLE   = 1.0;  // stop   = entry - 1 × ATR
 
 // Approx brokerage + impact cost (one-way)
