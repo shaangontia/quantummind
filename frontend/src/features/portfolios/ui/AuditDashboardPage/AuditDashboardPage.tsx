@@ -182,8 +182,9 @@ export const AuditDashboardPage = () => {
                 <Button
                   size="small"
                   variant="contained"
-                  disabled={!mlStatus.canTrain || isTraining}
+                  disabled={isTraining}
                   onClick={() => void handleTrainNow()}
+                  title={!mlStatus.canTrain ? `Runs resolve + label pipeline. Training needs ${mlStatus.minTrainSamples - mlStatus.availableSamples} more resolved samples.` : undefined}
                 >
                   {isTraining ? 'Training…' : 'Train now'}
                 </Button>
