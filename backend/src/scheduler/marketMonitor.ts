@@ -1276,7 +1276,13 @@ export async function runNightlyLearningJob(): Promise<void> {
     await generatePolicyOutcomeLabels().catch(console.error);
     // Phase 14: Retrain ML probability model on updated resolved patterns
     const { trainModel } = await import('../services/mlProbabilityModel.js');
-    await trainModel().catch(console.error);
+    const trainResult = await trainModel().catch((err: unknown) => {
+      console.error('[ml-model] trainModel threw unexpectedly:', err);
+      return null;
+    });
+    if (trainResult && !trainResult.ok) {
+      console.warn(`[ml-model] Training skipped — reason: ${trainResult.reason}`);
+    }
     // Phase 14: Run walk-forward validation for each active portfolio
     const { runWalkForward } = await import('../services/walkForwardEngine.js');
     const { runStrategyWalkForward } = await import('../services/strategyWalkForward.js');

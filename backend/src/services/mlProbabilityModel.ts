@@ -149,11 +149,18 @@ function extractFeatures(row: {
 
 // ─── Training ─────────────────────────────────────────────────────────────────
 
+export type TrainResult =
+  | { ok: true;  state: ModelState }
+  | { ok: false; reason: 'INSUFFICIENT_DATA'; availableSamples: number; minTrainSamples: number }
+  | { ok: false; reason: 'SINGLE_CLASS'; classDist: { wins: number; losses: number; total: number } };
+
 /**
- * Train logistic regression on resolved signal_patterns.
- * Returns trained weights + bias, or null when insufficient data.
+
+/**
+ * Train logistic regression on resolved candidates.
+ * Returns a discriminated TrainResult — never throws, never returns null.
  */
-export async function trainModel(): Promise<ModelState | null> {
+export async function trainModel(): Promise<TrainResult> {
   // Phase 23: Train on EXECUTED + SHADOW candidates (LIVE_PAPER_EXECUTED + LIVE_PAPER_SHADOW).
   // Excludes POLICY_SIMULATION rows. Applies per-row learning_weight in gradient updates.
   // Validation/promotion gates still require executed-only counts (enforced in modelLifecycle).
@@ -189,7 +196,7 @@ export async function trainModel(): Promise<ModelState | null> {
 
   if (rows.length < MIN_TRAIN_SAMPLES) {
     logger.info({ job: 'ml-model', reason: `Insufficient training data: ${rows.length} samples (need ${MIN_TRAIN_SAMPLES})` });
-    return null;
+    return { ok: false, reason: 'INSUFFICIENT_DATA', availableSamples: rows.length, minTrainSamples: MIN_TRAIN_SAMPLES };
   }
 
   // P1.7 fix (2026-07-22): chronological train/holdout split — train only on
@@ -220,13 +227,13 @@ export async function trainModel(): Promise<ModelState | null> {
 
   if (isSingleClass) {
     // Logistic regression on a single-class dataset produces degenerate weights.
-    // AUC is undefined, accuracy is vacuous. Skip training — return null so the
-    // caller surfaces an honest INSUFFICIENT_DATA result rather than a useless model.
+    // AUC is undefined, accuracy is vacuous. Skip — return typed SINGLE_CLASS result
+    // so callers surface an honest message rather than a useless model.
     logger.warn({
       job: 'ml-model', reason: 'single-class training set — training skipped',
       classDist, samples: rows.length,
     });
-    return null;
+    return { ok: false, reason: 'SINGLE_CLASS', classDist };
   }
 
   // Balanced class weights: upweight minority class inversely proportional to frequency.
@@ -345,7 +352,7 @@ export async function trainModel(): Promise<ModelState | null> {
     holdoutBrier: holdoutBrier !== null ? holdoutBrier.toFixed(3) : 'n/a',
     reason: 'Model trained and persisted',
   });
-  return state;
+  return { ok: true, state };
 }
 
 /**

@@ -995,47 +995,35 @@ router.post('/admin/ml-training/run', verifyAuth, requireUserAdminAuth, async (_
 
     // Step 3: train the win-probability model
     const { trainModel } = await import('../../services/mlProbabilityModel.js');
-    const modelState = await trainModel();
-
+    // trainModel() returns a discriminated TrainResult — never null.
+    const trainResult = await trainModel();
     const durationMs = Date.now() - startedAt.getTime();
 
-    if (!modelState) {
-      // trainModel returned null → not enough data yet. Return the same
-      // status payload the /status endpoint would produce so the UI can
-      // render a coherent "still need N more samples" message.
-      const MIN_TRAIN_SAMPLES = 30;
-      const candidatesReadyRow = await queryOne(
-        `SELECT COUNT(*) as cnt FROM trade_candidates
-         WHERE learning_eligible = 1
-           AND label_type IN ('TARGET_BEFORE_STOP', 'SELL_PRICE_PROXY')
-           AND label_status = 'FINAL'
-           AND target_hit_before_stop IS NOT NULL
-           AND (data_source IS NULL OR data_source != 'POLICY_SIMULATION')`,
-      ).catch(() => ({ cnt: 0 }));
-      const signalPatternsResolvedRow = await queryOne(
-        `SELECT COUNT(*) as cnt FROM signal_patterns WHERE action='BUY' AND outcome IN ('WIN','LOSS')`,
-      ).catch(() => ({ cnt: 0 }));
-      const candidatesReady = Number(candidatesReadyRow?.cnt ?? 0);
-      const signalPatternsResolved = Number(signalPatternsResolvedRow?.cnt ?? 0);
-      const availableSamples = Math.max(candidatesReady, signalPatternsResolved);
-      // Always return success:true so zodBaseQuery unwraps correctly.
-      // trained:false signals insufficient data to the UI.
+    if (!trainResult.ok) {
+      let message: string;
+      let extraFields: Record<string, unknown> = {};
+      if (trainResult.reason === 'SINGLE_CLASS') {
+        const { wins, losses, total } = trainResult.classDist;
+        const missingClass = wins === 0 ? 'WIN' : 'LOSS';
+        const presentClass = wins === 0 ? 'LOSS' : 'WIN';
+        message = `Training skipped — all ${total} resolved samples are ${presentClass}s (0 ${missingClass}s). ` +
+          (missingClass === 'WIN'
+            ? 'Need at least one BUY that reaches its target before stop-loss for a WIN label.'
+            : 'Need at least one BUY that exits via stop-loss for a LOSS label.');
+        extraFields = { classDist: trainResult.classDist };
+      } else {
+        message = `Training skipped — only ${trainResult.availableSamples} resolved sample${trainResult.availableSamples === 1 ? '' : 's'} available (need ${trainResult.minTrainSamples}).`;
+        extraFields = { availableSamples: trainResult.availableSamples, minTrainSamples: trainResult.minTrainSamples };
+      }
+      // Always success:true so zodBaseQuery unwraps correctly. trained:false + reason tells UI what happened.
       return res.status(200).json({
         success: true,
-        data: {
-          trained: false,
-          durationMs,
-          reason: 'INSUFFICIENT_DATA',
-          message: `Training skipped — only ${availableSamples} resolved sample${availableSamples === 1 ? '' : 's'} available (need ${MIN_TRAIN_SAMPLES}).`,
-          availableSamples,
-          minTrainSamples: MIN_TRAIN_SAMPLES,
-          candidatesReady,
-          signalPatternsResolved,
-        },
+        data: { trained: false, durationMs, reason: trainResult.reason, message, ...extraFields },
       });
     }
 
-    // Model trained. Return the metrics + confirm a row was persisted.
+    // Model trained successfully.
+    const modelState = trainResult.state;
     return res.json({
       success: true,
       data: {
@@ -1050,7 +1038,7 @@ router.post('/admin/ml-training/run', verifyAuth, requireUserAdminAuth, async (_
         holdoutCount:     modelState.holdoutCount,
         classDist:        modelState.classDist,
         holdoutAucWarning: modelState.holdoutAuc === null
-          ? 'Holdout set has only one class — AUC undefined. Class weights applied during training. Accumulate more diverse samples for a meaningful AUC.'
+          ? 'Holdout set has only one class — AUC undefined. Class weights applied during training. Accumulate more samples for a reliable AUC.'
           : undefined,
       },
     });
