@@ -10,10 +10,22 @@
  *   6. Portfolio-regime exit — NIFTY regime turned BEARISH since entry
  */
 
-import { query, run } from '../db/turso.js';
+import { query, queryOne, run } from '../db/turso.js';
 import { logger } from '../lib/logger.js';
 
 const TRADING_DAYS_TIME_STOP = 10;
+
+// ── Trailing stop configuration ────────────────────────────────────────────
+// Previously trailing used the same 1.5×ATR distance as the initial hard stop
+// (~2.25% below current price with atrPct=0.015), which meant every routine
+// intraday pullback triggered an exit at 0.3–3% "locked profit". Indian mid-
+// caps routinely swing 2–4% on normal days, so the trailing fired on noise.
+// Widened to 3.5×ATR (~5.25% breathing room) and gated so trailing only
+// engages after the position is comfortably in profit — small pullbacks in
+// the first cycles after entry no longer flip us out for pennies.
+const TRAILING_STOP_ATR_MULT = 3.5;
+const HARD_STOP_ATR_MULT     = 1.5;
+const TRAILING_ACTIVATION_PROFIT_PCT = 5.0;
 
 export interface HoldingExitContext {
   portfolioId: number;
@@ -44,15 +56,21 @@ export interface ExitDecision {
 }
 
 /**
- * Compute ATR using simple True Range approximation over recent price history.
- * Falls back to 1.5% of price when history unavailable.
+ * Compute the initial ATR-based hard stop and trailing stop for a new position.
+ *
+ * Hard stop uses the tighter HARD_STOP_ATR_MULT — protecting against a bad
+ * entry.  Trailing stop uses the wider TRAILING_STOP_ATR_MULT so that once
+ * the position is in profit, routine pullbacks don't flip us out prematurely.
+ * The trailing stop is inert at the very start (below entry) — evaluateExits
+ * additionally gates its firing on TRAILING_ACTIVATION_PROFIT_PCT, so exits
+ * on tiny profits are impossible.
  */
 export function computeATRStop(entryPrice: number, atrPct: number = 0.015): { atrStop: number; trailingStop: number } {
   const atr = entryPrice * atrPct;
   const r2 = (v: number) => Math.round(v * 100) / 100;
   return {
-    atrStop: r2(entryPrice - 1.5 * atr),
-    trailingStop: r2(entryPrice - 1.5 * atr),
+    atrStop:      r2(entryPrice - HARD_STOP_ATR_MULT     * atr),
+    trailingStop: r2(entryPrice - TRAILING_STOP_ATR_MULT * atr),
   };
 }
 
@@ -84,6 +102,12 @@ export async function registerExitPlan(
 
 /**
  * Update trailing stop upward as price rises (never lower it).
+ *
+ * Only widens once the position has cleared TRAILING_ACTIVATION_PROFIT_PCT
+ * above the entry price — before that, the initial (wider) trailing stop
+ * from computeATRStop stays in place, and evaluateExits refuses to fire
+ * the trailing exit anyway.  Uses TRAILING_STOP_ATR_MULT (wide) so mature
+ * winners keep room to breathe through normal daily swings.
  */
 export async function updateTrailingStop(
   portfolioId: number,
@@ -91,14 +115,18 @@ export async function updateTrailingStop(
   currentPrice: number,
   atrPct: number = 0.015,
 ): Promise<void> {
-  const rows = await query(
-    'SELECT trailing_stop_price FROM holdings WHERE portfolio_id=? AND symbol=?',
+  const row = await queryOne(
+    'SELECT trailing_stop_price, avg_buy_price FROM holdings WHERE portfolio_id=? AND symbol=?',
     [portfolioId, symbol],
   );
-  if (!rows.length) return;
-  const existing = Number(rows[0].trailing_stop_price ?? 0);
+  if (!row) return;
+  const avgBuyPrice = Number(row.avg_buy_price ?? 0);
+  if (avgBuyPrice <= 0) return;
+  const pnlPct = ((currentPrice - avgBuyPrice) / avgBuyPrice) * 100;
+  if (pnlPct < TRAILING_ACTIVATION_PROFIT_PCT) return;
+  const existing = Number(row.trailing_stop_price ?? 0);
   const atr = currentPrice * atrPct;
-  const newTrailing = currentPrice - 1.5 * atr;
+  const newTrailing = currentPrice - TRAILING_STOP_ATR_MULT * atr;
   if (newTrailing > existing) {
     await run(
       'UPDATE holdings SET trailing_stop_price=? WHERE portfolio_id=? AND symbol=?',
@@ -125,7 +153,17 @@ export function evaluateExits(h: HoldingExitContext, marketRegimeLabel: 'BULLISH
   }
 
   // 2. Trailing stop
-  if (h.trailingStopPrice !== null && h.currentPrice <= h.trailingStopPrice && pnlPct > 0) {
+  // Activation guard: refuse to fire the trailing exit until the position is
+  // comfortably in profit (>= TRAILING_ACTIVATION_PROFIT_PCT above entry).
+  // The previous `pnlPct > 0` check let a routine 2–3% pullback right after
+  // entry exit us at 0.3–1% "locked profit" — the "meager sell" pattern that
+  // dominates the sell log. Below the activation threshold the position is
+  // protected only by the hard ATR stop (case 1 above), which is what we want.
+  if (
+    h.trailingStopPrice !== null &&
+    h.currentPrice <= h.trailingStopPrice &&
+    pnlPct >= TRAILING_ACTIVATION_PROFIT_PCT
+  ) {
     return {
       shouldExit: true, isHardStop: true,
       exitType: 'TRAILING_STOP',

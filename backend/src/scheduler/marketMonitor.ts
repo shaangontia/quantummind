@@ -936,7 +936,14 @@ async function runPortfolioTradingCycle(
       await run('UPDATE market_signals SET acted_upon=1, trade_id=? WHERE id=?', [tradeId, sigRes.lastInsertRowid]);
       tradeCount++;
       // Phase 13: Register exit plan immediately after BUY (ATR stop, trailing stop, time stop)
-      const riskAmountInr = refreshed.cashBalance * maxPosPct * 0.005; // 0.5% of NAV
+      // riskAmountInr must reflect the ACTUAL risk on this position:
+      //   qty × (entry - hard_stop) = qty × entry × 0.0225
+      // The previous formula (cashBalance × maxPosPct × 0.005) collapsed to
+      // ~0.025% of cash — a couple hundred rupees on a ₹10L portfolio — so
+      // the "2R profit target" in exitEngine.ts fired at trivial ₹250 gains
+      // instead of at genuine 4.5% returns.
+      const stopDistancePerShare = signal.price * 0.015 * 1.5; // matches computeATRStop hard-stop math
+      const riskAmountInr = qty * stopDistancePerShare;
       await registerExitPlan(portfolioId, symbol, signal.price, riskAmountInr).catch(() => null);
       // Phase 15/19: Update candidate with actual entry/stop/target prices
       const stopPrice  = signal.price * (1 - 0.015 * 1.5);
