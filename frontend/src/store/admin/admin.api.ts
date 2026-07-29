@@ -359,26 +359,36 @@ export interface MlTrainingStatus {
   classDistribution: { wins: number; losses: number } | null;
 }
 
-/** Unwrapped data from POST /admin/ml-training/run (success case). */
-export interface MlTrainingRunResult {
-  trained: boolean;
-  durationMs: number;
-  reason?: 'INSUFFICIENT_DATA';
-  message?: string;
-  // populated when trained = true
-  sampleCount?:      number;
-  trainedAt?:        string;
-  inSampleAccuracy?: number;
-  holdoutAccuracy?:  number | null;
-  holdoutAuc?:       number | null;
-  holdoutBrier?:     number | null;
-  holdoutCount?:     number;
-  // populated when trained = false (insufficient data)
-  availableSamples?: number;
-  minTrainSamples?:  number;
-  candidatesReady?:  number;
-  signalPatternsResolved?: number;
-}
+/** Unwrapped discriminated result from POST /admin/ml-training/run */
+export type MlTrainingRunResult =
+  | {
+      trained: true;
+      durationMs: number;
+      sampleCount: number;
+      trainedAt: string;
+      inSampleAccuracy?: number;
+      holdoutAccuracy: number | null;
+      holdoutAuc: number | null;
+      holdoutBrier: number | null;
+      holdoutCount: number;
+      classDist: { wins: number; losses: number; total: number };
+      holdoutAucWarning?: string;
+    }
+  | {
+      trained: false;
+      durationMs: number;
+      reason: 'SINGLE_CLASS';
+      message: string;
+      classDist: { wins: number; losses: number; total: number };
+    }
+  | {
+      trained: false;
+      durationMs: number;
+      reason: 'INSUFFICIENT_DATA';
+      message: string;
+      availableSamples: number;
+      minTrainSamples: number;
+    };
 
 // ─── RTK Query Endpoints ──────────────────────────────────────────────────────
 

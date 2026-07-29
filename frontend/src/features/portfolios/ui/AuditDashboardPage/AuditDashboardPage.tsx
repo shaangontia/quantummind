@@ -79,7 +79,10 @@ export const AuditDashboardPage = () => {
       setLastTrainResult({
         trained: false,
         durationMs: 0,
+        reason: 'INSUFFICIENT_DATA',
         message: `Request failed: ${String(err)}`,
+        availableSamples: 0,
+        minTrainSamples: 30,
       });
     }
   };
@@ -193,13 +196,19 @@ export const AuditDashboardPage = () => {
 
             {lastTrainResult && (
               <Alert
-                severity={lastTrainResult.trained ? 'success' : (lastTrainResult.reason === 'INSUFFICIENT_DATA' ? 'info' : 'error')}
+                severity={
+                  lastTrainResult.trained ? 'success'
+                  : lastTrainResult.reason === 'SINGLE_CLASS' ? 'warning'
+                  : 'info'
+                }
                 sx={{ mb: 2 }}
                 onClose={() => setLastTrainResult(null)}
               >
                 {lastTrainResult.trained
-                  ? `Model trained on ${lastTrainResult.sampleCount} samples in ${((lastTrainResult.durationMs ?? 0) / 1000).toFixed(1)}s — holdout AUC ${lastTrainResult.holdoutAuc?.toFixed(3) ?? '—'}, Brier ${lastTrainResult.holdoutBrier?.toFixed(3) ?? '—'}.`
-                  : (lastTrainResult.message ?? 'Training failed')}
+                  ? `Model trained on ${lastTrainResult.sampleCount} samples in ${(lastTrainResult.durationMs / 1000).toFixed(1)}s — holdout AUC ${
+                      lastTrainResult.holdoutAuc != null ? lastTrainResult.holdoutAuc.toFixed(3) : (lastTrainResult.holdoutAucWarning ?? '—')
+                    }, Brier ${lastTrainResult.holdoutBrier != null ? lastTrainResult.holdoutBrier.toFixed(3) : '—'}.`
+                  : lastTrainResult.message}
               </Alert>
             )}
 
