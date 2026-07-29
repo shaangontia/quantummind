@@ -34,7 +34,12 @@ const LABEL_HORIZON_DAYS = 15;
 const CALENDAR_BUFFER    = 21; // calendar days used for label_ready_at date
 const ATR_PCT            = 0.015;
 const ATR_MULTIPLIER     = 1.5;
-const TARGET_R_MULTIPLE  = 2.0;
+// Target R-multiple reduced from 2.0→1.0 so WIN aligns with what the trading engine
+// actually captures via trailing stop (typically +1.5–2.5% exit). At 2.0R (+4.5%),
+// almost no trade reaches target before the 10-day time stop fires → all labels are
+// LOSS even on profitable trades. At 1.0R (+2.25%), a trade that exits via trailing
+// stop at +2%+ registers as WIN, matching real portfolio profitability.
+const TARGET_R_MULTIPLE  = 1.0;
 const STOP_R_MULTIPLE    = 1.5;
 
 export interface CandidateLabelPlan {

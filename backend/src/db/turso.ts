@@ -728,6 +728,24 @@ export async function runMigrations(): Promise<void> {
          AND target_hit_before_stop IS NOT NULL`,
     );
   } catch (_) { /* ignore */ }
+  // Phase 23.2: TARGET_R_MULTIPLE reduced from 2.0 → 1.0 (target = 1×ATR above entry,
+  // ~2.25% vs 4.5%). Old labels used 2.0R target prices — re-set them to PENDING so
+  // labelGenerator reprocesses with the correct 1.0R target. Resets only rows where
+  // target_r_multiple=2.0 (old value) so previously-correct rows are not touched.
+  try {
+    await db.execute(
+      `UPDATE trade_candidates
+       SET label_status = NULL,
+           target_hit_before_stop = NULL,
+           label_type = NULL,
+           label_generated_at = NULL,
+           target_price = ROUND(entry_price * 1.0225, 2),
+           target_r_multiple = 1.0
+       WHERE target_r_multiple = 2.0
+         AND entry_price IS NOT NULL
+         AND (data_source IS NULL OR data_source != 'POLICY_SIMULATION')`,
+    );
+  } catch (_) { /* ignore */ }
   console.log('[DB] Migration: Phase 23 shadow label learning schema done');
 }
 
