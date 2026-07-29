@@ -714,6 +714,17 @@ export async function runMigrations(): Promise<void> {
   } catch (_) { /* ignore */ }
   // Add index for learning_eligible + label_ready_at (used by labelGenerator shadow query)
   try { await db.execute('CREATE INDEX IF NOT EXISTS idx_tc_learning ON trade_candidates(learning_eligible, label_ready_at, action_taken)'); } catch (_) { /* exists */ }
+  // Backfill: rows labeled before Phase 16 got label_type='UNKNOWN' (migration default).
+  // These are valid TARGET_BEFORE_STOP labels — correct them so trainModel() can use them.
+  try {
+    await db.execute(
+      `UPDATE trade_candidates
+       SET label_type = 'TARGET_BEFORE_STOP'
+       WHERE label_type = 'UNKNOWN'
+         AND label_status = 'FINAL'
+         AND target_hit_before_stop IS NOT NULL`,
+    );
+  } catch (_) { /* ignore */ }
   console.log('[DB] Migration: Phase 23 shadow label learning schema done');
 }
 

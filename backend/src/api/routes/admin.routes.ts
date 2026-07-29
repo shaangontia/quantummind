@@ -982,7 +982,11 @@ router.post('/admin/ml-training/run', verifyAuth, requireUserAdminAuth, async (_
       const MIN_TRAIN_SAMPLES = 30;
       const candidatesReadyRow = await queryOne(
         `SELECT COUNT(*) as cnt FROM trade_candidates
-         WHERE learning_eligible = 1 AND label_status = 'FINAL' AND target_hit_before_stop IS NOT NULL`,
+         WHERE learning_eligible = 1
+           AND label_type IN ('TARGET_BEFORE_STOP', 'SELL_PRICE_PROXY')
+           AND label_status = 'FINAL'
+           AND target_hit_before_stop IS NOT NULL
+           AND (data_source IS NULL OR data_source != 'POLICY_SIMULATION')`,
       ).catch(() => ({ cnt: 0 }));
       const signalPatternsResolvedRow = await queryOne(
         `SELECT COUNT(*) as cnt FROM signal_patterns WHERE action='BUY' AND outcome IN ('WIN','LOSS')`,
