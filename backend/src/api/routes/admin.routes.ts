@@ -902,6 +902,23 @@ router.get('/admin/ml-training/status', verifyAuth, requireUserAdminAuth, async 
     const candidatesPending      = Number(candidatesPendingRow?.cnt ?? 0);
     const signalPatternsResolved = Number(signalPatternsResolvedRow?.cnt ?? 0);
     const signalPatternsPending  = Number(signalPatternsPendingRow?.cnt ?? 0);
+
+    // Class distribution of resolved training samples (WIN vs LOSS split).
+    // Single-class datasets produce degenerate models — surfaced here so the
+    // UI can warn users before they train.
+    const classDistRows = await query(
+      `SELECT target_hit_before_stop, COUNT(*) as cnt FROM trade_candidates
+       WHERE learning_eligible = 1
+         AND label_type IN ('TARGET_BEFORE_STOP', 'SELL_PRICE_PROXY')
+         AND label_status = 'FINAL'
+         AND target_hit_before_stop IS NOT NULL
+         AND (data_source IS NULL OR data_source != 'POLICY_SIMULATION')
+       GROUP BY target_hit_before_stop`,
+    ).catch(() => []);
+    const winsInDb   = Number(classDistRows.find((r: any) => Number(r.target_hit_before_stop) === 1)?.cnt ?? 0);
+    const lossesInDb = Number(classDistRows.find((r: any) => Number(r.target_hit_before_stop) === 0)?.cnt ?? 0);
+    const classDistDb = { wins: winsInDb, losses: lossesInDb };
+
     // trainModel() prefers trade_candidates, falls back to signal_patterns
     const availableSamples = candidatesReady >= MIN_TRAIN_SAMPLES
       ? candidatesReady
@@ -935,6 +952,7 @@ router.get('/admin/ml-training/status', verifyAuth, requireUserAdminAuth, async 
         sourceIfTrained,
         canTrain,
         blockingReason,
+        classDistribution: classDistDb,
         totalTrainingRuns: Number(totalTrainingRunsRow?.cnt ?? 0),
         latestRun: latestRun ? {
           trainedAt:       latestRun.trained_at,
@@ -1025,6 +1043,10 @@ router.post('/admin/ml-training/run', verifyAuth, requireUserAdminAuth, async (_
         holdoutAuc:       modelState.holdoutAuc,
         holdoutBrier:     modelState.holdoutBrier,
         holdoutCount:     modelState.holdoutCount,
+        classDist:        modelState.classDist,
+        holdoutAucWarning: modelState.holdoutAuc === null
+          ? 'Holdout set has only one class — AUC undefined. Class weights applied during training. Accumulate more diverse samples for a meaningful AUC.'
+          : undefined,
       },
     });
   } catch (err) {

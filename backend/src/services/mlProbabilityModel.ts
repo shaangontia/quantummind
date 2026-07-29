@@ -112,6 +112,8 @@ interface ModelState {
   holdoutAuc: number | null;
   holdoutBrier: number | null;
   holdoutCount: number;
+  /** Class distribution of the training set. Used to detect imbalance. */
+  classDist: { wins: number; losses: number; total: number };
 }
 
 let _model: ModelState | null = null;
@@ -166,7 +168,10 @@ export async function trainModel(): Promise<ModelState | null> {
        AND target_hit_before_stop IS NOT NULL
        AND (data_source IS NULL OR data_source != 'POLICY_SIMULATION')
      ORDER BY evaluated_at DESC LIMIT 2000`,
-  ).then(r => r.map(x => ({ ...x, outcome: x.outcome_int === 1 ? 'WIN' : 'LOSS' }))).catch(() => []);
+  ).then(r => r.map(x => ({ ...x, outcome: x.outcome_int === 1 ? 'WIN' : 'LOSS' }))).catch((err: unknown) => {
+    logger.warn({ job: 'ml-model', phase: 'data-fetch', source: 'trade_candidates', err: String(err) });
+    return [] as { rsi_value: unknown; volume_ratio: unknown; market_regime: unknown; strategy_type: unknown; fundamental_score: unknown; outcome: string; sample_weight: unknown; data_source: unknown }[];
+  });
 
   // Fallback to signal_patterns when fewer than MIN_TRAIN_SAMPLES true labels available
   if (rows.length < MIN_TRAIN_SAMPLES) {
@@ -175,7 +180,10 @@ export async function trainModel(): Promise<ModelState | null> {
        FROM signal_patterns
        WHERE action='BUY' AND outcome IN ('WIN','LOSS')
        ORDER BY created_at DESC LIMIT 2000`,
-    ).catch(() => []);
+    ).catch((err: unknown) => {
+      logger.warn({ job: 'ml-model', phase: 'data-fetch', source: 'signal_patterns', err: String(err) });
+      return [] as typeof rows;
+    });
   }
 
   if (rows.length < MIN_TRAIN_SAMPLES) {
@@ -203,6 +211,32 @@ export async function trainModel(): Promise<ModelState | null> {
   // Phase 23: per-sample weights (1.0 executed, 0.7 skipped, 0.5 weak, 0.3 vetoed)
   const sampleWeights: number[] = trainRows.map(r => Number(r.sample_weight ?? 1.0));
 
+  // Class distribution — needed for imbalance detection and class weighting.
+  const nPos = y.filter(v => v === 1).length;
+  const nNeg = y.length - nPos;
+  const classDist = { wins: nPos, losses: nNeg, total: y.length };
+  const isSingleClass = nPos === 0 || nNeg === 0;
+
+  if (isSingleClass) {
+    // Logistic regression on a single-class dataset produces degenerate weights.
+    // AUC is undefined, accuracy is vacuous. Skip training — return null so the
+    // caller surfaces an honest INSUFFICIENT_DATA result rather than a useless model.
+    logger.warn({
+      job: 'ml-model', reason: 'single-class training set — training skipped',
+      classDist, samples: rows.length,
+    });
+    return null;
+  }
+
+  // Balanced class weights: upweight minority class inversely proportional to frequency.
+  // Combined with per-sample learning_weight (Phase 23) as: effectiveW = sampleW * classW.
+  // Formula: class_weight = n_samples / (2 * n_class_samples)
+  const classWeightPos = y.length / (2 * nPos);
+  const classWeightNeg = y.length / (2 * nNeg);
+  const effectiveWeights: number[] = trainRows.map((r, i) =>
+    Number(r.sample_weight ?? 1.0) * (y[i] === 1 ? classWeightPos : classWeightNeg),
+  );
+
   // Initialise weights to zero
   let weights = Array(N_FEATURES).fill(0) as number[];
   let bias = 0;
@@ -220,8 +254,9 @@ export async function trainModel(): Promise<ModelState | null> {
       for (const i of batch) {
         const z    = dotProduct(weights, X[i]) + bias;
         const pred = sigmoid(z);
-        const w    = sampleWeights[i];
-        const err  = (pred - y[i]) * w;  // Phase 23: scale error by sample weight
+        // Effective weight = Phase 23 sample weight × balanced class weight
+        const w    = effectiveWeights[i];
+        const err  = (pred - y[i]) * w;
         for (let j = 0; j < N_FEATURES; j++) gradW[j] += err * X[i][j];
         gradB   += err;
         weightSum += w;
@@ -271,7 +306,20 @@ export async function trainModel(): Promise<ModelState | null> {
     holdoutAuc,
     holdoutBrier,
     holdoutCount: holdoutRows.length,
+    classDist,
   };
+
+  // Warn when holdout AUC is null (single-class holdout due to imbalance in the
+  // chronological tail — the training set is balanced but the most recent 20%
+  // may still skew to one outcome). Class weights handle training imbalance;
+  // single-class holdout means the AUC metric is unavailable for this run.
+  if (holdoutAuc === null && hasHoldout) {
+    logger.warn({
+      job: 'ml-model', reason: 'holdout AUC undefined — holdout set has only one class',
+      holdoutCount: holdoutRows.length, classDist,
+      note: 'class weights applied to training; accumulate more samples for reliable AUC',
+    });
+  }
 
   // Persist to DB
   await run(
@@ -286,9 +334,11 @@ export async function trainModel(): Promise<ModelState | null> {
   _model = state;
   logger.info({
     job: 'ml-model', samples: rows.length, trainRows: trainRows.length,
+    classDist,
+    classWeights: { pos: classWeightPos.toFixed(3), neg: classWeightNeg.toFixed(3) },
     inSampleAccuracy: (accuracy * 100).toFixed(1) + '%',
-    holdoutAccuracy: holdoutAccuracy !== null ? (holdoutAccuracy * 100).toFixed(1) + '%' : 'n/a (insufficient data for holdout)',
-    holdoutAuc: holdoutAuc !== null ? holdoutAuc.toFixed(3) : 'n/a',
+    holdoutAccuracy: holdoutAccuracy !== null ? (holdoutAccuracy * 100).toFixed(1) + '%' : 'n/a',
+    holdoutAuc: holdoutAuc !== null ? holdoutAuc.toFixed(3) : 'n/a (single-class holdout)',
     holdoutBrier: holdoutBrier !== null ? holdoutBrier.toFixed(3) : 'n/a',
     reason: 'Model trained and persisted',
   });
@@ -320,6 +370,8 @@ async function loadModelFromDB(): Promise<ModelState | null> {
       holdoutAuc: row.holdout_auc != null ? Number(row.holdout_auc) : null,
       holdoutBrier: row.holdout_brier != null ? Number(row.holdout_brier) : null,
       holdoutCount: Number(row.holdout_count ?? 0),
+      // classDist not persisted in DB — unknown for models loaded from DB.
+      classDist: { wins: -1, losses: -1, total: Number(row.sample_count) },
     };
   } catch {
     return null;
