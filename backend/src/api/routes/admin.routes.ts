@@ -990,12 +990,15 @@ router.post('/admin/ml-training/run', verifyAuth, requireUserAdminAuth, async (_
       const candidatesReady = Number(candidatesReadyRow?.cnt ?? 0);
       const signalPatternsResolved = Number(signalPatternsResolvedRow?.cnt ?? 0);
       const availableSamples = Math.max(candidatesReady, signalPatternsResolved);
+      // Always return success:true so zodBaseQuery unwraps correctly.
+      // trained:false signals insufficient data to the UI.
       return res.status(200).json({
-        success: false,
-        durationMs,
-        reason: 'INSUFFICIENT_DATA',
-        message: `Training skipped — only ${availableSamples} resolved sample${availableSamples === 1 ? '' : 's'} available (need ${MIN_TRAIN_SAMPLES}).`,
+        success: true,
         data: {
+          trained: false,
+          durationMs,
+          reason: 'INSUFFICIENT_DATA',
+          message: `Training skipped — only ${availableSamples} resolved sample${availableSamples === 1 ? '' : 's'} available (need ${MIN_TRAIN_SAMPLES}).`,
           availableSamples,
           minTrainSamples: MIN_TRAIN_SAMPLES,
           candidatesReady,
@@ -1007,15 +1010,16 @@ router.post('/admin/ml-training/run', verifyAuth, requireUserAdminAuth, async (_
     // Model trained. Return the metrics + confirm a row was persisted.
     return res.json({
       success: true,
-      durationMs,
       data: {
-        sampleCount:     modelState.sampleCount,
-        trainedAt:       new Date(modelState.trainedAt).toISOString(),
+        trained: true,
+        durationMs,
+        sampleCount:      modelState.sampleCount,
+        trainedAt:        new Date(modelState.trainedAt).toISOString(),
         inSampleAccuracy: modelState.accuracy,
-        holdoutAccuracy: modelState.holdoutAccuracy,
-        holdoutAuc:      modelState.holdoutAuc,
-        holdoutBrier:    modelState.holdoutBrier,
-        holdoutCount:    modelState.holdoutCount,
+        holdoutAccuracy:  modelState.holdoutAccuracy,
+        holdoutAuc:       modelState.holdoutAuc,
+        holdoutBrier:     modelState.holdoutBrier,
+        holdoutCount:     modelState.holdoutCount,
       },
     });
   } catch (err) {

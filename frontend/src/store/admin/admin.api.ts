@@ -329,53 +329,53 @@ export interface AuditDashboardData {
   decisionSummary: DecisionTypeCount[];
 }
 
+/**
+ * zodBaseQuery unwraps { success, data } — RTK stores only the inner data.
+ * These types reflect the unwrapped shape, NOT the full HTTP envelope.
+ */
 export interface MlTrainingStatus {
-  success: boolean;
-  data: {
-    modelName: string;
-    minTrainSamples: number;
-    sources: {
-      candidatesReady:        number;
-      candidatesPending:      number;
-      signalPatternsResolved: number;
-      signalPatternsPending:  number;
-    };
-    availableSamples: number;
-    sourceIfTrained: string;
-    canTrain: boolean;
-    blockingReason: string | null;
-    totalTrainingRuns: number;
-    latestRun: {
-      trainedAt:       string;
-      sampleCount:     number;
-      holdoutAccuracy: number | null;
-      holdoutAuc:      number | null;
-      holdoutBrier:    number | null;
-      holdoutCount:    number;
-    } | null;
+  modelName: string;
+  minTrainSamples: number;
+  sources: {
+    candidatesReady:        number;
+    candidatesPending:      number;
+    signalPatternsResolved: number;
+    signalPatternsPending:  number;
   };
+  availableSamples: number;
+  sourceIfTrained: string;
+  canTrain: boolean;
+  blockingReason: string | null;
+  totalTrainingRuns: number;
+  latestRun: {
+    trainedAt:       string;
+    sampleCount:     number;
+    holdoutAccuracy: number | null;
+    holdoutAuc:      number | null;
+    holdoutBrier:    number | null;
+    holdoutCount:    number;
+  } | null;
 }
 
+/** Unwrapped data from POST /admin/ml-training/run (success case). */
 export interface MlTrainingRunResult {
-  success: boolean;
+  trained: boolean;
   durationMs: number;
   reason?: 'INSUFFICIENT_DATA';
   message?: string;
-  data: {
-    // populated on success
-    sampleCount?:     number;
-    trainedAt?:       string;
-    inSampleAccuracy?: number;
-    holdoutAccuracy?: number | null;
-    holdoutAuc?:      number | null;
-    holdoutBrier?:    number | null;
-    holdoutCount?:    number;
-    // populated on skip
-    availableSamples?: number;
-    minTrainSamples?:  number;
-    candidatesReady?:  number;
-    signalPatternsResolved?: number;
-  };
+  // populated when trained = true
+  sampleCount?:      number;
+  trainedAt?:        string;
+  inSampleAccuracy?: number;
+  holdoutAccuracy?:  number | null;
+  holdoutAuc?:       number | null;
+  holdoutBrier?:     number | null;
+  holdoutCount?:     number;
+  // populated when trained = false (insufficient data)
+  availableSamples?: number;
+  minTrainSamples?:  number;
+  candidatesReady?:  number;
+  signalPatternsResolved?: number;
 }
 
 // ─── RTK Query Endpoints ──────────────────────────────────────────────────────

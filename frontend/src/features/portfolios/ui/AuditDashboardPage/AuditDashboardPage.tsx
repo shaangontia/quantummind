@@ -77,10 +77,9 @@ export const AuditDashboardPage = () => {
       void refetchMlStatus();  // refresh status counts
     } catch (err) {
       setLastTrainResult({
-        success: false,
+        trained: false,
         durationMs: 0,
         message: `Request failed: ${String(err)}`,
-        data: {},
       });
     }
   };
@@ -179,11 +178,11 @@ export const AuditDashboardPage = () => {
           <Paper elevation={0} sx={{ p: 2.5, mb: 2 }}>
             <Box display="flex" alignItems="center" justifyContent="space-between" mb={2} flexWrap="wrap" gap={1}>
               <Typography variant="h6" fontWeight={700}>Model Training History (holdout metrics only)</Typography>
-              {mlStatus?.data && (
+              {mlStatus && (
                 <Button
                   size="small"
                   variant="contained"
-                  disabled={!mlStatus.data.canTrain || isTraining}
+                  disabled={!mlStatus.canTrain || isTraining}
                   onClick={() => void handleTrainNow()}
                 >
                   {isTraining ? 'Training…' : 'Train now'}
@@ -193,18 +192,18 @@ export const AuditDashboardPage = () => {
 
             {lastTrainResult && (
               <Alert
-                severity={lastTrainResult.success ? 'success' : (lastTrainResult.reason === 'INSUFFICIENT_DATA' ? 'info' : 'error')}
+                severity={lastTrainResult.trained ? 'success' : (lastTrainResult.reason === 'INSUFFICIENT_DATA' ? 'info' : 'error')}
                 sx={{ mb: 2 }}
                 onClose={() => setLastTrainResult(null)}
               >
-                {lastTrainResult.success
-                  ? `Model trained on ${lastTrainResult.data.sampleCount} samples in ${(lastTrainResult.durationMs / 1000).toFixed(1)}s — holdout AUC ${lastTrainResult.data.holdoutAuc?.toFixed(3) ?? '—'}, Brier ${lastTrainResult.data.holdoutBrier?.toFixed(3) ?? '—'}.`
+                {lastTrainResult.trained
+                  ? `Model trained on ${lastTrainResult.sampleCount} samples in ${((lastTrainResult.durationMs ?? 0) / 1000).toFixed(1)}s — holdout AUC ${lastTrainResult.holdoutAuc?.toFixed(3) ?? '—'}, Brier ${lastTrainResult.holdoutBrier?.toFixed(3) ?? '—'}.`
                   : (lastTrainResult.message ?? 'Training failed')}
               </Alert>
             )}
 
             {trainingChartData.length === 0 ? (
-              mlStatus?.data ? (
+              mlStatus ? (
                 <Box sx={{ py: 2 }}>
                   <Typography variant="body2" color="text.secondary" mb={1.5}>
                     Model has not been trained yet. The nightly training job never fires on the serverless deployment —
@@ -216,14 +215,14 @@ export const AuditDashboardPage = () => {
                         <Typography variant="caption" color="text.secondary">
                           Resolved samples available
                         </Typography>
-                        <Typography variant="caption" color={mlStatus.data.canTrain ? 'success.main' : 'text.primary'} fontWeight={700}>
-                          {mlStatus.data.availableSamples} / {mlStatus.data.minTrainSamples}
+                        <Typography variant="caption" color={mlStatus.canTrain ? 'success.main' : 'text.primary'} fontWeight={700}>
+                          {mlStatus.availableSamples} / {mlStatus.minTrainSamples}
                         </Typography>
                       </Box>
                       <LinearProgress
                         variant="determinate"
-                        value={Math.min(100, (mlStatus.data.availableSamples / mlStatus.data.minTrainSamples) * 100)}
-                        color={mlStatus.data.canTrain ? 'success' : 'primary'}
+                        value={Math.min(100, (mlStatus.availableSamples / mlStatus.minTrainSamples) * 100)}
+                        color={mlStatus.canTrain ? 'success' : 'primary'}
                         sx={{ height: 6, borderRadius: 3 }}
                       />
                     </Box>
@@ -232,19 +231,19 @@ export const AuditDashboardPage = () => {
                         Data sources:
                       </Typography>
                       <Typography variant="caption" color="text.secondary" display="block">
-                        • trade_candidates (FINAL labels): {mlStatus.data.sources.candidatesReady} ready, {mlStatus.data.sources.candidatesPending} pending
+                        • trade_candidates (FINAL labels): {mlStatus.sources.candidatesReady} ready, {mlStatus.sources.candidatesPending} pending
                       </Typography>
                       <Typography variant="caption" color="text.secondary" display="block">
-                        • signal_patterns (resolved BUY): {mlStatus.data.sources.signalPatternsResolved} ready, {mlStatus.data.sources.signalPatternsPending} pending
+                        • signal_patterns (resolved BUY): {mlStatus.sources.signalPatternsResolved} ready, {mlStatus.sources.signalPatternsPending} pending
                       </Typography>
                     </Box>
-                    {mlStatus.data.blockingReason && (
-                      <Alert severity="info" sx={{ mt: 1 }}>{mlStatus.data.blockingReason}</Alert>
+                    {mlStatus.blockingReason && (
+                      <Alert severity="info" sx={{ mt: 1 }}>{mlStatus.blockingReason}</Alert>
                     )}
                   </Stack>
                 </Box>
               ) : (
-                <EmptyState icon="🧠" title="No training runs yet" description="Loading ML training status…" />
+                <EmptyState icon="🧠" title="No training runs yet" description="No ML training status available yet." />
               )
             ) : (
               <ResponsiveContainer width="100%" height={280}>
