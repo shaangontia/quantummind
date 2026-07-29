@@ -869,7 +869,7 @@ router.get('/admin/ml-training/status', verifyAuth, requireUserAdminAuth, async 
     const candidatesReadyRow = await queryOne(
       `SELECT COUNT(*) as cnt FROM trade_candidates
        WHERE learning_eligible = 1
-         AND label_type = 'TARGET_BEFORE_STOP'
+         AND label_type IN ('TARGET_BEFORE_STOP', 'SELL_PRICE_PROXY')
          AND label_status = 'FINAL'
          AND target_hit_before_stop IS NOT NULL
          AND (data_source IS NULL OR data_source != 'POLICY_SIMULATION')`,
@@ -877,7 +877,8 @@ router.get('/admin/ml-training/status', verifyAuth, requireUserAdminAuth, async 
     const candidatesPendingRow = await queryOne(
       `SELECT COUNT(*) as cnt FROM trade_candidates
        WHERE learning_eligible = 1
-         AND (label_status IS NULL OR label_status != 'FINAL')`,
+         AND (label_status IS NULL OR label_status != 'FINAL')
+         AND (data_source IS NULL OR data_source != 'POLICY_SIMULATION')`,
     ).catch(() => ({ cnt: 0 }));
     const signalPatternsResolvedRow = await queryOne(
       `SELECT COUNT(*) as cnt FROM signal_patterns

@@ -10,7 +10,7 @@ export interface TradeEvent {
   job?: string;
   portfolioId?: number;
   symbol?: string;
-  phase?: 'price-fetch' | 'signal' | 'risk' | 'execution' | 'adaptive' | 'cron' | 'health' | 'resolve' | 'label';
+  phase?: 'price-fetch' | 'signal' | 'risk' | 'execution' | 'adaptive' | 'cron' | 'health' | 'resolve' | 'label' | 'data-fetch';
   action?: 'BUY' | 'SELL' | 'HOLD' | 'SKIP' | 'BLOCK';
   price?: number;
   source?: string;
