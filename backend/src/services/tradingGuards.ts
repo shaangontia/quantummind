@@ -211,6 +211,54 @@ export async function releaseCycleLock(): Promise<void> {
   lastCycleRanAt = null; // also reset in-memory lock
 }
 
+export interface CronRunResult {
+  status: 'SUCCESS' | 'FAILED' | 'SKIPPED';
+  portfolioCount?: number;
+  tradesExecuted?: number;
+  signalsGenerated?: number;
+  durationMs?: number;
+  skipReason?: string;
+  errorMessage?: string;
+}
+
+export async function writeCronRunLog(key: string, startedAt: Date, result: CronRunResult): Promise<void> {
+  try {
+    await run(`CREATE TABLE IF NOT EXISTS cron_run_log (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      key           TEXT NOT NULL,
+      started_at    TEXT NOT NULL,
+      completed_at  TEXT NOT NULL,
+      status        TEXT NOT NULL,
+      duration_ms   INTEGER,
+      portfolio_count  INTEGER,
+      trades_executed  INTEGER,
+      signals_generated INTEGER,
+      skip_reason   TEXT,
+      error_message TEXT
+    )`);
+    await run(
+      `INSERT INTO cron_run_log
+         (key, started_at, completed_at, status, duration_ms, portfolio_count,
+          trades_executed, signals_generated, skip_reason, error_message)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [
+        key,
+        startedAt.toISOString(),
+        new Date().toISOString(),
+        result.status,
+        result.durationMs ?? null,
+        result.portfolioCount ?? null,
+        result.tradesExecuted ?? null,
+        result.signalsGenerated ?? null,
+        result.skipReason ?? null,
+        result.errorMessage ?? null,
+      ],
+    );
+  } catch (err) {
+    console.warn('[Guard] cron_run_log write failed:', String(err));
+  }
+}
+
 export async function ensureTradingConfigTable(): Promise<void> {
   try {
     await run(`CREATE TABLE IF NOT EXISTS trading_config (

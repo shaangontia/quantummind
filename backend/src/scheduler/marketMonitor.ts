@@ -3,7 +3,7 @@ import { mapWithConcurrency } from '../lib/concurrency.js';
 import { query, queryOne, run } from '../db/turso.js';
 import { generateSignal, executeTrade, getPortfolioSummary } from '../services/tradingEngine.js';
 import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen, warmTwelveDataCache, fetchEarningsCalendar, getAvgDailyTradedValue } from '../services/marketData.js';
-import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
+import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable, writeCronRunLog } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
 import { resolveSignalOutcomes, resolveSignalVoteOutcomes, computeSectorAccuracy } from '../services/adaptiveEngine.js';
@@ -936,7 +936,14 @@ async function runPortfolioTradingCycle(
       await run('UPDATE market_signals SET acted_upon=1, trade_id=? WHERE id=?', [tradeId, sigRes.lastInsertRowid]);
       tradeCount++;
       // Phase 13: Register exit plan immediately after BUY (ATR stop, trailing stop, time stop)
-      const riskAmountInr = refreshed.cashBalance * maxPosPct * 0.005; // 0.5% of NAV
+      // riskAmountInr must reflect the ACTUAL risk on this position:
+      //   qty × (entry - hard_stop) = qty × entry × 0.0225
+      // The previous formula (cashBalance × maxPosPct × 0.005) collapsed to
+      // ~0.025% of cash — a couple hundred rupees on a ₹10L portfolio — so
+      // the "2R profit target" in exitEngine.ts fired at trivial ₹250 gains
+      // instead of at genuine 4.5% returns.
+      const stopDistancePerShare = signal.price * 0.015 * 1.5; // matches computeATRStop hard-stop math
+      const riskAmountInr = qty * stopDistancePerShare;
       await registerExitPlan(portfolioId, symbol, signal.price, riskAmountInr).catch(() => null);
       // Phase 15/19: Update candidate with actual entry/stop/target prices
       const stopPrice  = signal.price * (1 - 0.015 * 1.5);
@@ -1092,12 +1099,15 @@ async function snapshotAll(): Promise<void> {
 // Exported for Vercel cron endpoint + API trigger
 export async function runMarketCycle(): Promise<void> {
   const cycleStart = Date.now();
+  const cycleStartedAt = new Date();
   // Idempotency: in-memory guard first (fast), then DB lock (survives cold starts)
   if (!acquireCycleLock()) return;
   if (!(await acquireDbCycleLock())) return;
 
   if (isNseHoliday()) {
-    logger.cronCycle({ portfolioCount: 0, tradesExecuted: 0, signalsGenerated: 0, durationMs: 0, skipped: true, skipReason: 'NSE holiday' });
+    const skipReason = 'NSE holiday';
+    logger.cronCycle({ portfolioCount: 0, tradesExecuted: 0, signalsGenerated: 0, durationMs: 0, skipped: true, skipReason });
+    await writeCronRunLog('market-cycle', cycleStartedAt, { status: 'SKIPPED', durationMs: 0, skipReason });
     await releaseCycleLock();
     return;
   }
@@ -1171,12 +1181,26 @@ export async function runMarketCycle(): Promise<void> {
       signalsGenerated += signals;
     }
     await snapshotAll();
-    logger.cronCycle({ portfolioCount: portfolios.length, tradesExecuted, signalsGenerated, durationMs: Date.now() - cycleStart });
+    const durationMs = Date.now() - cycleStart;
+    logger.cronCycle({ portfolioCount: portfolios.length, tradesExecuted, signalsGenerated, durationMs });
+    await writeCronRunLog('market-cycle', cycleStartedAt, {
+      status: 'SUCCESS',
+      portfolioCount: portfolios.length,
+      tradesExecuted,
+      signalsGenerated,
+      durationMs,
+    });
 
     // Phase 6: write cycle summary to RAG memory (non-blocking, best-effort)
     writeMarketCycleMemory(portfolios.length, tradesExecuted, signalsGenerated).catch(
       e => console.warn('[RAG] Memory write failed:', e)
     );
+  } catch (err) {
+    const durationMs = Date.now() - cycleStart;
+    const errorMessage = String(err);
+    logger.error?.({ job: 'market-cycle', phase: 'cron', err: errorMessage, durationMs });
+    await writeCronRunLog('market-cycle', cycleStartedAt, { status: 'FAILED', durationMs, errorMessage });
+    throw err;
   } finally {
     await releaseCycleLock();
   }
