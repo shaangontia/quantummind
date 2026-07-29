@@ -354,7 +354,9 @@ export interface MlTrainingStatus {
     holdoutAuc:      number | null;
     holdoutBrier:    number | null;
     holdoutCount:    number;
+    classDist: { wins: number | null; losses: number | null } | null;
   } | null;
+  classDistribution: { wins: number; losses: number } | null;
 }
 
 /** Unwrapped data from POST /admin/ml-training/run (success case). */

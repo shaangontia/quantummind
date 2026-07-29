@@ -148,7 +148,7 @@ export const AuditDashboardPage = () => {
             </Grid>
             <Grid item xs={6} sm={3}>
               <StatCard label="Latest holdout AUC" value={latestRun?.holdoutAuc !== null && latestRun?.holdoutAuc !== undefined ? latestRun.holdoutAuc.toFixed(3) : '—'}
-                sub={latestRun ? `n=${latestRun.holdoutCount} holdout rows` : undefined} />
+                sub={latestRun ? (latestRun.holdoutAuc === null ? '⚠️ single-class holdout — N/A' : `n=${latestRun.holdoutCount} holdout rows`) : undefined} />
             </Grid>
             <Grid item xs={6} sm={3}>
               <StatCard label="Latest holdout Brier" value={latestRun?.holdoutBrier !== null && latestRun?.holdoutBrier !== undefined ? latestRun.holdoutBrier.toFixed(3) : '—'}
@@ -238,6 +238,24 @@ export const AuditDashboardPage = () => {
                         • signal_patterns (resolved BUY): {mlStatus.sources.signalPatternsResolved} ready, {mlStatus.sources.signalPatternsPending} pending
                       </Typography>
                     </Box>
+                    {mlStatus.classDistribution && (
+                      <Box>
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Class distribution (resolved labels):
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          • WIN (target hit): {mlStatus.classDistribution.wins}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          • LOSS (stop-loss hit): {mlStatus.classDistribution.losses}
+                        </Typography>
+                        {(mlStatus.classDistribution.wins === 0 || mlStatus.classDistribution.losses === 0) && (
+                          <Alert severity="warning" sx={{ mt: 0.5 }}>
+                            All resolved samples share the same outcome — model needs at least one WIN and one LOSS to learn meaningful patterns.
+                          </Alert>
+                        )}
+                      </Box>
+                    )}
                     {mlStatus.blockingReason && (
                       <Alert severity="info" sx={{ mt: 1 }}>{mlStatus.blockingReason}</Alert>
                     )}
