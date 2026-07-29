@@ -164,18 +164,24 @@ async function labelExecutedCandidates(): Promise<number> {
     const holdDays  = Math.round((new Date(exitDate).getTime() - new Date(entryDate).getTime()) / 86400000);
 
     const priceHistory = await fetchPriceHistory(symbol, entryDate);
+    // Trim price history to the actual hold window (entry → exit date inclusive).
+    // Without this, evaluatePath() sees up to 20 days of future price action
+    // beyond when the position was actually closed, asking "did the stock ever
+    // hit target?" instead of "did it hit target while we held it?" — a stock
+    // that ran +3% after we time-stopped out would incorrectly be labeled WIN.
+    const heldHistory = priceHistory.filter(r => r.date <= exitDate);
 
     let win: boolean;
     let mae: number;
     let mfe: number;
     let labelType: string;
 
-    if (priceHistory.length >= 2) {
-      const result = evaluatePath(priceHistory, entryPrice, stopPrice, targetPrice);
+    if (heldHistory.length >= 2) {
+      const result = evaluatePath(heldHistory, entryPrice, stopPrice, targetPrice);
       win = result.targetHit && !result.stopHit;
       mae = result.mae;
       mfe = result.mfe;
-      labelType = priceHistory.length >= 3 ? 'TARGET_BEFORE_STOP' : 'SELL_PRICE_PROXY';
+      labelType = heldHistory.length >= 3 ? 'TARGET_BEFORE_STOP' : 'SELL_PRICE_PROXY';
     } else {
       const changeToExit = (exitPrice - entryPrice) / entryPrice;
       mae = changeToExit < 0 ? Math.abs(changeToExit * 100) : 0;
