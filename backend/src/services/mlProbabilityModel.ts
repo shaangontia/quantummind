@@ -325,10 +325,12 @@ export async function trainModel(): Promise<ModelState | null> {
   await run(
     `INSERT INTO ml_model_weights
        (model_name, trained_at, sample_count, feature_names, weights, bias, accuracy,
-        holdout_accuracy, holdout_auc, holdout_brier, holdout_count)
-     VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        holdout_accuracy, holdout_auc, holdout_brier, holdout_count,
+        wins_count, losses_count)
+     VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [MODEL_NAME, rows.length, JSON.stringify(FEATURE_NAMES), JSON.stringify(weights), bias, accuracy,
-     holdoutAccuracy, holdoutAuc, holdoutBrier, holdoutRows.length],
+     holdoutAccuracy, holdoutAuc, holdoutBrier, holdoutRows.length,
+     classDist.wins, classDist.losses],
   ).catch(() => null);
 
   _model = state;
@@ -352,6 +354,7 @@ async function loadModelFromDB(): Promise<ModelState | null> {
   const row = await query(
     `SELECT weights, bias, sample_count, accuracy,
             holdout_accuracy, holdout_auc, holdout_brier, holdout_count,
+            wins_count, losses_count,
             strftime('%s', trained_at) * 1000 as trained_ms
      FROM ml_model_weights WHERE model_name=?
      ORDER BY id DESC LIMIT 1`,
@@ -370,8 +373,11 @@ async function loadModelFromDB(): Promise<ModelState | null> {
       holdoutAuc: row.holdout_auc != null ? Number(row.holdout_auc) : null,
       holdoutBrier: row.holdout_brier != null ? Number(row.holdout_brier) : null,
       holdoutCount: Number(row.holdout_count ?? 0),
-      // classDist not persisted in DB — unknown for models loaded from DB.
-      classDist: { wins: -1, losses: -1, total: Number(row.sample_count) },
+      classDist: {
+        wins:   row.wins_count   != null ? Number(row.wins_count)   : -1,
+        losses: row.losses_count != null ? Number(row.losses_count) : -1,
+        total:  Number(row.sample_count),
+      },
     };
   } catch {
     return null;

@@ -714,6 +714,9 @@ export async function runMigrations(): Promise<void> {
   } catch (_) { /* ignore */ }
   // Add index for learning_eligible + label_ready_at (used by labelGenerator shadow query)
   try { await db.execute('CREATE INDEX IF NOT EXISTS idx_tc_learning ON trade_candidates(learning_eligible, label_ready_at, action_taken)'); } catch (_) { /* exists */ }
+  // Phase 23.1: persist class distribution in ml_model_weights
+  try { await db.execute('ALTER TABLE ml_model_weights ADD COLUMN wins_count INTEGER'); } catch (_) { /* exists */ }
+  try { await db.execute('ALTER TABLE ml_model_weights ADD COLUMN losses_count INTEGER'); } catch (_) { /* exists */ }
   // Backfill: rows labeled before Phase 16 got label_type='UNKNOWN' (migration default).
   // These are valid TARGET_BEFORE_STOP labels — correct them so trainModel() can use them.
   try {

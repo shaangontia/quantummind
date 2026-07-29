@@ -893,7 +893,8 @@ router.get('/admin/ml-training/status', verifyAuth, requireUserAdminAuth, async 
       `SELECT COUNT(*) as cnt FROM ml_model_weights WHERE model_name='buy_win_probability_v2'`,
     ).catch(() => ({ cnt: 0 }));
     const latestRun = await queryOne(
-      `SELECT trained_at, sample_count, holdout_accuracy, holdout_auc, holdout_brier, holdout_count
+      `SELECT trained_at, sample_count, holdout_accuracy, holdout_auc, holdout_brier, holdout_count,
+              wins_count, losses_count
        FROM ml_model_weights WHERE model_name='buy_win_probability_v2'
        ORDER BY id DESC LIMIT 1`,
     ).catch(() => null);
@@ -961,6 +962,10 @@ router.get('/admin/ml-training/status', verifyAuth, requireUserAdminAuth, async 
           holdoutAuc:      latestRun.holdout_auc      != null ? Number(latestRun.holdout_auc)      : null,
           holdoutBrier:    latestRun.holdout_brier    != null ? Number(latestRun.holdout_brier)    : null,
           holdoutCount:    Number(latestRun.holdout_count ?? 0),
+          classDist: {
+            wins:   latestRun.wins_count   != null ? Number(latestRun.wins_count)   : null,
+            losses: latestRun.losses_count != null ? Number(latestRun.losses_count) : null,
+          },
         } : null,
       },
     });
