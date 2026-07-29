@@ -3,7 +3,7 @@ import { mapWithConcurrency } from '../lib/concurrency.js';
 import { query, queryOne, run } from '../db/turso.js';
 import { generateSignal, executeTrade, getPortfolioSummary } from '../services/tradingEngine.js';
 import { getMultipleQuotes, getDynamicCycleWatchlist, getBiasedCycleWatchlist, isNseMarketOpen, warmTwelveDataCache, fetchEarningsCalendar, getAvgDailyTradedValue } from '../services/marketData.js';
-import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable } from '../services/tradingGuards.js';
+import { isNseHoliday, acquireCycleLock, acquireDbCycleLock, releaseCycleLock, ensureTradingConfigTable, writeCronRunLog } from '../services/tradingGuards.js';
 import { logger } from '../lib/logger.js';
 import { rememberFact, pruneMemory } from '../services/ragService.js';
 import { resolveSignalOutcomes, resolveSignalVoteOutcomes, computeSectorAccuracy } from '../services/adaptiveEngine.js';
@@ -1092,12 +1092,15 @@ async function snapshotAll(): Promise<void> {
 // Exported for Vercel cron endpoint + API trigger
 export async function runMarketCycle(): Promise<void> {
   const cycleStart = Date.now();
+  const cycleStartedAt = new Date();
   // Idempotency: in-memory guard first (fast), then DB lock (survives cold starts)
   if (!acquireCycleLock()) return;
   if (!(await acquireDbCycleLock())) return;
 
   if (isNseHoliday()) {
-    logger.cronCycle({ portfolioCount: 0, tradesExecuted: 0, signalsGenerated: 0, durationMs: 0, skipped: true, skipReason: 'NSE holiday' });
+    const skipReason = 'NSE holiday';
+    logger.cronCycle({ portfolioCount: 0, tradesExecuted: 0, signalsGenerated: 0, durationMs: 0, skipped: true, skipReason });
+    await writeCronRunLog('market-cycle', cycleStartedAt, { status: 'SKIPPED', durationMs: 0, skipReason });
     await releaseCycleLock();
     return;
   }
@@ -1171,12 +1174,26 @@ export async function runMarketCycle(): Promise<void> {
       signalsGenerated += signals;
     }
     await snapshotAll();
-    logger.cronCycle({ portfolioCount: portfolios.length, tradesExecuted, signalsGenerated, durationMs: Date.now() - cycleStart });
+    const durationMs = Date.now() - cycleStart;
+    logger.cronCycle({ portfolioCount: portfolios.length, tradesExecuted, signalsGenerated, durationMs });
+    await writeCronRunLog('market-cycle', cycleStartedAt, {
+      status: 'SUCCESS',
+      portfolioCount: portfolios.length,
+      tradesExecuted,
+      signalsGenerated,
+      durationMs,
+    });
 
     // Phase 6: write cycle summary to RAG memory (non-blocking, best-effort)
     writeMarketCycleMemory(portfolios.length, tradesExecuted, signalsGenerated).catch(
       e => console.warn('[RAG] Memory write failed:', e)
     );
+  } catch (err) {
+    const durationMs = Date.now() - cycleStart;
+    const errorMessage = String(err);
+    logger.error?.({ job: 'market-cycle', phase: 'cron', err: errorMessage, durationMs });
+    await writeCronRunLog('market-cycle', cycleStartedAt, { status: 'FAILED', durationMs, errorMessage });
+    throw err;
   } finally {
     await releaseCycleLock();
   }

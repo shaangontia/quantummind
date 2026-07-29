@@ -27,9 +27,22 @@ router.get('/health/market-data', async (_req: Request, res: Response) => {
 });
 router.get('/health/cron', async (_req: Request, res: Response) => {
   try {
-    const row = await queryOne("SELECT * FROM cron_lock WHERE key='market-cycle'");
-    res.json({ status: 'OK', lastCycleLockedUntil: row ? row.locked_until : null });
-  } catch { res.json({ status: 'OK', lastCycleLockedUntil: null }); }
+    const lock = await queryOne("SELECT * FROM cron_lock WHERE key='market-cycle'").catch(() => null);
+    const recentRuns = await query(
+      `SELECT key, started_at, completed_at, status, duration_ms,
+              portfolio_count, trades_executed, signals_generated,
+              skip_reason, error_message
+       FROM cron_run_log WHERE key='market-cycle'
+       ORDER BY id DESC LIMIT 10`,
+    ).catch(() => []);
+    const lastRun = recentRuns[0] ?? null;
+    res.json({
+      status: 'OK',
+      lastCycleLockedUntil: lock ? lock.locked_until : null,
+      lastRun,
+      recentRuns,
+    });
+  } catch (err) { res.json({ status: 'OK', lastCycleLockedUntil: null, lastRun: null, recentRuns: [], error: String(err) }); }
 });
 
 // ─── Admin: kill switch ───────────────────────────────────────────────────────
