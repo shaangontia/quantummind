@@ -62,13 +62,26 @@ router.get('/admin/backtest/weights', requireAdminAuth, async (_req: Request, re
 });
 
 // ─── Cron triggers ────────────────────────────────────────────────────────────
-router.post('/cron/market-cycle', requireAdminAuth, async (_req: Request, res: Response) => {
-  try {
-    const { runMarketCycle } = await import('../../scheduler/marketMonitor.js');
-    await runMarketCycle();
-    res.json({ success: true, ran: new Date().toISOString() });
-  } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
-});
+
+/**
+ * POST /api/cron/market-cycle  — triggered by cron-job.org every 5 min during market hours
+ * GET  /api/cron/market-cycle  — triggered by Vercel native cron (vercel.json uses GET)
+ *
+ * Both respond immediately and run the cycle asynchronously. Awaiting runMarketCycle()
+ * synchronously caused all cron executions to time out (30s limit) because the full
+ * cycle — price fetches, LLM calls, DB writes across N portfolios — takes well over 30s.
+ */
+async function triggerMarketCycle(_req: Request, res: Response) {
+  res.json({ success: true, started: new Date().toISOString() });
+  setImmediate(() => {
+    (async () => {
+      const { runMarketCycle } = await import('../../scheduler/marketMonitor.js');
+      await runMarketCycle();
+    })().catch(e => console.error('[Cron] Market cycle FAILED:', String(e)));
+  });
+}
+router.get('/cron/market-cycle', requireAdminAuth, triggerMarketCycle);
+router.post('/cron/market-cycle', requireAdminAuth, triggerMarketCycle);
 router.post('/cron/price-update', requireAdminAuth, async (_req: Request, res: Response) => {
   try {
     const { getMultipleQuotes } = await import('../../services/marketData.js');
