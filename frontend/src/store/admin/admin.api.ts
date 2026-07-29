@@ -329,6 +329,55 @@ export interface AuditDashboardData {
   decisionSummary: DecisionTypeCount[];
 }
 
+export interface MlTrainingStatus {
+  success: boolean;
+  data: {
+    modelName: string;
+    minTrainSamples: number;
+    sources: {
+      candidatesReady:        number;
+      candidatesPending:      number;
+      signalPatternsResolved: number;
+      signalPatternsPending:  number;
+    };
+    availableSamples: number;
+    sourceIfTrained: string;
+    canTrain: boolean;
+    blockingReason: string | null;
+    totalTrainingRuns: number;
+    latestRun: {
+      trainedAt:       string;
+      sampleCount:     number;
+      holdoutAccuracy: number | null;
+      holdoutAuc:      number | null;
+      holdoutBrier:    number | null;
+      holdoutCount:    number;
+    } | null;
+  };
+}
+
+export interface MlTrainingRunResult {
+  success: boolean;
+  durationMs: number;
+  reason?: 'INSUFFICIENT_DATA';
+  message?: string;
+  data: {
+    // populated on success
+    sampleCount?:     number;
+    trainedAt?:       string;
+    inSampleAccuracy?: number;
+    holdoutAccuracy?: number | null;
+    holdoutAuc?:      number | null;
+    holdoutBrier?:    number | null;
+    holdoutCount?:    number;
+    // populated on skip
+    availableSamples?: number;
+    minTrainSamples?:  number;
+    candidatesReady?:  number;
+    signalPatternsResolved?: number;
+  };
+}
+
 // ─── RTK Query Endpoints ──────────────────────────────────────────────────────
 
 export const adminApi = baseApi.injectEndpoints({
@@ -453,6 +502,15 @@ export const adminApi = baseApi.injectEndpoints({
       keepUnusedDataFor: 60,
     }),
 
+    getMlTrainingStatus: builder.query<MlTrainingStatus, void>({
+      query: () => ({ url: '/admin/ml-training/status', method: 'GET' }),
+      keepUnusedDataFor: 30,
+    }),
+
+    runMlTraining: builder.mutation<MlTrainingRunResult, void>({
+      query: () => ({ url: '/admin/ml-training/run', method: 'POST' }),
+    }),
+
   }),
   overrideExisting: false,
 });
@@ -475,4 +533,6 @@ export const {
   useRetryVirtualReconciliationMutation,
   useGetAdminVirtualExecutionQualityQuery,
   useGetAuditDashboardQuery,
+  useGetMlTrainingStatusQuery,
+  useRunMlTrainingMutation,
 } = adminApi;

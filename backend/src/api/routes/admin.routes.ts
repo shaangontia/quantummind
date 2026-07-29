@@ -844,6 +844,186 @@ router.post('/admin/portfolio-health/recalculate-all', verifyAuth, requireUserAd
   } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
 });
 
+// ── ML Training Admin APIs ────────────────────────────────────────────
+//
+// The Model Training History panel on the audit dashboard only populates
+// when `trainModel()` (mlProbabilityModel.ts) has actually run and inserted
+// a row into `ml_model_weights`. That function requires ≥30 resolved rows
+// from either trade_candidates (FINAL TARGET_BEFORE_STOP labels) or
+// signal_patterns (WIN/LOSS outcomes), and it's only called from the
+// nightly job which never fires on the Vercel serverless deployment.
+//
+// These two endpoints let a browser admin see the data-readiness state
+// and manually trigger the full label→train sequence, so the audit
+// dashboard's training history can be seeded without waiting on external
+// cron plumbing.
+
+/**
+ * GET /api/admin/ml-training/status
+ * Diagnostic — what does the ML pipeline see right now?
+ */
+router.get('/admin/ml-training/status', verifyAuth, requireUserAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    const MIN_TRAIN_SAMPLES = 30;
+
+    const candidatesReadyRow = await queryOne(
+      `SELECT COUNT(*) as cnt FROM trade_candidates
+       WHERE learning_eligible = 1
+         AND label_type = 'TARGET_BEFORE_STOP'
+         AND label_status = 'FINAL'
+         AND target_hit_before_stop IS NOT NULL
+         AND (data_source IS NULL OR data_source != 'POLICY_SIMULATION')`,
+    ).catch(() => ({ cnt: 0 }));
+    const candidatesPendingRow = await queryOne(
+      `SELECT COUNT(*) as cnt FROM trade_candidates
+       WHERE learning_eligible = 1
+         AND (label_status IS NULL OR label_status != 'FINAL')`,
+    ).catch(() => ({ cnt: 0 }));
+    const signalPatternsResolvedRow = await queryOne(
+      `SELECT COUNT(*) as cnt FROM signal_patterns
+       WHERE action='BUY' AND outcome IN ('WIN','LOSS')`,
+    ).catch(() => ({ cnt: 0 }));
+    const signalPatternsPendingRow = await queryOne(
+      `SELECT COUNT(*) as cnt FROM signal_patterns
+       WHERE action='BUY' AND (outcome IS NULL OR outcome NOT IN ('WIN','LOSS'))`,
+    ).catch(() => ({ cnt: 0 }));
+
+    const totalTrainingRunsRow = await queryOne(
+      `SELECT COUNT(*) as cnt FROM ml_model_weights WHERE model_name='buy_win_probability_v2'`,
+    ).catch(() => ({ cnt: 0 }));
+    const latestRun = await queryOne(
+      `SELECT trained_at, sample_count, holdout_accuracy, holdout_auc, holdout_brier, holdout_count
+       FROM ml_model_weights WHERE model_name='buy_win_probability_v2'
+       ORDER BY id DESC LIMIT 1`,
+    ).catch(() => null);
+
+    const candidatesReady        = Number(candidatesReadyRow?.cnt ?? 0);
+    const candidatesPending      = Number(candidatesPendingRow?.cnt ?? 0);
+    const signalPatternsResolved = Number(signalPatternsResolvedRow?.cnt ?? 0);
+    const signalPatternsPending  = Number(signalPatternsPendingRow?.cnt ?? 0);
+    // trainModel() prefers trade_candidates, falls back to signal_patterns
+    const availableSamples = candidatesReady >= MIN_TRAIN_SAMPLES
+      ? candidatesReady
+      : signalPatternsResolved;
+    const sourceIfTrained = candidatesReady >= MIN_TRAIN_SAMPLES
+      ? 'trade_candidates'
+      : 'signal_patterns (fallback)';
+    const canTrain = availableSamples >= MIN_TRAIN_SAMPLES;
+
+    let blockingReason: string | null = null;
+    if (!canTrain) {
+      const shortfall = MIN_TRAIN_SAMPLES - availableSamples;
+      const totalPending = candidatesPending + signalPatternsPending;
+      blockingReason = totalPending > 0
+        ? `Need ${shortfall} more resolved sample${shortfall === 1 ? '' : 's'}. ${totalPending} candidate${totalPending === 1 ? '' : 's'} pending resolution — they'll be labelled once the buy holdings hit their target or stop.`
+        : `Need ${shortfall} more resolved sample${shortfall === 1 ? '' : 's'}. No pending candidates yet — the algorithm needs to execute BUYs first.`;
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        modelName: 'buy_win_probability_v2',
+        minTrainSamples: MIN_TRAIN_SAMPLES,
+        sources: {
+          candidatesReady,
+          candidatesPending,
+          signalPatternsResolved,
+          signalPatternsPending,
+        },
+        availableSamples,
+        sourceIfTrained,
+        canTrain,
+        blockingReason,
+        totalTrainingRuns: Number(totalTrainingRunsRow?.cnt ?? 0),
+        latestRun: latestRun ? {
+          trainedAt:       latestRun.trained_at,
+          sampleCount:     Number(latestRun.sample_count ?? 0),
+          holdoutAccuracy: latestRun.holdout_accuracy != null ? Number(latestRun.holdout_accuracy) : null,
+          holdoutAuc:      latestRun.holdout_auc      != null ? Number(latestRun.holdout_auc)      : null,
+          holdoutBrier:    latestRun.holdout_brier    != null ? Number(latestRun.holdout_brier)    : null,
+          holdoutCount:    Number(latestRun.holdout_count ?? 0),
+        } : null,
+      },
+    });
+  } catch (err) { return res.status(500).json({ success: false, error: String(err) }); }
+});
+
+/**
+ * POST /api/admin/ml-training/run
+ * Manually run the resolve → label → train sequence and return the result.
+ * Executes synchronously (single-shot, small dataset) so the UI can display
+ * outcome immediately. If insufficient data, returns a diagnostic response.
+ */
+router.post('/admin/ml-training/run', verifyAuth, requireUserAdminAuth, async (_req: Request, res: Response) => {
+  const startedAt = new Date();
+  try {
+    // Step 1: resolve signal outcomes (marks signal_patterns rows WIN/LOSS from realised trade P&L)
+    const { resolveSignalOutcomes } = await import('../../services/adaptiveEngine.js');
+    await resolveSignalOutcomes().catch(err =>
+      logger.warn({ job: 'ml-training-manual', phase: 'resolve', reason: String(err) })
+    );
+
+    // Step 2: generate TARGET_BEFORE_STOP labels for closed candidates
+    const { generateLabels } = await import('../../services/labelGenerator.js');
+    await generateLabels().catch(err =>
+      logger.warn({ job: 'ml-training-manual', phase: 'label', reason: String(err) })
+    );
+
+    // Step 3: train the win-probability model
+    const { trainModel } = await import('../../services/mlProbabilityModel.js');
+    const modelState = await trainModel();
+
+    const durationMs = Date.now() - startedAt.getTime();
+
+    if (!modelState) {
+      // trainModel returned null → not enough data yet. Return the same
+      // status payload the /status endpoint would produce so the UI can
+      // render a coherent "still need N more samples" message.
+      const MIN_TRAIN_SAMPLES = 30;
+      const candidatesReadyRow = await queryOne(
+        `SELECT COUNT(*) as cnt FROM trade_candidates
+         WHERE learning_eligible = 1 AND label_status = 'FINAL' AND target_hit_before_stop IS NOT NULL`,
+      ).catch(() => ({ cnt: 0 }));
+      const signalPatternsResolvedRow = await queryOne(
+        `SELECT COUNT(*) as cnt FROM signal_patterns WHERE action='BUY' AND outcome IN ('WIN','LOSS')`,
+      ).catch(() => ({ cnt: 0 }));
+      const candidatesReady = Number(candidatesReadyRow?.cnt ?? 0);
+      const signalPatternsResolved = Number(signalPatternsResolvedRow?.cnt ?? 0);
+      const availableSamples = Math.max(candidatesReady, signalPatternsResolved);
+      return res.status(200).json({
+        success: false,
+        durationMs,
+        reason: 'INSUFFICIENT_DATA',
+        message: `Training skipped — only ${availableSamples} resolved sample${availableSamples === 1 ? '' : 's'} available (need ${MIN_TRAIN_SAMPLES}).`,
+        data: {
+          availableSamples,
+          minTrainSamples: MIN_TRAIN_SAMPLES,
+          candidatesReady,
+          signalPatternsResolved,
+        },
+      });
+    }
+
+    // Model trained. Return the metrics + confirm a row was persisted.
+    return res.json({
+      success: true,
+      durationMs,
+      data: {
+        sampleCount:     modelState.sampleCount,
+        trainedAt:       new Date(modelState.trainedAt).toISOString(),
+        inSampleAccuracy: modelState.accuracy,
+        holdoutAccuracy: modelState.holdoutAccuracy,
+        holdoutAuc:      modelState.holdoutAuc,
+        holdoutBrier:    modelState.holdoutBrier,
+        holdoutCount:    modelState.holdoutCount,
+      },
+    });
+  } catch (err) {
+    logger.error?.({ job: 'ml-training-manual', err: String(err) });
+    return res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 // ── Phase 22: Admin Virtual Reconciliation APIs ───────────────────────
 
 import { getAdminVirtualExecutionQuality } from '../../services/virtualExecutionQualityService.js';

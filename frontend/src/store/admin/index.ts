@@ -17,6 +17,8 @@ export {
   useRetryVirtualReconciliationMutation,
   useGetAdminVirtualExecutionQualityQuery,
   useGetAuditDashboardQuery,
+  useGetMlTrainingStatusQuery,
+  useRunMlTrainingMutation,
 } from './admin.api.ts';
 
 export type {
@@ -49,4 +51,6 @@ export type {
   PerformanceTimelinePoint,
   DecisionTypeCount,
   AuditDashboardData,
+  MlTrainingStatus,
+  MlTrainingRunResult,
 } from './admin.api.ts';

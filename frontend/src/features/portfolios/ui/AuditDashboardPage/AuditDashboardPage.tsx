@@ -28,8 +28,16 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   Legend, ReferenceLine, BarChart, Bar,
 } from 'recharts';
-import { useGetAuditDashboardQuery } from '../../../../store/admin/index.ts';
-import type { ModelStage, CalibrationBucketPoint } from '../../../../store/admin/index.ts';
+import { useState } from 'react';
+import Alert from '@mui/material/Alert';
+import LinearProgress from '@mui/material/LinearProgress';
+import Stack from '@mui/material/Stack';
+import {
+  useGetAuditDashboardQuery,
+  useGetMlTrainingStatusQuery,
+  useRunMlTrainingMutation,
+} from '../../../../store/admin/index.ts';
+import type { ModelStage, CalibrationBucketPoint, MlTrainingRunResult } from '../../../../store/admin/index.ts';
 import { StatCard } from '../../../../shared/ui/StatCard/StatCard.tsx';
 import { EmptyState } from '../../../../shared/ui/EmptyState/EmptyState.tsx';
 
@@ -57,6 +65,25 @@ const fmtInr = (v: number) =>
 
 export const AuditDashboardPage = () => {
   const { data, isLoading, refetch } = useGetAuditDashboardQuery();
+  const { data: mlStatus, refetch: refetchMlStatus } = useGetMlTrainingStatusQuery();
+  const [runMlTraining, { isLoading: isTraining }] = useRunMlTrainingMutation();
+  const [lastTrainResult, setLastTrainResult] = useState<MlTrainingRunResult | null>(null);
+
+  const handleTrainNow = async () => {
+    try {
+      const result = await runMlTraining().unwrap();
+      setLastTrainResult(result);
+      void refetch();          // reload dashboard so new training row appears
+      void refetchMlStatus();  // refresh status counts
+    } catch (err) {
+      setLastTrainResult({
+        success: false,
+        durationMs: 0,
+        message: `Request failed: ${String(err)}`,
+        data: {},
+      });
+    }
+  };
 
   const timeline = data?.performanceTimeline ?? [];
   const totalRealizedPnl = timeline.length > 0 ? timeline[timeline.length - 1].cumulativeRealizedPnl : 0;
@@ -150,9 +177,75 @@ export const AuditDashboardPage = () => {
           </Paper>
 
           <Paper elevation={0} sx={{ p: 2.5, mb: 2 }}>
-            <Typography variant="h6" fontWeight={700} mb={2}>Model Training History (holdout metrics only)</Typography>
+            <Box display="flex" alignItems="center" justifyContent="space-between" mb={2} flexWrap="wrap" gap={1}>
+              <Typography variant="h6" fontWeight={700}>Model Training History (holdout metrics only)</Typography>
+              {mlStatus?.data && (
+                <Button
+                  size="small"
+                  variant="contained"
+                  disabled={!mlStatus.data.canTrain || isTraining}
+                  onClick={() => void handleTrainNow()}
+                >
+                  {isTraining ? 'Training…' : 'Train now'}
+                </Button>
+              )}
+            </Box>
+
+            {lastTrainResult && (
+              <Alert
+                severity={lastTrainResult.success ? 'success' : (lastTrainResult.reason === 'INSUFFICIENT_DATA' ? 'info' : 'error')}
+                sx={{ mb: 2 }}
+                onClose={() => setLastTrainResult(null)}
+              >
+                {lastTrainResult.success
+                  ? `Model trained on ${lastTrainResult.data.sampleCount} samples in ${(lastTrainResult.durationMs / 1000).toFixed(1)}s — holdout AUC ${lastTrainResult.data.holdoutAuc?.toFixed(3) ?? '—'}, Brier ${lastTrainResult.data.holdoutBrier?.toFixed(3) ?? '—'}.`
+                  : (lastTrainResult.message ?? 'Training failed')}
+              </Alert>
+            )}
+
             {trainingChartData.length === 0 ? (
-              <EmptyState icon="🧠" title="No training runs yet" description="Model training history appears once the nightly job has trained at least once." />
+              mlStatus?.data ? (
+                <Box sx={{ py: 2 }}>
+                  <Typography variant="body2" color="text.secondary" mb={1.5}>
+                    Model has not been trained yet. The nightly training job never fires on the serverless deployment —
+                    use the button above to run it manually once enough resolved samples exist.
+                  </Typography>
+                  <Stack spacing={1.5}>
+                    <Box>
+                      <Box display="flex" justifyContent="space-between" mb={0.5}>
+                        <Typography variant="caption" color="text.secondary">
+                          Resolved samples available
+                        </Typography>
+                        <Typography variant="caption" color={mlStatus.data.canTrain ? 'success.main' : 'text.primary'} fontWeight={700}>
+                          {mlStatus.data.availableSamples} / {mlStatus.data.minTrainSamples}
+                        </Typography>
+                      </Box>
+                      <LinearProgress
+                        variant="determinate"
+                        value={Math.min(100, (mlStatus.data.availableSamples / mlStatus.data.minTrainSamples) * 100)}
+                        color={mlStatus.data.canTrain ? 'success' : 'primary'}
+                        sx={{ height: 6, borderRadius: 3 }}
+                      />
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        Data sources:
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        • trade_candidates (FINAL labels): {mlStatus.data.sources.candidatesReady} ready, {mlStatus.data.sources.candidatesPending} pending
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        • signal_patterns (resolved BUY): {mlStatus.data.sources.signalPatternsResolved} ready, {mlStatus.data.sources.signalPatternsPending} pending
+                      </Typography>
+                    </Box>
+                    {mlStatus.data.blockingReason && (
+                      <Alert severity="info" sx={{ mt: 1 }}>{mlStatus.data.blockingReason}</Alert>
+                    )}
+                  </Stack>
+                </Box>
+              ) : (
+                <EmptyState icon="🧠" title="No training runs yet" description="Loading ML training status…" />
+              )
             ) : (
               <ResponsiveContainer width="100%" height={280}>
                 <LineChart data={trainingChartData} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
@@ -173,7 +266,29 @@ export const AuditDashboardPage = () => {
           <Grid container spacing={2} mb={2}>
             <Grid item xs={12} md={7}>
               <Paper elevation={0} sx={{ p: 2.5, height: '100%' }}>
-                <Typography variant="h6" fontWeight={700} mb={2}>Portfolio Model Governance</Typography>
+                <Typography variant="h6" fontWeight={700} mb={0.5}>Portfolio Model Governance</Typography>
+                <Typography variant="body2" color="text.secondary" mb={2}>
+                  Every portfolio starts as CANDIDATE (paper trades only, no live signals). It promotes to
+                  SHADOW → ADVISORY → PRODUCTION as the model accumulates evidence that its predictions actually
+                  correspond to real market outcomes. All four columns below measure that evidence — zeros
+                  everywhere mean the model has not yet closed enough BUY trades to be evaluated.
+                </Typography>
+
+                {(() => {
+                  const zeros = data.portfolios.length > 0 && data.portfolios.every(p =>
+                    p.trueLabelCount === 0 && p.positiveWFWindows === 0 && !p.calibration?.available
+                  );
+                  return zeros ? (
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                      Every portfolio shows 0 because no BUY trade has yet run its full label horizon
+                      (typically 10 trading days after entry). Labels are generated by the nightly training
+                      job, which promotes a candidate to SHADOW after 200 resolved labels + ≥2 positive
+                      walk-forward windows. Trigger it manually with the "Train now" button above once BUYs
+                      have been open long enough.
+                    </Alert>
+                  ) : null;
+                })()}
+
                 {data.portfolios.length === 0 ? (
                   <EmptyState icon="📁" title="No active portfolios" description="" />
                 ) : (
@@ -182,11 +297,21 @@ export const AuditDashboardPage = () => {
                       <TableHead>
                         <TableRow>
                           <TableCell>Portfolio</TableCell>
-                          <TableCell align="center">Stage</TableCell>
-                          <TableCell align="right">Labels</TableCell>
-                          <TableCell align="right">+WF windows</TableCell>
-                          <TableCell align="right">Calib. max err</TableCell>
-                          <TableCell>Next stage needs</TableCell>
+                          <TableCell align="center" title="Current lifecycle stage. CANDIDATE = paper only (default); SHADOW = model runs but no live weighting; ADVISORY = model influences ranking with reduced weight; PRODUCTION = full model weight applied; RETIRED = disabled after negative walk-forward evidence.">
+                            Stage
+                          </TableCell>
+                          <TableCell align="right" title="Number of BUY trades this portfolio has closed AND had labelled with a TARGET_BEFORE_STOP outcome (i.e. we know whether the model's win-probability prediction was correct). Generated nightly from resolved trade candidates.">
+                            Labels
+                          </TableCell>
+                          <TableCell align="right" title="Walk-forward validation windows in which the model's predictions had positive expectancy on out-of-sample data. Promotion to SHADOW requires ≥2 positive windows. Runs nightly.">
+                            +WF windows
+                          </TableCell>
+                          <TableCell align="right" title="Largest gap between predicted win-probability and actual win-rate across probability buckets. Lower is better calibrated. — means no calibration data yet (needs ≥25 resolved labels per bucket).">
+                            Calib. max err
+                          </TableCell>
+                          <TableCell title="What this portfolio needs before it can be promoted to the next stage.">
+                            Next stage needs
+                          </TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
