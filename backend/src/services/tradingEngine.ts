@@ -302,13 +302,21 @@ export async function generateSignal(
     // ── Price action: 52W range position + day change + volume confirmation ─
     // P0.1 fix: grouped under one adaptive weight (w('price_action')) instead
     // of scoring unweighted, same as every block below.
+    //
+    // 52W LOW CAUTION (fix): proximity to the 52W low is a downtrend signal,
+    // not a buy signal. A stock making new lows is in a confirmed downtrend —
+    // it should require much stronger positive evidence from other sources
+    // (RSI, fundamentals, news) to trigger a BUY, not be rewarded for being
+    // cheap. The old +2/+1 scores were causing the algorithm to systematically
+    // buy falling knives. Now near-52W-low penalises the buy score; a stock
+    // near its 52W high (relative strength / price discovery) gets a mild boost.
     let priceActionRaw = 0;
     if (q.fiftyTwoWeekLow && q.fiftyTwoWeekHigh) {
       const range = q.fiftyTwoWeekHigh - q.fiftyTwoWeekLow;
       const pos = (q.price - q.fiftyTwoWeekLow) / range;
-      if (pos < 0.15) { priceActionRaw += 2; notes.push('Near 52W low'); }
-      else if (pos < 0.25) { priceActionRaw += 1; notes.push('Below 52W midpoint'); }
-      if (pos > 0.90) { priceActionRaw -= 1; notes.push('Near 52W high'); }
+      if (pos < 0.10) { priceActionRaw -= 2; notes.push('Near 52W low — downtrend caution (strong penalty)'); }
+      else if (pos < 0.20) { priceActionRaw -= 1; notes.push('Near 52W low — downtrend caution'); }
+      else if (pos > 0.85) { priceActionRaw += 1; notes.push('Near 52W high — relative strength'); }
     }
 
     if (q.changePct < -4) { priceActionRaw += 1; notes.push(`Day drop ${q.changePct.toFixed(1)}%`); }

@@ -21,7 +21,7 @@
 export type StrategyType = 'MEAN_REVERSION' | 'MOMENTUM' | 'VALUE' | 'NEWS_CATALYST' | 'MIXED' | 'UNKNOWN';
 
 /** Current classifier version — bump when rules change (used for audit/backfill tracking) */
-export const CLASSIFIER_VERSION = 'v1.1.0';
+export const CLASSIFIER_VERSION = 'v1.2.0';
 
 export type StrategySource = 'REAL_TIME_CLASSIFIER' | 'INFERRED_BACKFILL';
 
@@ -70,7 +70,11 @@ export function classifyStrategy(
   } else if (input.rsiVal !== null && input.rsiVal < input.rsiBuyThreshold) {
     mrVotes += 1; reasons.push('RSI_OVERSOLD');
   }
-  if (input.near52WLow) { mrVotes += 2; reasons.push('NEAR_52W_LOW'); }
+  // 52W low is a downtrend indicator — it is logged for audit purposes but
+  // no longer votes toward MEAN_REVERSION. Being near a 52W low means the
+  // stock is in a confirmed downtrend; the RSI and volume capitulation signals
+  // are the reliable mean-reversion triggers, not the price level alone.
+  if (input.near52WLow) { reasons.push('NEAR_52W_LOW_CAUTION'); }
   if (input.dayDropPct < -4) { mrVotes += 1; reasons.push('DAY_DROP_HIGH'); }
   if (input.volumeRatio !== null && input.volumeRatio > 1.5 && input.dayDropPct < 0) {
     mrVotes += 1; reasons.push('VOLUME_SPIKE_ON_DIP'); // capitulation volume
