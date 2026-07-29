@@ -945,9 +945,9 @@ async function runPortfolioTradingCycle(
       const stopDistancePerShare = signal.price * 0.015 * 1.5; // matches computeATRStop hard-stop math
       const riskAmountInr = qty * stopDistancePerShare;
       await registerExitPlan(portfolioId, symbol, signal.price, riskAmountInr).catch(() => null);
-      // Phase 15/19: Update candidate with actual entry/stop/target prices
-      const stopPrice  = signal.price * (1 - 0.015 * 1.5);
-      const targetPrice = signal.price * (1 + 0.015 * 3);  // 2R target
+      // Phase 15/19: Update candidate with actual entry/stop/target prices.
+      // All price/metadata values come from buildCandidateLabelPlan — no hardcoded
+      // R-multiples here so TARGET_R_MULTIPLE changes in one place propagate everywhere.
       if (policyEvaluationCandidateId19 > 0) {
         // Update existing candidate row — stamp actual fill prices + Phase 23 learning metadata
         const execPlan = buildCandidateLabelPlan('EXECUTED', signal.price);
@@ -959,7 +959,7 @@ async function runPortfolioTradingCycle(
                risk_per_share=?, stop_r_multiple=?, target_r_multiple=?,
                label_horizon_days=?, label_ready_at=?
            WHERE id=?`,
-          [signal.price, stopPrice, targetPrice,
+          [signal.price, execPlan.stopPrice, execPlan.targetPrice,
            execPlan.priceSource, execPlan.dataSource, execPlan.labelQuality,
            execPlan.riskPerShare, execPlan.stopRMultiple, execPlan.targetRMultiple,
            execPlan.labelHorizonDays, execPlan.labelReadyAt,
