@@ -97,12 +97,14 @@ export const AuditDashboardPage = () => {
   const trainingHistory = data?.modelTrainingHistory ?? [];
   const latestRun = trainingHistory[trainingHistory.length - 1];
 
+  // All three metrics scaled to 0–100 so they share one Y-axis.
+  // AUC ×100, Accuracy ×100, Brier ×100 (lower is better; 25 = random baseline).
   const trainingChartData = trainingHistory.map((r, i) => ({
     run: `#${i + 1}`,
     trainedAt: new Date(r.trainedAt).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
-    holdoutAuc: r.holdoutAuc !== null ? Number(r.holdoutAuc.toFixed(3)) : null,
+    holdoutAuc:      r.holdoutAuc      !== null ? Number((r.holdoutAuc      * 100).toFixed(1)) : null,
     holdoutAccuracy: r.holdoutAccuracy !== null ? Number((r.holdoutAccuracy * 100).toFixed(1)) : null,
-    holdoutBrier: r.holdoutBrier !== null ? Number(r.holdoutBrier.toFixed(3)) : null,
+    holdoutBrier:    r.holdoutBrier    !== null ? Number((r.holdoutBrier    * 100).toFixed(2)) : null,
   }));
 
   const pnlChartData = timeline.map(t => ({
@@ -278,13 +280,20 @@ export const AuditDashboardPage = () => {
                 <LineChart data={trainingChartData} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#2d3748" />
                   <XAxis dataKey="trainedAt" stroke="#64748b" tick={{ fontSize: 12 }} />
-                  <YAxis stroke="#64748b" tick={{ fontSize: 12 }} />
-                  <Tooltip contentStyle={{ background: '#1a2035', border: '1px solid #2d3748', borderRadius: 8 }}
-                    labelStyle={{ color: '#94a3b8' }} />
+                  <YAxis stroke="#64748b" tick={{ fontSize: 12 }} domain={[0, 100]}
+                    label={{ value: '% (all ×100)', angle: -90, position: 'insideLeft', fill: '#64748b', fontSize: 11 }} />
+                  <Tooltip
+                    contentStyle={{ background: '#1a2035', border: '1px solid #2d3748', borderRadius: 8 }}
+                    labelStyle={{ color: '#94a3b8' }}
+                    formatter={(v: number, name: string) => [`${v.toFixed(1)}`, name]}
+                  />
                   <Legend />
-                  <Line type="monotone" dataKey="holdoutAuc" name="Holdout AUC" stroke="#3b82f6" strokeWidth={2} dot={false} connectNulls />
-                  <Line type="monotone" dataKey="holdoutAccuracy" name="Holdout Accuracy %" stroke="#8b5cf6" strokeWidth={1.5} strokeDasharray="6 3" dot={false} connectNulls />
-                  <Line type="monotone" dataKey="holdoutBrier" name="Holdout Brier (lower is better)" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="2 2" dot={false} connectNulls />
+                  <ReferenceLine y={25} stroke="#64748b" strokeDasharray="4 4"
+                    label={{ value: 'Brier baseline (random)', position: 'right', fill: '#64748b', fontSize: 10 }} />
+                  <ReferenceLine y={50} stroke="#374151" strokeDasharray="2 2" />
+                  <Line type="monotone" dataKey="holdoutAuc" name="Holdout AUC ×100" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} connectNulls />
+                  <Line type="monotone" dataKey="holdoutAccuracy" name="Holdout Accuracy %" stroke="#8b5cf6" strokeWidth={1.5} strokeDasharray="6 3" dot={{ r: 3 }} connectNulls />
+                  <Line type="monotone" dataKey="holdoutBrier" name="Holdout Brier ×100 (↓ better)" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="2 2" dot={{ r: 3 }} connectNulls />
                 </LineChart>
               </ResponsiveContainer>
             )}
