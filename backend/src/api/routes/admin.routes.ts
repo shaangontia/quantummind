@@ -984,13 +984,13 @@ router.post('/admin/ml-training/run', verifyAuth, requireUserAdminAuth, async (_
     // Step 1: resolve signal outcomes (marks signal_patterns rows WIN/LOSS from realised trade P&L)
     const { resolveSignalOutcomes } = await import('../../services/adaptiveEngine.js');
     await resolveSignalOutcomes().catch(err =>
-      logger.warn({ job: 'ml-training-manual', phase: 'resolve', reason: String(err) })
+      logger.warn({ job: 'ml-training-manual', phase: 'adaptive', reason: `resolve failed: ${String(err)}` })
     );
 
     // Step 2: generate TARGET_BEFORE_STOP labels for closed candidates
     const { generateLabels } = await import('../../services/labelGenerator.js');
     await generateLabels().catch(err =>
-      logger.warn({ job: 'ml-training-manual', phase: 'label', reason: String(err) })
+      logger.warn({ job: 'ml-training-manual', phase: 'adaptive', reason: `label generation failed: ${String(err)}` })
     );
 
     // Step 3: train the win-probability model
