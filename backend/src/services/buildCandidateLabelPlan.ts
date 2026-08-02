@@ -10,8 +10,9 @@
  *   await recordCandidate({ ...otherFields, ...plan });
  *
  * Price formulas (mirror the executed-trade path in marketMonitor.ts):
- *   stop   = price × (1 − 0.015 × 1.5)  = price × 0.9775   (~2.25% below)
- *   target = price × (1 + 0.015 × 3.0)  = price × 1.045    (~4.5% above, 2R)
+ *   stop   = price × (1 − 0.02 × 2.0)   = price × 0.96     (~4% below)
+ *   target = price × (1 + 0.02 × 2.0 × TARGET_R_MULTIPLE)
+ *          = price × 1.04               (~4% above, at TARGET_R_MULTIPLE=1.0)
  *
  * Learning weights:
  *   EXECUTED          → 1.0  (actual portfolio trade)
@@ -32,13 +33,17 @@ export type VetoType     = 'soft' | 'hard';
 /** Label horizon: 15 trading days ≈ 21 calendar days */
 const LABEL_HORIZON_DAYS = 15;
 const CALENDAR_BUFFER    = 21; // calendar days used for label_ready_at date
-const ATR_PCT            = 0.015;
-const ATR_MULTIPLIER     = 1.5;
-// Target R-multiple reduced from 2.0→1.0 so WIN aligns with what the trading engine
-// actually captures via trailing stop (typically +1.5–2.5% exit). At 2.0R (+4.5%),
-// almost no trade reaches target before the 10-day time stop fires → all labels are
-// LOSS even on profitable trades. At 1.0R (+2.25%), a trade that exits via trailing
-// stop at +2%+ registers as WIN, matching real portfolio profitability.
+// ATR_PCT and ATR_MULTIPLIER bumped from (0.015, 1.5) to (0.02, 2.0) to stay
+// in lockstep with exitEngine.ts's widened HARD_STOP_ATR_MULT × default atrPct
+// (also −4%). Labels must match live exits — otherwise SHADOW/EXECUTED rows
+// train the model on stop/target thresholds that never actually fire.
+const ATR_PCT            = 0.02;
+const ATR_MULTIPLIER     = 2.0;
+// Target R-multiple kept at 1.0. Combined with the new ATR values above:
+//   target = +4% (was +2.25% at 1.0R with old constants; +4.5% at 2.0R historically)
+// The +4% target now aligns with the trailing-stop profit floor (also +5%
+// after the exitEngine.ts fix), so WIN labels reflect the ~+4-5% exits the
+// live engine actually captures — no more all-LOSS labels on profitable trades.
 const TARGET_R_MULTIPLE  = 1.0;
 const STOP_R_MULTIPLE    = 1.5;
 

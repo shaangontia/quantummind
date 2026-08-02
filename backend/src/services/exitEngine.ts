@@ -13,7 +13,7 @@
 import { query, queryOne, run } from '../db/turso.js';
 import { logger } from '../lib/logger.js';
 
-const TRADING_DAYS_TIME_STOP = 10;
+const TRADING_DAYS_TIME_STOP = 15;
 
 // ── Stop configuration ─────────────────────────────────────────────────────
 // Hard ATR stop protects against a bad entry (loss-limiting).
@@ -26,7 +26,14 @@ const TRADING_DAYS_TIME_STOP = 10;
 // 30–40% of your peak unrealized gain, never more". That's what turns
 // a portfolio's occasional +40% winner into a portfolio-level advantage
 // instead of a series of clipped +5% exits.
-const HARD_STOP_ATR_MULT             = 1.5;
+//
+// HARD_STOP widened from 1.5×1.5% (−2.25%) to 2.0×2.0% (−4%): NSE mid/
+// small-caps routinely see 3–5% intraday swings, so the old −2.25% stop
+// was firing on normal noise and clustering losses at exactly the stop
+// level. −4% still sits well under the 8% marketMonitor stopLoss ceiling
+// while giving positions enough room to breathe. Kept in sync with
+// marketMonitor.ts stopDistance formula and buildCandidateLabelPlan.ts.
+const HARD_STOP_ATR_MULT             = 2.0;
 const TRAILING_ACTIVATION_PROFIT_PCT = 5.0;
 
 /**
@@ -49,7 +56,12 @@ function trailingDistancePctFor(pnlPct: number): number | null {
  * Example: peak +25% → floor +15% (lock 60% of the peak gain).
  */
 function profitFloorPctFor(peakPnlPct: number): number {
-  if (peakPnlPct < 10) return 2;                    //  5–10% peak: at least breakeven+2 (cover fees)
+  // Floor must be ≥ TRAILING_ACTIVATION_PROFIT_PCT — otherwise the exit's
+  // `pnlPct >= TRAILING_ACTIVATION_PROFIT_PCT` guard blocks the exit even
+  // when price crosses the trailing stop, making the trailing set in
+  // [5,10) dead weight and letting winners ride all the way back to the
+  // hard stop. Was `return 2` (below the 5% activation → never fired).
+  if (peakPnlPct < 10) return TRAILING_ACTIVATION_PROFIT_PCT;   //  5–10% peak: lock exactly the activation floor
   if (peakPnlPct < 20) return peakPnlPct * 0.50;    // 10–20% peak: lock 50% of gain
   if (peakPnlPct < 40) return peakPnlPct * 0.60;    // 20–40% peak: lock 60%
   if (peakPnlPct < 80) return peakPnlPct * 0.70;    // 40–80% peak: lock 70%
@@ -92,7 +104,7 @@ export interface ExitDecision {
  * the position clears the activation threshold. Until then, only the hard
  * ATR stop protects the trade.
  */
-export function computeATRStop(entryPrice: number, atrPct: number = 0.015): { atrStop: number; trailingStop: number } {
+export function computeATRStop(entryPrice: number, atrPct: number = 0.02): { atrStop: number; trailingStop: number } {
   const atr = entryPrice * atrPct;
   const r2 = (v: number) => Math.round(v * 100) / 100;
   return {
@@ -112,13 +124,13 @@ export async function registerExitPlan(
   symbol: string,
   entryPrice: number,
   riskAmountInr: number,
-  atrPct: number = 0.015,
+  atrPct: number = 0.02,
 ): Promise<void> {
   const { atrStop, trailingStop } = computeATRStop(entryPrice, atrPct);
 
-  // Time stop: 10 trading days from today (approximate as 14 calendar days)
+  // Time stop: 15 trading days from today (approximate as 21 calendar days)
   const timeStop = new Date();
-  timeStop.setDate(timeStop.getDate() + 14);
+  timeStop.setDate(timeStop.getDate() + 21);
   const timeStopDate = timeStop.toISOString().slice(0, 10);
 
   await run(
@@ -160,7 +172,7 @@ export async function updateTrailingStop(
   portfolioId: number,
   symbol: string,
   currentPrice: number,
-  _atrPct: number = 0.015,
+  _atrPct: number = 0.02,
 ): Promise<void> {
   const row = await queryOne(
     'SELECT trailing_stop_price, avg_buy_price FROM holdings WHERE portfolio_id=? AND symbol=?',
@@ -236,10 +248,14 @@ export function evaluateExits(h: HoldingExitContext, marketRegimeLabel: 'BULLISH
   }
 
   // 4. Time stop — no meaningful move in expected window
+  // Threshold tightened from ±2% to ±1% so genuinely-oscillating positions
+  // are given more room to trend. Previous ±2% band was closing normal
+  // ±1.5% intraday drift at day-10 for a small cost-only loss (~−0.5%
+  // after round-trip fees) — a systematic drain across the portfolio.
   if (h.timeStopDate) {
     const dueDate = new Date(h.timeStopDate);
     const today = new Date();
-    if (today >= dueDate && Math.abs(pnlPct) < 2) {
+    if (today >= dueDate && Math.abs(pnlPct) < 1) {
       return {
         shouldExit: true, isHardStop: false,
         exitType: 'TIME_STOP',
