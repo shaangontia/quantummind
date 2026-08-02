@@ -901,9 +901,11 @@ async function runPortfolioTradingCycle(
     logger.signal(portfolioId, symbol, signal.action, signal.strength, signal.reason, signal.price);
 
     // Phase 13: Risk-based position sizing (ATR/stop-distance model)
-    // risk_per_trade = 0.5% of NAV; stop_distance = 1.5 × ATR (approx 1.5% of price)
+    // risk_per_trade = 0.5% of NAV; stop_distance = 2.0 × ATR (approx 2% of price)
+    // Kept in sync with exitEngine.ts HARD_STOP_ATR_MULT × default atrPct so
+    // the sized risk matches the actual stop the exit engine will register.
     const riskPerTradeInr = refreshed.totalValue * 0.005;
-    const stopDistanceInr = signal.price * 0.015 * 1.5;  // 1.5 × ATR(~1.5% of price)
+    const stopDistanceInr = signal.price * 0.02 * 2.0;  // 2.0 × ATR(~2% of price) → −4% stop
     const riskBasedQty = stopDistanceInr > 0 ? Math.floor(riskPerTradeInr / stopDistanceInr) : 0;
     const allocBasedQty = Math.floor(allocationCapInr / signal.price);
     const cashCapQty    = Math.floor(refreshed.cashBalance * 0.3 / signal.price);
@@ -942,7 +944,7 @@ async function runPortfolioTradingCycle(
       // ~0.025% of cash — a couple hundred rupees on a ₹10L portfolio — so
       // the "2R profit target" in exitEngine.ts fired at trivial ₹250 gains
       // instead of at genuine 4.5% returns.
-      const stopDistancePerShare = signal.price * 0.015 * 1.5; // matches computeATRStop hard-stop math
+      const stopDistancePerShare = signal.price * 0.02 * 2.0; // matches computeATRStop hard-stop math (−4%)
       const riskAmountInr = qty * stopDistancePerShare;
       await registerExitPlan(portfolioId, symbol, signal.price, riskAmountInr).catch(() => null);
       // Phase 15/19: Update candidate with actual entry/stop/target prices.
