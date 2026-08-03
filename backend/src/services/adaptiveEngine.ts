@@ -9,6 +9,18 @@
 import { query, queryOne, run } from '../db/turso.js';
 import { getQuote, getRsi, toNseSymbol } from './marketData.js';
 import { classifyMarketRegime as classifyDmaRegime, type MarketRegimeLabel } from './regimeEngine.js';
+import { mapWithConcurrency } from '../lib/concurrency.js';
+
+/**
+ * Per-invocation cap on how many unresolved rows each nightly resolver
+ * processes. Chosen so that at concurrency 8, worst-case wall time
+ * (~1–2 s per Yahoo quote fetch) stays comfortably under the 30 s
+ * cron-job.org HTTP timeout that gates the nightly-training endpoint chain
+ * (see admin.routes.ts /cron/nightly/*). Any surplus backlog is drained
+ * across subsequent nightly runs — idempotent by WHERE resolved = 0.
+ */
+const RESOLVE_BATCH_LIMIT      = 50;
+const RESOLVE_CONCURRENCY      = 8;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -175,14 +187,19 @@ export async function recordSignalVotes(
  * resolveSignalOutcomes() (>1%/<-1% move in the signal's direction), so the
  * two tables stay directly comparable. Called from the same nightly job.
  */
-export async function resolveSignalVoteOutcomes(): Promise<void> {
+export async function resolveSignalVoteOutcomes(): Promise<{ processed: number; remainingBacklog: number }> {
+  // Cap per invocation so the nightly-training chunk (see admin.routes.ts
+  // /cron/nightly/resolve) reliably completes inside the 30 s cron-job.org
+  // window. Any surplus is picked up on the next nightly run.
   const unresolved = await query(
-    `SELECT * FROM signal_vote_log WHERE resolved = 0 AND signal_time <= datetime('now', '-5 days')`,
+    `SELECT * FROM signal_vote_log WHERE resolved = 0 AND signal_time <= datetime('now', '-5 days')
+     ORDER BY signal_time ASC LIMIT ?`,
+    [RESOLVE_BATCH_LIMIT],
   ).catch(() => []);
 
-  for (const s of unresolved) {
+  await mapWithConcurrency(unresolved, RESOLVE_CONCURRENCY, async s => {
     const currentQuote = await getQuote(s.symbol as string).catch(() => null);
-    if (!currentQuote) continue;
+    if (!currentQuote) return;
 
     const priceAt = Number(s.price_at_signal);
     const pnlPct = ((currentQuote.price - priceAt) / priceAt) * 100;
@@ -194,8 +211,13 @@ export async function resolveSignalVoteOutcomes(): Promise<void> {
       'UPDATE signal_vote_log SET exit_price=?, exit_time=CURRENT_TIMESTAMP, pnl_pct=?, outcome=?, resolved=1 WHERE id=?',
       [currentQuote.price, pnlPct, outcome, s.id],
     ).catch(() => null);
-  }
-  console.log(`[Adaptive] Resolved ${unresolved.length} signal-vote outcomes`);
+  });
+
+  const remaining = await queryOne(
+    `SELECT COUNT(*) AS cnt FROM signal_vote_log WHERE resolved = 0 AND signal_time <= datetime('now', '-5 days')`,
+  ).then(r => Number(r?.cnt ?? 0)).catch(() => 0);
+  console.log(`[Adaptive] Resolved ${unresolved.length} signal-vote outcomes (remaining backlog: ${remaining})`);
+  return { processed: unresolved.length, remainingBacklog: remaining };
 }
 
 // Record a new signal for outcome tracking
@@ -214,15 +236,17 @@ export async function recordSignalForTracking(
 }
 
 // Resolve outcomes for signals that are now 5+ days old
-export async function resolveSignalOutcomes(): Promise<void> {
-  // Get unresolved signals older than 5 days
+export async function resolveSignalOutcomes(): Promise<{ processed: number; remainingBacklog: number }> {
+  // Batch-capped for the same reason as resolveSignalVoteOutcomes above.
   const unresolved = await query(
-    `SELECT * FROM signal_outcomes WHERE resolved = 0 AND signal_time <= datetime('now', '-5 days')`
+    `SELECT * FROM signal_outcomes WHERE resolved = 0 AND signal_time <= datetime('now', '-5 days')
+     ORDER BY signal_time ASC LIMIT ?`,
+    [RESOLVE_BATCH_LIMIT],
   );
 
-  for (const s of unresolved) {
+  await mapWithConcurrency(unresolved, RESOLVE_CONCURRENCY, async s => {
     const currentQuote = await getQuote(s.symbol as string).catch(() => null);
-    if (!currentQuote) continue;
+    if (!currentQuote) return;
 
     const priceAt = Number(s.price_at_signal);
     const pnlPct = ((currentQuote.price - priceAt) / priceAt) * 100;
@@ -249,11 +273,15 @@ export async function resolveSignalOutcomes(): Promise<void> {
         [isWin ? 1 : 0, isWin ? 1 : 0, s.signal_source]
       );
     }
-  }
+  });
 
   // Recalibrate weights based on updated win rates
   await recalibrateWeights();
-  console.log(`[Adaptive] Resolved ${unresolved.length} signal outcomes`);
+  const remaining = await queryOne(
+    `SELECT COUNT(*) AS cnt FROM signal_outcomes WHERE resolved = 0 AND signal_time <= datetime('now', '-5 days')`,
+  ).then(r => Number(r?.cnt ?? 0)).catch(() => 0);
+  console.log(`[Adaptive] Resolved ${unresolved.length} signal outcomes (remaining backlog: ${remaining})`);
+  return { processed: unresolved.length, remainingBacklog: remaining };
 }
 
 // Recalibrate signal weights from win/loss counts via Beta-Binomial Bayesian

@@ -146,6 +146,59 @@ router.post('/cron/nightly-training', requireAdminAuth, async (_req: Request, re
   });
 });
 
+/**
+ * POST /api/cron/nightly/{resolve,label,train,governance,reconcile,insights}
+ *
+ * Each endpoint runs one dependency-ordered chunk of the nightly pipeline
+ * and AWAITS the work before responding. This is the production path — the
+ * legacy /cron/nightly-training above fires-and-forgets in a way that gets
+ * killed on Vercel serverless the moment res.json() completes (kept only
+ * for the local node-cron path where the process persists).
+ *
+ * Chain via cron-job.org (all IST, weekdays), 5 min apart to stay under the
+ * 30 s HTTP timeout without stalling chunks against each other:
+ *   20:00 /cron/nightly/resolve      — outcome resolution (batch-capped)
+ *   20:05 /cron/nightly/label        — label generation
+ *   20:10 /cron/nightly/train        — model retrains (pure math, fast)
+ *   20:15 /cron/nightly/governance   — governance + walk-forward
+ *   20:20 /cron/nightly/reconcile    — exit plans + virtual ledger
+ *   20:25 /cron/nightly/insights     — Gemini insights + health snapshots
+ *
+ * Each returns a JSON payload summarising per-step outcomes so cron-job.org
+ * history + any log inspection tool can see exactly what ran and how much
+ * backlog remains. Every sub-step is wrapped in catch(...) so one failure
+ * doesn't take down the chunk.
+ */
+async function runNightlyChunkEndpoint(
+  chunkName: 'resolve' | 'label' | 'train' | 'governance' | 'reconcile' | 'insights',
+  res: Response,
+): Promise<void> {
+  const startedAt = new Date().toISOString();
+  const start = Date.now();
+  try {
+    const marketMonitor = await import('../../scheduler/marketMonitor.js');
+    const fn =
+      chunkName === 'resolve'    ? marketMonitor.nightlyResolveChunk    :
+      chunkName === 'label'      ? marketMonitor.nightlyLabelChunk      :
+      chunkName === 'train'      ? marketMonitor.nightlyTrainChunk      :
+      chunkName === 'governance' ? marketMonitor.nightlyGovernanceChunk :
+      chunkName === 'reconcile'  ? marketMonitor.nightlyReconcileChunk  :
+                                   marketMonitor.nightlyInsightsChunk;
+    const result = await fn();
+    res.json({ success: true, chunk: chunkName, startedAt, durationMs: Date.now() - start, result });
+  } catch (err) {
+    console.error(`[Admin] Nightly chunk ${chunkName} FAILED:`, String(err));
+    res.status(500).json({ success: false, chunk: chunkName, startedAt, durationMs: Date.now() - start, error: String(err) });
+  }
+}
+
+router.post('/cron/nightly/resolve',    requireAdminAuth, (_req: Request, res: Response) => runNightlyChunkEndpoint('resolve',    res));
+router.post('/cron/nightly/label',      requireAdminAuth, (_req: Request, res: Response) => runNightlyChunkEndpoint('label',      res));
+router.post('/cron/nightly/train',      requireAdminAuth, (_req: Request, res: Response) => runNightlyChunkEndpoint('train',      res));
+router.post('/cron/nightly/governance', requireAdminAuth, (_req: Request, res: Response) => runNightlyChunkEndpoint('governance', res));
+router.post('/cron/nightly/reconcile',  requireAdminAuth, (_req: Request, res: Response) => runNightlyChunkEndpoint('reconcile',  res));
+router.post('/cron/nightly/insights',   requireAdminAuth, (_req: Request, res: Response) => runNightlyChunkEndpoint('insights',   res));
+
 // ─── Phase 20: Decision Replay — Admin endpoints ─────────────────────────────────
 
 /**

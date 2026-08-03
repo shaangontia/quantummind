@@ -1235,107 +1235,157 @@ export async function runMarketCycle(): Promise<void> {
  * learning speed — confirmed there was no external trigger for this job
  * before this fix; only market-cycle had one.
  */
-export async function runNightlyLearningJob(): Promise<void> {
-    // Resolve per-source vote-log rows FIRST, then train the joint
-    // cross-source model on them — both must happen before
-    // resolveSignalOutcomes() below, since that function calls
-    // recalibrateWeights() at its end, which prefers the joint model's
-    // output over the univariate estimate whenever it's available. No-ops
-    // (logs "insufficient data") until enough resolved rows exist — see
-    // jointVoteModel.ts.
-    await resolveSignalVoteOutcomes().catch(console.error);
-    const { trainJointVoteModel } = await import('../services/jointVoteModel.js');
-    await trainJointVoteModel().catch(console.error);
-    // Expected-value MAGNITUDE regression (win/loss return size, not
-    // win/loss itself) — trains off signal_patterns' own outcome resolution
-    // (resolvePatternOutcome, called at trade close time), independent of
-    // the vote-log path above. No-ops per class below its own sample
-    // threshold — see evMagnitudeModel.ts.
-    const { trainMagnitudeModels } = await import('../services/evMagnitudeModel.js');
-    await trainMagnitudeModels().catch(console.error);
-    // Resolve embedding-based announcement outcomes (5+ days old) — see
-    // newsEmbeddingModel.ts. Independent of the above; order doesn't matter.
-    const { resolveAnnouncementOutcomes } = await import('../services/newsEmbeddingModel.js');
-    await resolveAnnouncementOutcomes().catch(console.error);
-    await resolveSignalOutcomes().catch(console.error);
-    // Update sector-level accuracy weights from resolved trade outcomes
-    await computeSectorAccuracy().catch(console.error);
-    // Phase 15: Generate target-before-stop labels for closed candidates
-    const { generateLabels } = await import('../services/labelGenerator.js');
-    await generateLabels().catch(console.error);
-    // Phase 16: Evaluate model governance state for each portfolio
-    const { evaluateModelGovernance, computeCalibration } = await import('../services/modelLifecycle.js');
-    const govPortfolios = await query('SELECT id FROM portfolios WHERE is_active=1').catch(() => []);
-    for (const p of govPortfolios) {
-      await evaluateModelGovernance(Number(p.id)).catch(console.error);
-    }
-    await computeCalibration('buy_win_probability_v2').catch(console.error);
-    // Phase 18: Exit-plan reconciliation — find + restore holdings missing a stop-loss
-    const { reconcileAllExitPlans } = await import('../services/exitPlanReconciler.js');
-    await reconcileAllExitPlans().catch(console.error);
-    // Phase 19: Generate horizon-specific policy outcome labels for policy evaluations
-    const { generatePolicyOutcomeLabels } = await import('../services/policyLabelGenerator.js');
-    await generatePolicyOutcomeLabels().catch(console.error);
-    // Phase 14: Retrain ML probability model on updated resolved patterns
-    const { trainModel } = await import('../services/mlProbabilityModel.js');
-    const trainResult = await trainModel().catch((err: unknown) => {
-      console.error('[ml-model] trainModel threw unexpectedly:', err);
-      return null;
-    });
-    if (trainResult && !trainResult.ok) {
-      console.warn(`[ml-model] Training skipped — reason: ${trainResult.reason}`);
-    }
-    // Phase 14: Run walk-forward validation for each active portfolio
-    const { runWalkForward } = await import('../services/walkForwardEngine.js');
-    const { runStrategyWalkForward } = await import('../services/strategyWalkForward.js');
-    const wfPortfolios = await query('SELECT id FROM portfolios WHERE is_active=1').catch(() => []);
-    for (const p of wfPortfolios) {
-      await runWalkForward(Number(p.id)).catch(console.error);
-      await runStrategyWalkForward(Number(p.id)).catch(console.error);
-    }
-    // Gemini portfolio health check for each active portfolio (best-effort, stored in RAG)
-    try {
-      const portfolios = await query('SELECT * FROM portfolios WHERE is_active = 1');
-      for (const p of portfolios) {
-        const summary = await getPortfolioSummary(Number(p.id)).catch(() => null);
-        if (!summary) continue;
-        const sectorBreakdown: Record<string, number> = {};
-        const { getSymbolSector } = await import('../services/marketData.js');
-        for (const h of summary.holdings) {
-          const sec = getSymbolSector(h.symbol) as string;
-          sectorBreakdown[sec] = (sectorBreakdown[sec] ?? 0) + (h.quantity * h.currentPrice / summary.totalValue) * 100;
-        }
-        const topHoldings = summary.holdings
-          .sort((a, b) => (b.quantity * b.currentPrice) - (a.quantity * a.currentPrice))
-          .slice(0, 5)
-          .map(h => ({
-            symbol: h.symbol,
-            weight: summary.totalValue > 0 ? (h.quantity * h.currentPrice / summary.totalValue) * 100 : 0,
-            pnlPct: h.avgBuyPrice > 0 ? ((h.currentPrice - h.avgBuyPrice) / h.avgBuyPrice) * 100 : 0,
-          }));
-        const navChange = Number(p.initial_capital) > 0
-          ? ((summary.totalValue - Number(p.initial_capital)) / Number(p.initial_capital)) * 100 : 0;
-        const winRateRow = await queryOne(
-          `SELECT CAST(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS REAL) / MAX(COUNT(*), 1) as wr
-           FROM signal_outcomes WHERE portfolio_id = ? AND resolved = 1`, [Number(p.id)]
-        ).catch(() => null);
-        const winRate = Number(winRateRow?.wr ?? 0.5);
-        const insight = await geminiPortfolioInsight(
-          String(p.name), navChange, topHoldings, sectorBreakdown, winRate
-        ).catch(() => null);
-        if (insight) {
-          const { rememberFact } = await import('../services/ragService.js');
-          await rememberFact(`Portfolio insight for ${p.name}: ${insight}`, 'news_analysis', String(p.id));
-          console.log(`[Gemini] Portfolio insight stored for ${p.name}`);
-        }
+/**
+ * Nightly pipeline — split into 6 dependency-ordered chunks, each callable
+ * independently from its own admin endpoint (see admin.routes.ts
+ * /cron/nightly/*). The chunks exist because Vercel serverless will
+ * terminate any work queued with setImmediate after res.json fires, and
+ * cron-job.org caps HTTP calls at 30 s — so the old fire-and-forget
+ * runNightlyLearningJob() endpoint pattern silently killed the pipeline
+ * mid-flight every night. Each chunk here is designed to fit in that 30 s
+ * window (network-heavy resolvers are batch-capped + parallelised in
+ * adaptiveEngine.ts / newsEmbeddingModel.ts).
+ *
+ * Recommended cron-job.org schedule (all IST, weekdays):
+ *   20:00 → /api/cron/nightly/resolve       (outcome resolution)
+ *   20:05 → /api/cron/nightly/label         (label generation)
+ *   20:10 → /api/cron/nightly/train         (all three model retrains)
+ *   20:15 → /api/cron/nightly/governance    (sector + governance + WF)
+ *   20:20 → /api/cron/nightly/reconcile     (exit plans + virtual ledger)
+ *   20:25 → /api/cron/nightly/insights      (Gemini + health snapshots)
+ *
+ * Every chunk uses catch(console.error) on sub-calls so a single failure
+ * doesn't take out the whole chunk; the response payload from each admin
+ * endpoint reports per-step outcomes.
+ */
+
+/** Chunk 1 — resolve outcomes on aged rows so downstream training/labels see fresh labels. */
+export async function nightlyResolveChunk(): Promise<Record<string, unknown>> {
+  const voteResult = await resolveSignalVoteOutcomes().catch(e => { console.error(e); return null; });
+  const { resolveAnnouncementOutcomes } = await import('../services/newsEmbeddingModel.js');
+  const annResult = await resolveAnnouncementOutcomes().catch(e => { console.error(e); return null; });
+  // resolveSignalOutcomes() calls recalibrateWeights() at its end, so the
+  // joint-vote model above must have been resolved and trained first for its
+  // output to influence the recalibration.
+  const sigResult = await resolveSignalOutcomes().catch(e => { console.error(e); return null; });
+  return { voteResult, annResult, sigResult };
+}
+
+/** Chunk 2 — generate labels from resolved candidates so the ML retrain has current data. */
+export async function nightlyLabelChunk(): Promise<Record<string, unknown>> {
+  const { generateLabels } = await import('../services/labelGenerator.js');
+  const labels = await generateLabels().catch(e => { console.error(e); return null; });
+  const { generatePolicyOutcomeLabels } = await import('../services/policyLabelGenerator.js');
+  const policyLabels = await generatePolicyOutcomeLabels().catch(e => { console.error(e); return null; });
+  return { labels, policyLabels };
+}
+
+/** Chunk 3 — retrain the three model families on the newly-labelled data. Pure in-process math. */
+export async function nightlyTrainChunk(): Promise<Record<string, unknown>> {
+  const { trainJointVoteModel } = await import('../services/jointVoteModel.js');
+  const joint = await trainJointVoteModel().catch(e => { console.error(e); return null; });
+  const { trainMagnitudeModels } = await import('../services/evMagnitudeModel.js');
+  const magnitude = await trainMagnitudeModels().catch(e => { console.error(e); return null; });
+  const { trainModel } = await import('../services/mlProbabilityModel.js');
+  const primary = await trainModel().catch((err: unknown) => {
+    console.error('[ml-model] trainModel threw unexpectedly:', err);
+    return null;
+  });
+  if (primary && !primary.ok) console.warn(`[ml-model] Training skipped — reason: ${primary.reason}`);
+  return { joint, magnitude, primary };
+}
+
+/** Chunk 4 — sector accuracy + per-portfolio governance evaluation + calibration + walk-forward. */
+export async function nightlyGovernanceChunk(): Promise<Record<string, unknown>> {
+  const sectorRows = await computeSectorAccuracy().catch(e => { console.error(e); return null; });
+  const { evaluateModelGovernance, computeCalibration } = await import('../services/modelLifecycle.js');
+  const govPortfolios = await query('SELECT id FROM portfolios WHERE is_active=1').catch(() => []);
+  const governance: unknown[] = [];
+  for (const p of govPortfolios) {
+    const state = await evaluateModelGovernance(Number(p.id)).catch(e => { console.error(e); return null; });
+    governance.push({ portfolioId: Number(p.id), state });
+  }
+  const calibration = await computeCalibration('buy_win_probability_v2').catch(e => { console.error(e); return null; });
+  const { runWalkForward } = await import('../services/walkForwardEngine.js');
+  const { runStrategyWalkForward } = await import('../services/strategyWalkForward.js');
+  for (const p of govPortfolios) {
+    await runWalkForward(Number(p.id)).catch(console.error);
+    await runStrategyWalkForward(Number(p.id)).catch(console.error);
+  }
+  return { sectorRows, governance, calibration, walkForwardPortfolios: govPortfolios.length };
+}
+
+/** Chunk 5 — restore any holdings whose stops fell off, then reconcile the virtual ledger. */
+export async function nightlyReconcileChunk(): Promise<Record<string, unknown>> {
+  const { reconcileAllExitPlans } = await import('../services/exitPlanReconciler.js');
+  const exitPlans = await reconcileAllExitPlans().catch(e => { console.error(e); return null; });
+  const virtualLedger = await runVirtualReconciliationJob().catch(err => {
+    logger.error({ job: 'virtual-reconciliation-nightly', err: String(err), msg: 'Nightly reconciliation cron failed' });
+    return null;
+  });
+  return { exitPlans, virtualLedger };
+}
+
+/** Chunk 6 — Gemini per-portfolio insights + portfolio-health snapshot refresh. */
+export async function nightlyInsightsChunk(): Promise<Record<string, unknown>> {
+  const insights: unknown[] = [];
+  try {
+    const portfolios = await query('SELECT * FROM portfolios WHERE is_active = 1');
+    for (const p of portfolios) {
+      const summary = await getPortfolioSummary(Number(p.id)).catch(() => null);
+      if (!summary) continue;
+      const sectorBreakdown: Record<string, number> = {};
+      const { getSymbolSector } = await import('../services/marketData.js');
+      for (const h of summary.holdings) {
+        const sec = getSymbolSector(h.symbol) as string;
+        sectorBreakdown[sec] = (sectorBreakdown[sec] ?? 0) + (h.quantity * h.currentPrice / summary.totalValue) * 100;
       }
-    } catch (err) { console.warn('[Gemini] Portfolio insight failed:', err); }
-    // Phase 21: Nightly portfolio health refresh for all active portfolios
-    await runAllPortfoliosHealthJob().catch(console.error);
-    // Phase 22: Nightly virtual ledger reconciliation for all active portfolios
-    await runVirtualReconciliationJob().catch(err =>
-      logger.error({ job: 'virtual-reconciliation-nightly', err: String(err), msg: 'Nightly reconciliation cron failed' })
-    );
+      const topHoldings = summary.holdings
+        .sort((a, b) => (b.quantity * b.currentPrice) - (a.quantity * a.currentPrice))
+        .slice(0, 5)
+        .map(h => ({
+          symbol: h.symbol,
+          weight: summary.totalValue > 0 ? (h.quantity * h.currentPrice / summary.totalValue) * 100 : 0,
+          pnlPct: h.avgBuyPrice > 0 ? ((h.currentPrice - h.avgBuyPrice) / h.avgBuyPrice) * 100 : 0,
+        }));
+      const navChange = Number(p.initial_capital) > 0
+        ? ((summary.totalValue - Number(p.initial_capital)) / Number(p.initial_capital)) * 100 : 0;
+      const winRateRow = await queryOne(
+        `SELECT CAST(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS REAL) / MAX(COUNT(*), 1) as wr
+         FROM signal_outcomes WHERE portfolio_id = ? AND resolved = 1`, [Number(p.id)]
+      ).catch(() => null);
+      const winRate = Number(winRateRow?.wr ?? 0.5);
+      const insight = await geminiPortfolioInsight(
+        String(p.name), navChange, topHoldings, sectorBreakdown, winRate
+      ).catch(() => null);
+      if (insight) {
+        const { rememberFact } = await import('../services/ragService.js');
+        await rememberFact(`Portfolio insight for ${p.name}: ${insight}`, 'news_analysis', String(p.id));
+        console.log(`[Gemini] Portfolio insight stored for ${p.name}`);
+        insights.push({ portfolioId: Number(p.id), stored: true });
+      } else {
+        insights.push({ portfolioId: Number(p.id), stored: false });
+      }
+    }
+  } catch (err) { console.warn('[Gemini] Portfolio insight failed:', err); }
+  const health = await runAllPortfoliosHealthJob().catch(e => { console.error(e); return null; });
+  return { insights, health };
+}
+
+/**
+ * Aggregate — kept for the in-process node-cron path (startScheduler below,
+ * fires only on a persistently-running process — local dev / node
+ * dist/index.js). On Vercel serverless this whole function still won't
+ * fit in a single invocation; the six admin endpoints above are the
+ * production path.
+ */
+export async function runNightlyLearningJob(): Promise<void> {
+  await nightlyResolveChunk();
+  await nightlyLabelChunk();
+  await nightlyTrainChunk();
+  await nightlyGovernanceChunk();
+  await nightlyReconcileChunk();
+  await nightlyInsightsChunk();
 }
 
 export function startScheduler(): void {
