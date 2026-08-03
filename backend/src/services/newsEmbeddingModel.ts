@@ -30,10 +30,15 @@
  * whenever this returns null.
  */
 
-import { getClient, run, query } from '../db/turso.js';
+import { getClient, run, query, queryOne } from '../db/turso.js';
 import { geminiEmbed } from './geminiService.js';
 import { logger } from '../lib/logger.js';
+import { mapWithConcurrency } from '../lib/concurrency.js';
 import type { CorporateAnnouncement } from './newsService.js';
+
+/** See adaptiveEngine.ts RESOLVE_BATCH_LIMIT — same rationale (30 s cron cap). */
+const RESOLVE_BATCH_LIMIT      = 50;
+const RESOLVE_CONCURRENCY      = 8;
 
 const TOP_K = 12;
 const MIN_SIMILAR = 5; // need at least this many resolved neighbors for the score to mean anything
@@ -104,17 +109,19 @@ export async function recordAnnouncementEmbedding(a: CorporateAnnouncement, keyw
 }
 
 /** Nightly: resolve rows 5+ days old against the actual subsequent price move. */
-export async function resolveAnnouncementOutcomes(): Promise<void> {
+export async function resolveAnnouncementOutcomes(): Promise<{ processed: number; remainingBacklog: number }> {
+  // Batch-capped for the 30 s cron-job.org window (see adaptiveEngine.ts).
   const unresolved = await query(
-    `SELECT * FROM announcement_embeddings WHERE resolved = 0 AND created_at <= datetime('now', ?)`,
-    [`-${RESOLVE_AFTER_DAYS} days`],
+    `SELECT * FROM announcement_embeddings WHERE resolved = 0 AND created_at <= datetime('now', ?)
+     ORDER BY created_at ASC LIMIT ?`,
+    [`-${RESOLVE_AFTER_DAYS} days`, RESOLVE_BATCH_LIMIT],
   ).catch(() => []);
 
   const { getQuote } = await import('./marketData.js');
   let resolvedCount = 0;
-  for (const row of unresolved) {
+  await mapWithConcurrency(unresolved, RESOLVE_CONCURRENCY, async row => {
     const quote = await getQuote(String(row.symbol)).catch(() => null);
-    if (!quote || !quote.price) continue;
+    if (!quote || !quote.price) return;
 
     const priceAt = Number(row.price_at_announcement);
     const pnlPct = ((quote.price - priceAt) / priceAt) * 100;
@@ -125,8 +132,13 @@ export async function resolveAnnouncementOutcomes(): Promise<void> {
       [outcome, pnlPct, row.id],
     ).catch(() => null);
     resolvedCount++;
-  }
-  console.log(`[NewsEmbedding] Resolved ${resolvedCount}/${unresolved.length} announcement outcomes`);
+  });
+  const remaining = await queryOne(
+    `SELECT COUNT(*) AS cnt FROM announcement_embeddings WHERE resolved = 0 AND created_at <= datetime('now', ?)`,
+    [`-${RESOLVE_AFTER_DAYS} days`],
+  ).then(r => Number(r?.cnt ?? 0)).catch(() => 0);
+  console.log(`[NewsEmbedding] Resolved ${resolvedCount}/${unresolved.length} announcement outcomes (remaining backlog: ${remaining})`);
+  return { processed: resolvedCount, remainingBacklog: remaining };
 }
 
 export interface EmbeddingSentimentResult {
